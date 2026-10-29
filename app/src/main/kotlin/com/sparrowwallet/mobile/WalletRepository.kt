@@ -239,10 +239,12 @@ class WalletRepository(context: Context) {
             name = name, network = data.network, scriptType = "MWEB",
             scanSecretHex = mwebScanSecret(data).toHex(),
             birthHeight = mwebBirthHeight(data),
+            baselined = prior?.baselined ?: false,
             knownOutputIds = prior?.knownOutputIds ?: emptyList()
         ) else SyncCredentials(
             name = name, network = data.network, scriptType = data.scriptType,
             xpub = accountKey(data).xpub(network(data).xpubHeader),
+            baselined = prior?.baselined ?: false,
             knownTxids = prior?.knownTxids ?: emptyList()
         )
         syncStore.save(creds)

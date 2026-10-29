@@ -48,23 +48,16 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         snap = repo.mwebSnapshotFromScanKey(network, scanSecret, creds.birthHeight)
                     }
                     if(!snap.initialScanComplete) continue // not caught up — next period retries
-                    val unspentIds = snap.utxos.filter { !it.spent }.map { it.outputId }
-                    if(creds.knownOutputIds.isNotEmpty()) {
-                        val known = creds.knownOutputIds.toSet()
-                        val fresh = snap.utxos.filter { !it.spent && it.outputId !in known }.sumOf { it.value }
-                        if(fresh > 0) received += "${formatLtc(fresh)} → ${creds.name} (private)"
-                    }
-                    store.save(creds.copy(knownOutputIds = unspentIds))
+                    val unspent = snap.utxos.filter { !it.spent }
+                    val fresh = SyncBaseline.newlyReceivedPrivate(creds, unspent.map { it.outputId to it.value })
+                    if(fresh > 0) received += "${formatLtc(fresh)} → ${creds.name} (private)"
+                    store.save(creds.copy(baselined = true, knownOutputIds = unspent.map { it.outputId }))
                 } else {
                     val xpub = creds.xpub ?: continue
                     val snap = repo.scanXpub(network, xpub)
-                    val txids = snap.history.map { it.txid }
-                    if(creds.knownTxids.isNotEmpty()) {
-                        val known = creds.knownTxids.toSet()
-                        val fresh = snap.history.filter { it.txid !in known && it.delta > 0 }.sumOf { it.delta }
-                        if(fresh > 0) received += "${formatLtc(fresh)} → ${creds.name}"
-                    }
-                    store.save(creds.copy(knownTxids = txids))
+                    val fresh = SyncBaseline.newlyReceived(creds, snap.history.map { it.txid to it.delta })
+                    if(fresh > 0) received += "${formatLtc(fresh)} → ${creds.name}"
+                    store.save(creds.copy(baselined = true, knownTxids = snap.history.map { it.txid }))
                 }
             } catch(t: Throwable) {
                 // per-wallet best effort — a dead server or offline scanner retries next period

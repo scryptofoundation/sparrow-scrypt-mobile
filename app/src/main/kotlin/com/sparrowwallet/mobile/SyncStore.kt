@@ -25,10 +25,36 @@ data class SyncCredentials(
     val xpub: String? = null,             // public wallets
     val scanSecretHex: String? = null,    // MWEB wallets
     val birthHeight: Int = 0,
-    /** Baseline for "what's new" detection; empty = first run, record only. */
+    /**
+     * True once a background run has recorded the baseline below. Kept separately because an empty wallet's
+     * baseline is an empty list, which on its own looks like "no baseline yet" and hid its first payment.
+     */
+    val baselined: Boolean = false,
+    /** Baseline for "what's new" detection. */
     val knownTxids: List<String> = emptyList(),
     val knownOutputIds: List<String> = emptyList()
 )
+
+/** Decides what a background run reports for one wallet, given its stored baseline. */
+object SyncBaseline {
+    /** Files saved before [SyncCredentials.baselined] existed count as baselined when they recorded any history. */
+    private fun isBaselined(creds: SyncCredentials) =
+        creds.baselined || creds.knownTxids.isNotEmpty() || creds.knownOutputIds.isNotEmpty()
+
+    /** Sats newly received on the public side: positive deltas of transactions not in the baseline. */
+    fun newlyReceived(creds: SyncCredentials, history: List<Pair<String, Long>>): Long {
+        if(!isBaselined(creds)) return 0
+        val known = creds.knownTxids.toSet()
+        return history.filter { (txid, delta) -> txid !in known && delta > 0 }.sumOf { it.second }
+    }
+
+    /** Sats newly received on the MWEB side: unspent outputs not in the baseline. */
+    fun newlyReceivedPrivate(creds: SyncCredentials, unspent: List<Pair<String, Long>>): Long {
+        if(!isBaselined(creds)) return 0
+        val known = creds.knownOutputIds.toSet()
+        return unspent.filter { (outputId, _) -> outputId !in known }.sumOf { it.second }
+    }
+}
 
 /**
  * Stores [SyncCredentials] encrypted under a hardware-backed Android Keystore key

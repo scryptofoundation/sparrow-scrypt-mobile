@@ -50,4 +50,5 @@ dependencies {
     implementation("io.grpc:grpc-protobuf:1.79.0")
     implementation("io.grpc:grpc-stub:1.79.0")
     implementation("com.google.protobuf:protobuf-java:4.34.0")
+    testImplementation(kotlin("test"))
 }
