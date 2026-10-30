@@ -3,6 +3,7 @@ package com.sparrowwallet.mobile
 import android.content.Context
 import com.google.protobuf.ByteString
 import com.sparrowwallet.mobile.crypto.Network
+import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import com.sparrowwallet.mobile.crypto.toHex
 import com.sparrowwallet.sparrow.mweb.proto.BroadcastRequest
 import com.sparrowwallet.sparrow.mweb.proto.CreateRequest
@@ -78,6 +79,7 @@ class MwebdService private constructor(
         @Volatile private var startedAtMs = 0L
         @Volatile var lastError: String? = null
             private set
+        @Volatile private var stopped = false
         /** Set once mwebd signals the end of the initial scan (see sentinel note below). */
         @Volatile var initialScanComplete = false
             private set
@@ -86,8 +88,11 @@ class MwebdService private constructor(
             Thread({ run() }, "mweb-utxo-watcher").apply { isDaemon = true }.start()
         }
 
+        /** Ends the stream loop; the thread exits at its next check. */
+        fun stop() { stopped = true }
+
         private fun run() {
-            while(true) {
+            while(!stopped) {
                 try {
                     if(startedAtMs == 0L) startedAtMs = System.currentTimeMillis()
                     val request = UtxosRequest.newBuilder()
@@ -96,7 +101,7 @@ class MwebdService private constructor(
                         .build()
                     val stream = stub.utxos(request) // deliberately no deadline
                     lastError = null
-                    while(stream.hasNext()) {
+                    while(!stopped && stream.hasNext()) {
                         val utxo = stream.next()
                         // mwebd sends one EMPTY Utxo as an end-of-initial-scan marker
                         // (utxoStreamer.notify). It must never reach the Spent RPC: an
@@ -114,6 +119,7 @@ class MwebdService private constructor(
                 } catch(t: Throwable) {
                     lastError = t.message ?: t.javaClass.simpleName
                 }
+                if(stopped) break
                 Thread.sleep(5_000) // stream ended or failed (daemon restart?) — reconnect
             }
         }
@@ -207,8 +213,23 @@ class MwebdService private constructor(
             .txid
     }
 
+    @Synchronized
+    private fun shutdown() {
+        watchers.values.forEach { it.stop() }
+        watchers.clear()
+        channel.shutdownNow()
+        server.stop()
+    }
+
     companion object {
         private val running = mutableMapOf<String, MwebdService>()
+
+        /** Stops every running daemon and its coin streams (entering air-gapped mode). */
+        @Synchronized
+        fun stopAll() {
+            running.values.forEach { runCatching { it.shutdown() } }
+            running.clear()
+        }
 
         /**
          * Port of ltcd's mweb.EstimateFee: the MWEB-side fee for a transaction with these
@@ -318,8 +339,9 @@ class MwebdService private constructor(
 
         /** Starts (or reuses) the daemon for [network]; [proxy] is "host:port" or null. */
         @Synchronized
-        fun get(context: Context, network: Network, proxy: String?): MwebdService =
-            running.getOrPut(network.id) {
+        fun get(context: Context, network: Network, proxy: String?): MwebdService {
+            NetworkPolicy.check("MWEB scanner")
+            return running.getOrPut(network.id) {
                 val dataDir = File(context.filesDir, "mwebd/${network.id}").apply { mkdirs() }
                 val server = mwebd.Mwebd.start(network.id, dataDir.absolutePath, proxy ?: "")
                 val channel = ManagedChannelBuilder.forAddress("127.0.0.1", server.port().toInt())
@@ -327,5 +349,6 @@ class MwebdService private constructor(
                     .build()
                 MwebdService(server, channel)
             }
+        }
     }
 }

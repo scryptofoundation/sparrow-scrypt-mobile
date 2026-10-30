@@ -28,6 +28,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+    testOptions {
+        // lets JVM tests build stub Android objects such as ContextWrapper(null)
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {

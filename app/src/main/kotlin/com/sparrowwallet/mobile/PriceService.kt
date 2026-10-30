@@ -1,6 +1,7 @@
 package com.sparrowwallet.mobile
 
 import android.content.Context
+import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -55,7 +56,8 @@ object PriceService {
         return price
     }
 
-    private suspend fun fetch(url: String): String? = withContext(Dispatchers.IO) {
+    internal suspend fun fetch(url: String): String? = withContext(Dispatchers.IO) {
+        if(NetworkPolicy.blocked) return@withContext null // cached prices still show
         runCatching {
             val connection = URL(url).openConnection() as HttpURLConnection
             connection.connectTimeout = 10_000
