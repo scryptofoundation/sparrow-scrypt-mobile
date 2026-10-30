@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- debug builds only: feeds QR frames to the on-screen scanner over adb (see DebugUrReceiver) -->
+        <receiver android:name=".DebugUrReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="com.sparrowwallet.mobile.DEBUG_UR" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
