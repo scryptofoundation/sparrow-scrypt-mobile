@@ -54,6 +54,7 @@ class ElectrumClient(
     private var reader: BufferedReader? = null
     private var writer: BufferedWriter? = null
     private var nextId = 0
+    private var release: () -> Unit = {}
 
     suspend fun connect() = withContext(Dispatchers.IO) {
         NetworkPolicy.check("Electrum")
@@ -62,6 +63,7 @@ class ElectrumClient(
         } else {
             Socket()
         }
+        release = NetworkPolicy.whileOpen { runCatching { raw.close() } } // air-gapped mode cuts it, mid-call too
         // unresolved endpoint with a proxy → hostname is sent to the proxy (needed for .onion)
         val endpoint = if(proxy != null) InetSocketAddress.createUnresolved(host, port)
                        else InetSocketAddress(host, port)
@@ -122,6 +124,7 @@ class ElectrumClient(
 
     private suspend fun call(method: String, params: List<JsonElement>): JsonElement = withContext(Dispatchers.IO) {
         val out = writer ?: error("Not connected — call connect() first")
+        NetworkPolicy.check("Electrum")
         val id = nextId++
         val request = buildJsonObject {
             put("id", id)
@@ -143,6 +146,7 @@ class ElectrumClient(
     }
 
     fun close() {
+        release()
         runCatching { socket?.close() }
     }
 

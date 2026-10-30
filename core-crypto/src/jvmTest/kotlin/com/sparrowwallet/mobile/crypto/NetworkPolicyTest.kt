@@ -19,4 +19,26 @@ class NetworkPolicyTest {
         assertEquals("Electrum", e.what)
         assertEquals("Air-gapped mode is on: Electrum is disabled", e.message)
     }
+
+    @Test fun turningOnCutsWhatIsOpen() {
+        var cut = 0
+        NetworkPolicy.whileOpen { cut++ }
+        NetworkPolicy.blocked = true
+        assertEquals(1, cut)
+    }
+
+    @Test fun releasedConnectionIsNotCut() {
+        var cut = 0
+        val release = NetworkPolicy.whileOpen { cut++ }
+        release()
+        NetworkPolicy.blocked = true
+        assertEquals(0, cut)
+    }
+
+    @Test fun openingWhileBlockedIsCutAtOnce() {
+        NetworkPolicy.blocked = true
+        var cut = 0
+        NetworkPolicy.whileOpen { cut++ }
+        assertEquals(1, cut)
+    }
 }
