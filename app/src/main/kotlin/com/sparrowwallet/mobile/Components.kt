@@ -129,6 +129,23 @@ internal fun BackButton(enabled: Boolean = true, onClick: () -> Unit) {
     ) { Text("← Back") }
 }
 
+/** Shown on every screen while air-gapped; red with the reason when a radio is still on. */
+@Composable
+internal fun AirGapPill(warning: String?) {
+    val color = if(warning != null) MaterialTheme.colorScheme.error
+                else (if(isSystemInDarkTheme()) LtcPalette.green else LtcPalette.greenLight)
+    Text(
+        warning?.let { "Air-gapped · $it" } ?: "Air-gapped",
+        fontFamily = MonoFont, fontSize = 10.sp, letterSpacing = 0.6.sp,
+        color = color,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(color.copy(alpha = 0.14f))
+            .padding(horizontal = 10.dp, vertical = 5.dp)
+    )
+}
+
 // ---- status pill ----
 
 internal enum class PillState { OK, SCAN, IDLE }
