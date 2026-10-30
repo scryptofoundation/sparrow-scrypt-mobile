@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile.electrum
 
+import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -55,6 +56,7 @@ class ElectrumClient(
     private var nextId = 0
 
     suspend fun connect() = withContext(Dispatchers.IO) {
+        NetworkPolicy.check("Electrum")
         val raw = if(proxy != null) {
             Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress(proxy.host, proxy.port)))
         } else {

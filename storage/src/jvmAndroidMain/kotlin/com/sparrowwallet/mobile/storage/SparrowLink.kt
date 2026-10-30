@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile.storage
 
+import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
@@ -58,6 +59,7 @@ object SparrowLink {
 
     /** Connects to the first reachable advertised address. */
     private fun connect(pairing: Pairing, timeoutMs: Int = 8_000): Socket {
+        NetworkPolicy.check("Sparrow Link") // outside the per-host try, so it is not reported as unreachable
         var lastError: Exception? = null
         for(host in pairing.hosts) {
             try {
