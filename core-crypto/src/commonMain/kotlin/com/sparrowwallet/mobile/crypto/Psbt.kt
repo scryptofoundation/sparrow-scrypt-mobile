@@ -111,7 +111,8 @@ object Psbt {
         require(r.bytes(5).contentEquals(MAGIC)) { "Not a PSBT (bad magic)" }
 
         val globalEntries = readEntries(r)
-        val txBytes = globalEntries.firstOrNull { it.first[0].toInt() == GLOBAL_UNSIGNED_TX }?.second
+        val txBytes = globalEntries.firstOrNull { it.first[0].toInt() == GLOBAL_UNSIGNED_TX }
+            ?.also { requireBareKey(it.first) }?.second
             ?: throw IllegalArgumentException("PSBT has no unsigned transaction")
         val tx = parseUnsignedTx(txBytes)
 
@@ -127,8 +128,9 @@ object Psbt {
             val entries = readEntries(r)
             for((key, value) in entries) {
                 when(key[0].toInt()) {
-                    IN_NON_WITNESS_UTXO -> nonWitnessUtxo = value
+                    IN_NON_WITNESS_UTXO -> nonWitnessUtxo = value.also { requireBareKey(key) }
                     IN_WITNESS_UTXO -> {
+                        requireBareKey(key)
                         val vr = ByteReader(value)
                         utxoValue = vr.u64le()
                         utxoScript = vr.varBytes()
@@ -136,8 +138,10 @@ object Psbt {
                     IN_PARTIAL_SIG -> sigs[key.copyOfRange(1, key.size).toHex()] = value
                     IN_BIP32_DERIVATION -> derivations[key.copyOfRange(1, key.size).toHex()] = parseDerivation(value)
                     IN_FINAL_SCRIPTWITNESS -> {
+                        requireBareKey(key)
                         val vr = ByteReader(value)
                         val count = vr.varInt()
+                        require(count <= vr.remaining()) { "Truncated final witness" }
                         finalWitness = List(count.toInt()) { vr.varBytes() }
                     }
                     else -> unknown += key to value
@@ -161,6 +165,7 @@ object Psbt {
             }
             PsbtOutput(derivations, unknown, entries)
         }
+        require(r.remaining() == 0) { "Trailing data after PSBT" }
         val globalUnknown = globalEntries.filter { it.first[0].toInt() != GLOBAL_UNSIGNED_TX }
         return Parsed(txBytes, tx, inputs, outputs, globalUnknown, globalEntries)
     }
@@ -227,11 +232,14 @@ object Psbt {
         for((key, value) in parsed.globalEntries) writeEntry(w, key, value)
         w.bytes(ByteArray(1))
         for((i, input) in parsed.inputs.withIndex()) {
-            for((key, value) in input.entries) writeEntry(w, key, value)
-            for((pubHex, sig) in extraSigs.getOrNull(i).orEmpty()) {
-                if(pubHex !in input.partialSigs) {
-                    writeEntry(w, byteArrayOf(IN_PARTIAL_SIG.toByte()) + pubHex.hexToBytes(), sig)
-                }
+            val sigs = extraSigs.getOrNull(i).orEmpty()
+            // a signature already present for a key we sign with is replaced, not trusted
+            for((key, value) in input.entries) {
+                val replaced = key[0].toInt() == IN_PARTIAL_SIG && key.copyOfRange(1, key.size).toHex() in sigs
+                if(!replaced) writeEntry(w, key, value)
+            }
+            for((pubHex, sig) in sigs) {
+                writeEntry(w, byteArrayOf(IN_PARTIAL_SIG.toByte()) + pubHex.hexToBytes(), sig)
             }
             w.bytes(ByteArray(1))
         }
@@ -244,8 +252,17 @@ object Psbt {
 
     private fun readEntries(r: ByteReader): List<Pair<ByteArray, ByteArray>> {
         val entries = ArrayList<Pair<ByteArray, ByteArray>>()
-        readMap(r) { key, value -> entries += key to value }
+        val seen = HashSet<String>()
+        readMap(r) { key, value ->
+            require(seen.add(key.toHex())) { "Duplicate key in PSBT" } // BIP174: keys are unique per map
+            entries += key to value
+        }
         return entries
+    }
+
+    /** Key types whose key is the type byte alone (BIP174). */
+    private fun requireBareKey(key: ByteArray) {
+        require(key.size == 1) { "Malformed PSBT key" }
     }
 
     private fun readMap(r: ByteReader, onEntry: (ByteArray, ByteArray) -> Unit) {
@@ -272,11 +289,14 @@ object Psbt {
             TxInput(txid, vout, sequence)
         }
         val outputCount = r.varInt()
+        require(outputCount in 0..r.remaining() / 9L) { "Unreasonable output count in PSBT transaction" } // 9 bytes minimum each
         val outputs = List(outputCount.toInt()) {
             val value = r.u64le()
             TxOutput(value, r.varBytes())
         }
-        return Tx(version, inputs, outputs, r.u32le())
+        val locktime = r.u32le()
+        require(r.remaining() == 0) { "Trailing data in PSBT transaction" }
+        return Tx(version, inputs, outputs, locktime)
     }
 
     @OptIn(ExperimentalEncodingApi::class)
@@ -297,7 +317,7 @@ internal class ByteReader(private val data: ByteArray) {
     fun remaining(): Int = data.size - pos
 
     fun bytes(count: Int): ByteArray {
-        require(pos + count <= data.size) { "Truncated data" }
+        require(count >= 0 && count <= data.size - pos) { "Truncated data" }
         return data.copyOfRange(pos, pos + count).also { pos += count }
     }
 

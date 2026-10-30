@@ -164,4 +164,38 @@ class PsbtTest {
         assertFailsWith<IllegalArgumentException> { Psbt.parse(ByteArray(10)) }
         assertFailsWith<IllegalArgumentException> { Psbt.parse("70736274aa".hexToBytes()) }
     }
+
+    @Test
+    fun hugeCountsAreRefusedWithoutAllocating() {
+        // a final witness claiming 4 billion items in a few bytes
+        val hugeWitness = PsbtFixtures.edit(desktopStylePsbt()) { maps ->
+            maps[2] += byteArrayOf(0x08) to (byteArrayOf(0xFE.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x7F) + ByteArray(3))
+        }
+        assertFailsWith<IllegalArgumentException> { Psbt.parse(hugeWitness) }
+        // an unsigned transaction claiming 4 billion outputs
+        val tx = "02000000" + "01" + "aa".repeat(32) + "00000000" + "00" + "ffffffff" + "feffffff7f"
+        val hugeOutputs = PsbtFixtures.joinMaps(listOf(listOf(byteArrayOf(0x00) to tx.hexToBytes()), emptyList()))
+        assertFailsWith<IllegalArgumentException> { Psbt.parse(hugeOutputs) }
+    }
+
+    @Test
+    fun trailingDataIsRefused() {
+        assertFailsWith<IllegalArgumentException> { Psbt.parse(desktopStylePsbt() + byteArrayOf(1, 2, 3)) }
+        val withTrailingTx = PsbtFixtures.edit(desktopStylePsbt()) { maps ->
+            maps[0][0] = maps[0][0].first to (maps[0][0].second + byteArrayOf(0))
+        }
+        assertFailsWith<IllegalArgumentException> { Psbt.parse(withTrailingTx) }
+    }
+
+    @Test
+    fun duplicateKeysAreRefused() {
+        val duplicate = PsbtFixtures.edit(desktopStylePsbt()) { maps -> maps[2] += maps[2].first { it.first[0].toInt() == 0x01 } }
+        val e = assertFailsWith<IllegalArgumentException> { Psbt.parse(duplicate) }
+        assertEquals("Duplicate key in PSBT", e.message)
+        // the fixed-size keys carry no key data
+        val longKey = PsbtFixtures.edit(desktopStylePsbt()) { maps ->
+            maps[2].replaceAll { (k, v) -> if(k[0].toInt() == 0x01) (k + byteArrayOf(0)) to v else k to v }
+        }
+        assertFailsWith<IllegalArgumentException> { Psbt.parse(longKey) }
+    }
 }

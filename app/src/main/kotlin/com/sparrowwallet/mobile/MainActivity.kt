@@ -927,7 +927,8 @@ private fun TxDetailScreen(tx: TxInfo, onSaveLabel: ((String) -> Unit)? = null, 
             },
             modifier = Modifier.fillMaxWidth()
         ) { Text(if(copied) "Copied ✓" else if(tx.mweb && tx.txid.length != 64) "Copy output id" else "Copy txid") }
-        if(!tx.mweb) {
+        // the browser would tie this txid to the phone's IP: not from an air-gapped signer
+        if(!tx.mweb && !NetworkPolicy.blocked) {
             OutlinedButton(
                 onClick = {
                     context.startActivity(android.content.Intent(
@@ -1484,7 +1485,8 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
     var copied by remember { mutableStateOf(false) }
     var scanning by remember { mutableStateOf(false) }
     var showText by remember { mutableStateOf(false) }
-    val collector = remember { AirgapUr.PsbtCollector() }
+    // a fresh collector per scan, so parts of an abandoned scan never block the next one
+    var collector by remember { mutableStateOf(AirgapUr.PsbtCollector()) }
     // the review is what the user approves; a PSBT that fails it can't be signed
     val psbt = remember(inputText) {
         inputText.trim().takeIf { it.isNotEmpty() }?.let { runCatching { Psbt.fromBase64(it) } }
@@ -1515,7 +1517,7 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
                 modifier = Modifier.fillMaxWidth()
             )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { scanning = true; signed = null },
+                OutlinedButton(onClick = { collector = AirgapUr.PsbtCollector(); scanning = true; signed = null },
                     modifier = Modifier.weight(1f)) { Text("Scan QR") }
                 OutlinedButton(
                     onClick = {

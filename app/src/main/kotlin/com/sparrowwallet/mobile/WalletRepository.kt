@@ -664,7 +664,7 @@ class WalletRepository(context: Context) {
      * for a coordinator like desktop Sparrow or a watch-only wallet.
      */
     fun signPsbt(data: VaultData, psbt: ByteArray): SignedPsbt {
-        val signed = PsbtSigner.sign(Psbt.parse(psbt), masterKey(data), network(data))
+        val signed = PsbtSigner.sign(Psbt.parse(psbt), masterKey(data), network(data), accountPath(data))
         return SignedPsbt(signed, Psbt.toBase64(signed))
     }
 

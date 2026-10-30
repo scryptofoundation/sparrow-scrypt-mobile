@@ -34,23 +34,23 @@ object PsbtSigner {
     /** P2WPKH witness: count + 72-byte signature + 33-byte pubkey, with length bytes. */
     private const val P2WPKH_WITNESS_BYTES = 108
 
-    /** Highest address index treated as change; anything past it no wallet would scan. */
-    private const val MAX_CHANGE_INDEX = 10_000L
+    /** Highest address index this wallet signs for or calls change; past it no wallet would scan. */
+    private const val MAX_INDEX = 10_000L
 
     /**
-     * [accountPath] is this wallet's account (for example m/84'/2'/0'): an output counts as
-     * change only at accountPath/0/i or accountPath/1/i with i below [MAX_CHANGE_INDEX], so a
-     * PSBT cannot hide a payment to one of our keys at a path the wallet never looks at.
+     * [accountPath] is this wallet's account (for example m/84'/2'/0'). Keys count as ours
+     * only at accountPath/0/i or accountPath/1/i with i below [MAX_INDEX]: an output there
+     * is change, an input there is signed. Anything else is foreign even with our master
+     * fingerprint, so a PSBT cannot hide a payment to a key the wallet never scans, nor get
+     * a signature for another coin's path (Bitcoin shares BIP143) under a Litecoin review.
      */
     fun review(parsed: Psbt.Parsed, master: HDKey, network: Network, accountPath: List<Long>): PsbtReview {
         val inputs = parsed.inputs.mapIndexed { i, input ->
-            ReviewInput(i, input.witnessUtxoValue, ourDerivation(input.derivations, master) != null)
+            ReviewInput(i, input.witnessUtxoValue, ourDerivation(input.derivations, master, accountPath) != null)
         }
         val outputs = parsed.tx.outputs.mapIndexed { j, out ->
             val change = parsed.outputs.getOrNull(j)?.derivations?.values?.any { (fp, path) ->
-                fp.contentEquals(master.fingerprint) &&
-                    path.size == accountPath.size + 2 && path.take(accountPath.size) == accountPath &&
-                    path[accountPath.size] in 0L..1L && path.last() in 0L until MAX_CHANGE_INDEX &&
+                fp.contentEquals(master.fingerprint) && inAccount(path, accountPath) &&
                     Scripts.p2wpkhOutput(derive(master, path).pubKey).contentEquals(out.script)
             } == true
             ReviewOutput(j, Addresses.fromScript(out.script, network), out.script.toHex(), out.value, change)
@@ -63,10 +63,10 @@ object PsbtSigner {
         return PsbtReview(inputs, outputs, totalIn, totalOut, fee, rate)
     }
 
-    fun sign(parsed: Psbt.Parsed, master: HDKey, network: Network): ByteArray {
+    fun sign(parsed: Psbt.Parsed, master: HDKey, network: Network, accountPath: List<Long>): ByteArray {
         var ours = 0
         val sigs = parsed.inputs.mapIndexed { i, input ->
-            val (pubHex, path) = ourDerivation(input.derivations, master) ?: return@mapIndexed emptyMap()
+            val (pubHex, path) = ourDerivation(input.derivations, master, accountPath) ?: return@mapIndexed emptyMap()
             ours++
             val script = input.witnessUtxoScript
             val value = input.witnessUtxoValue
@@ -82,9 +82,18 @@ object PsbtSigner {
         return Psbt.serialize(parsed, sigs)
     }
 
-    /** The derivation naming this wallet (pubkey hex to path), not just the first one listed. */
-    private fun ourDerivation(derivations: Map<String, Pair<ByteArray, List<Long>>>, master: HDKey): Pair<String, List<Long>>? =
-        derivations.entries.firstOrNull { it.value.first.contentEquals(master.fingerprint) }?.let { it.key to it.value.second }
+    /** The derivation naming this wallet's account (pubkey hex to path), not just the first one listed. */
+    private fun ourDerivation(
+        derivations: Map<String, Pair<ByteArray, List<Long>>>,
+        master: HDKey,
+        accountPath: List<Long>
+    ): Pair<String, List<Long>>? =
+        derivations.entries.firstOrNull { (_, d) -> d.first.contentEquals(master.fingerprint) && inAccount(d.second, accountPath) }
+            ?.let { it.key to it.value.second }
+
+    private fun inAccount(path: List<Long>, accountPath: List<Long>): Boolean =
+        path.size == accountPath.size + 2 && path.take(accountPath.size) == accountPath &&
+            path[accountPath.size] in 0L..1L && path.last() in 0L until MAX_INDEX
 
     private fun derive(master: HDKey, path: List<Long>): HDKey {
         var key = master
