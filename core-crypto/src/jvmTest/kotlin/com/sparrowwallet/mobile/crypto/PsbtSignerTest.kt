@@ -21,10 +21,11 @@ import kotlin.test.assertNull
 /** Signing a PSBT that came from somewhere else: review what it does, sign only what is ours. */
 class PsbtSignerTest {
     private val net = Network.MAINNET
+    private val account = accountPath(0, 0).take(3)
 
     @Test fun reviewMarksChangeAndFee() {
         val parsed = Psbt.parse(fixturePsbt())
-        val r = PsbtSigner.review(parsed, master, net)
+        val r = PsbtSigner.review(parsed, master, net, account)
         assertEquals(listOf(false, true), r.outputs.map { it.change })
         assertEquals(Addresses.p2wpkh(destKey.pubKey), r.outputs[0].address)
         assertEquals(60_000_000, r.outputs[0].value)
@@ -41,14 +42,32 @@ class PsbtSignerTest {
         val lying = edit(fixturePsbt()) { maps ->
             maps[3] += (byteArrayOf(0x02) + destKey.pubKey) to derivationValue(master.fingerprint, accountPath(1, 0))
         }
-        val r = PsbtSigner.review(Psbt.parse(lying), master, net)
+        val r = PsbtSigner.review(Psbt.parse(lying), master, net, account)
         assertEquals(listOf(false, true), r.outputs.map { it.change })
+    }
+
+    @Test fun ourKeyOutsideTheAccountChainsIsNotChange() {
+        // both pay keys of this seed, but at paths neither wallet would ever scan
+        val far = PsbtFixtures.account.deriveChild(1).deriveChild(500_000)
+        val otherAccount = master.derivePath("m/84'/2'/1'/1/0")
+        for((key, path) in listOf(
+            far to accountPath(1, 500_000),
+            otherAccount to listOf(84L + PsbtFixtures.HARDENED, 2L + PsbtFixtures.HARDENED, 1L + PsbtFixtures.HARDENED, 1, 0)
+        )) {
+            val script = Scripts.p2wpkhOutput(key.pubKey)
+            val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(inputs, script, 60_000_000, 2, changeScript))
+            val claimed = edit(psbt) { maps ->
+                maps[3] += (byteArrayOf(0x02) + key.pubKey) to derivationValue(master.fingerprint, path)
+            }
+            val r = PsbtSigner.review(Psbt.parse(claimed), master, net, account)
+            assertEquals(listOf(false, true), r.outputs.map { it.change }, "path $path")
+        }
     }
 
     @Test fun unknownScriptShownRawNotChange() {
         val opReturn = byteArrayOf(0x6a, 0x04, 1, 2, 3, 4)
         val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(inputs, opReturn, 60_000_000, 2, changeScript))
-        val r = PsbtSigner.review(Psbt.parse(psbt), master, net)
+        val r = PsbtSigner.review(Psbt.parse(psbt), master, net, account)
         assertNull(r.outputs[0].address)
         assertEquals("6a0401020304", r.outputs[0].scriptHex)
         assertEquals(false, r.outputs[0].change)
@@ -77,7 +96,7 @@ class PsbtSignerTest {
         val noUtxo = edit(fixturePsbt()) { maps -> maps[1].removeAll { it.first[0].toInt() == 0x01 } }
         val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(Psbt.parse(noUtxo), master, net) }
         assertEquals("Input 1 is not native segwit (P2WPKH)", e.message)
-        assertNull(PsbtSigner.review(Psbt.parse(noUtxo), master, net).fee)
+        assertNull(PsbtSigner.review(Psbt.parse(noUtxo), master, net, account).fee)
     }
 
     @Test fun foreignInputsAreLeftUnsigned() {
@@ -88,7 +107,7 @@ class PsbtSignerTest {
         val signed = Psbt.parse(PsbtSigner.sign(Psbt.parse(shared), master, net))
         assertEquals(1, signed.inputs[0].partialSigs.size)
         assertEquals(0, signed.inputs[1].partialSigs.size)
-        assertEquals(listOf(true, false), PsbtSigner.review(Psbt.parse(shared), master, net).inputs.map { it.ours })
+        assertEquals(listOf(true, false), PsbtSigner.review(Psbt.parse(shared), master, net, account).inputs.map { it.ours })
     }
 
     @Test fun foreignOnlyPsbtIsRefused() {

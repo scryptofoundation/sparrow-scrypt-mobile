@@ -34,13 +34,23 @@ object PsbtSigner {
     /** P2WPKH witness: count + 72-byte signature + 33-byte pubkey, with length bytes. */
     private const val P2WPKH_WITNESS_BYTES = 108
 
-    fun review(parsed: Psbt.Parsed, master: HDKey, network: Network): PsbtReview {
+    /** Highest address index treated as change; anything past it no wallet would scan. */
+    private const val MAX_CHANGE_INDEX = 10_000L
+
+    /**
+     * [accountPath] is this wallet's account (for example m/84'/2'/0'): an output counts as
+     * change only at accountPath/0/i or accountPath/1/i with i below [MAX_CHANGE_INDEX], so a
+     * PSBT cannot hide a payment to one of our keys at a path the wallet never looks at.
+     */
+    fun review(parsed: Psbt.Parsed, master: HDKey, network: Network, accountPath: List<Long>): PsbtReview {
         val inputs = parsed.inputs.mapIndexed { i, input ->
             ReviewInput(i, input.witnessUtxoValue, ourDerivation(input.derivations, master) != null)
         }
         val outputs = parsed.tx.outputs.mapIndexed { j, out ->
             val change = parsed.outputs.getOrNull(j)?.derivations?.values?.any { (fp, path) ->
                 fp.contentEquals(master.fingerprint) &&
+                    path.size == accountPath.size + 2 && path.take(accountPath.size) == accountPath &&
+                    path[accountPath.size] in 0L..1L && path.last() in 0L until MAX_CHANGE_INDEX &&
                     Scripts.p2wpkhOutput(derive(master, path).pubKey).contentEquals(out.script)
             } == true
             ReviewOutput(j, Addresses.fromScript(out.script, network), out.script.toHex(), out.value, change)
