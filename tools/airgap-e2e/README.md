@@ -57,5 +57,19 @@ When both checks pass, it writes `verified.txt`.
    from `adb shell dumpsys netstats detail` after `dumpsys netstats --poll`.
 6. **Go online.** Turn the mode off with every wallet's password.
 
-A funded run, with the desktop importing the export by webcam and broadcasting, needs
-desktop Sparrow and testnet coins. It is not covered here.
+## Desktop leg on the Litecoin regtest
+
+Run 2026-10-30 with Sparrow-Scrypt from the `feature/sparrow-mobile-importer` branch, on
+the regtest in `testnet-infra` (node 19443, ElectrumX 50105) and a throwaway `--dir`.
+
+1. **Import.** With a webcam: New Wallet, Native Segwit, Airgapped Hardware Wallet,
+   Sparrow Mobile, Scan. Without one, write the frame texts of step 2 to a file (one per
+   line) and run desktop's `SparrowMobileScanImportLiveTest` with
+   `SPARROW_MOBILE_SCAN_FRAMES` and `SPARROW_MOBILE_SCAN_OUT=<dir>/regtest/wallets/<name>.mv.db`.
+   It uses the scan dialog's own UR decoding and the import pane's keystore handling.
+2. **Fund** the first address twice (`ltc-regtest.sh fund`, then `mine 1`) so a spend
+   needs two inputs.
+3. **Send** from desktop with both coins, Finalize, Show QR. Every input of a multi-input
+   PSBT must carry `0x00` (the full previous transaction); the phone refuses it otherwise.
+4. Feed desktop's frames to the phone as above, sign, decode the phone's QR to a file,
+   then on desktop Load Transaction and Broadcast. Mine a block to confirm.
