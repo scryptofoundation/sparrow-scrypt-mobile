@@ -163,3 +163,53 @@ object Ecdsa {
         return byteArrayOf(0x02, v.size.toByte()) + v
     }
 }
+
+/**
+ * Reads any serialized Litecoin transaction far enough to know its txid and outputs:
+ * legacy scriptSigs, segwit witnesses (flag 0x01) and the MWEB extension (flag 0x08,
+ * which runs from after the witnesses to the locktime). Used to check a PSBT's
+ * non-witness UTXO, so it does not go through [Tx], which assumes unsigned inputs.
+ */
+object RawTx {
+    class Parsed(val txid: String, val outputs: List<TxOutput>)
+
+    fun parse(bytes: ByteArray): Parsed {
+        val r = ByteReader(bytes)
+        val version = r.bytes(4)
+        var flag = 0
+        val afterVersion = r.remaining()
+        if(r.remaining() >= 2 && bytes[4].toInt() == 0 && bytes[5].toInt() != 0) {
+            r.bytes(1)
+            flag = r.bytes(1)[0].toInt() and 0xFF
+        }
+        val bodyStart = 4 + (afterVersion - r.remaining())
+
+        val inputCount = r.varInt()
+        require(inputCount in 0..100_000) { "Unreasonable input count" }
+        repeat(inputCount.toInt()) {
+            r.bytes(36)   // outpoint
+            r.varBytes()  // scriptSig
+            r.bytes(4)    // sequence
+        }
+        val outputCount = r.varInt()
+        require(outputCount in 0..100_000) { "Unreasonable output count" }
+        val outputs = List(outputCount.toInt()) { TxOutput(r.u64le(), r.varBytes()) }
+        val bodyEnd = bytes.size - r.remaining()
+
+        if(flag and 0x01 != 0) {
+            repeat(inputCount.toInt()) {
+                val items = r.varInt()
+                repeat(items.toInt()) { r.varBytes() }
+            }
+        }
+        if(flag and 0x08 != 0) {
+            require(r.remaining() >= 4) { "Truncated transaction" }
+            r.bytes(r.remaining() - 4) // MWEB extension: not part of the txid
+        }
+        val locktime = r.bytes(4)
+        require(r.remaining() == 0) { "Trailing bytes after transaction" }
+
+        val stripped = version + bytes.copyOfRange(bodyStart, bodyEnd) + locktime
+        return Parsed(sha256d(stripped).reversedArray().toHex(), outputs)
+    }
+}

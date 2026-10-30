@@ -134,6 +134,26 @@ class AddressDecodeTest {
     }
 
     @Test
+    fun fromScriptCoversStandardTypes() {
+        val main = Network.MAINNET
+        val test = Network.TESTNET
+        val cases = listOf(
+            Addresses.p2wpkh(pubKey) to main,
+            Bech32.encodeWitness(main.bech32Hrp, 0, sha256(pubKey)) to main, // P2WSH
+            Addresses.p2pkh(pubKey) to main,
+            Addresses.p2shP2wpkh(pubKey) to main,
+            Addresses.p2wpkh(pubKey, test.bech32Hrp) to test,
+            Bech32.encodeWitness(test.bech32Hrp, 1, ByteArray(32) { it.toByte() }) to test, // P2TR
+            Addresses.p2pkh(pubKey, test.p2pkhVersion) to test
+        )
+        for((address, net) in cases) {
+            assertEquals(address, Addresses.fromScript(Addresses.toScriptPubKey(address, net), net))
+        }
+        assertEquals(null, Addresses.fromScript(byteArrayOf(0x6a, 0x04, 1, 2, 3, 4), main)) // OP_RETURN
+        assertEquals(null, Addresses.fromScript(ByteArray(0), main))
+    }
+
+    @Test
     fun wrongNetworkBase58Rejected() {
         val testnetP2pkh = Addresses.p2pkh(pubKey, Network.TESTNET.p2pkhVersion)
         assertFailsWith<IllegalArgumentException> {

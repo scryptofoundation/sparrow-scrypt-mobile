@@ -87,4 +87,25 @@ object Addresses {
             else -> throw IllegalArgumentException("Not a ${network.displayName} Litecoin address (version byte ${payload[0].toInt() and 0xFF})")
         }
     }
+
+    /**
+     * The address a scriptPubKey pays, for showing outputs in a PSBT review; null for
+     * anything that has no address form (OP_RETURN, MWEB peg-ins, nonstandard scripts).
+     */
+    fun fromScript(script: ByteArray, network: Network): String? {
+        val op = { i: Int -> script[i].toInt() and 0xFF }
+        return when {
+            script.size == 22 && op(0) == 0x00 && op(1) == 0x14 ->
+                Bech32.encodeWitness(network.bech32Hrp, 0, script.copyOfRange(2, 22))
+            script.size == 34 && op(0) == 0x00 && op(1) == 0x20 ->
+                Bech32.encodeWitness(network.bech32Hrp, 0, script.copyOfRange(2, 34))
+            script.size == 34 && op(0) == 0x51 && op(1) == 0x20 ->
+                Bech32.encodeWitness(network.bech32Hrp, 1, script.copyOfRange(2, 34))
+            script.size == 25 && op(0) == 0x76 && op(1) == 0xA9 && op(2) == 0x14 && op(23) == 0x88 && op(24) == 0xAC ->
+                Base58.encodeChecked(byteArrayOf(network.p2pkhVersion.toByte()) + script.copyOfRange(3, 23))
+            script.size == 23 && op(0) == 0xA9 && op(1) == 0x14 && op(22) == 0x87 ->
+                Base58.encodeChecked(byteArrayOf(network.p2shVersion.toByte()) + script.copyOfRange(2, 22))
+            else -> null
+        }
+    }
 }

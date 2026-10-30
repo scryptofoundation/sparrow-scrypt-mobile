@@ -14,6 +14,7 @@ object Psbt {
     private val MAGIC = byteArrayOf(0x70, 0x73, 0x62, 0x74, 0xFF.toByte()) // "psbt\xff"
 
     private const val GLOBAL_UNSIGNED_TX = 0x00
+    private const val IN_NON_WITNESS_UTXO = 0x00
     private const val IN_WITNESS_UTXO = 0x01
     private const val IN_PARTIAL_SIG = 0x02
     private const val IN_BIP32_DERIVATION = 0x06
@@ -27,13 +28,30 @@ object Psbt {
         val partialSigs: Map<String, ByteArray>,
         /** pubkey hex → master fingerprint (4) + path child numbers. */
         val derivations: Map<String, Pair<ByteArray, List<Long>>>,
-        val finalWitness: List<ByteArray>?
+        val finalWitness: List<ByteArray>?,
+        /** The full previous transaction, when the creator included it. */
+        val nonWitnessUtxo: ByteArray? = null,
+        /** Every pair this phone does not interpret, in original order. */
+        val unknown: List<Pair<ByteArray, ByteArray>> = emptyList(),
+        /** Every pair as read, so re-encoding never drops or reorders anything. */
+        internal val entries: List<Pair<ByteArray, ByteArray>> = emptyList()
+    )
+
+    class PsbtOutput(
+        /** pubkey hex → master fingerprint (4) + path child numbers. */
+        val derivations: Map<String, Pair<ByteArray, List<Long>>>,
+        val unknown: List<Pair<ByteArray, ByteArray>>,
+        /** Every pair as read, so re-encoding never drops or reorders anything. */
+        internal val entries: List<Pair<ByteArray, ByteArray>> = emptyList()
     )
 
     class Parsed(
         val unsignedTxBytes: ByteArray,
         val tx: Tx,
-        val inputs: List<PsbtInput>
+        val inputs: List<PsbtInput>,
+        val outputs: List<PsbtOutput> = emptyList(),
+        val globalUnknown: List<Pair<ByteArray, ByteArray>> = emptyList(),
+        internal val globalEntries: List<Pair<ByteArray, ByteArray>> = emptyList()
     )
 
     /**
@@ -92,49 +110,79 @@ object Psbt {
         val r = ByteReader(bytes)
         require(r.bytes(5).contentEquals(MAGIC)) { "Not a PSBT (bad magic)" }
 
-        var unsignedTx: ByteArray? = null
-        readMap(r) { key, value ->
-            if(key[0].toInt() == GLOBAL_UNSIGNED_TX) unsignedTx = value
-        }
-        val txBytes = unsignedTx ?: throw IllegalArgumentException("PSBT has no unsigned transaction")
+        val globalEntries = readEntries(r)
+        val txBytes = globalEntries.firstOrNull { it.first[0].toInt() == GLOBAL_UNSIGNED_TX }?.second
+            ?: throw IllegalArgumentException("PSBT has no unsigned transaction")
         val tx = parseUnsignedTx(txBytes)
 
         val inputs = ArrayList<PsbtInput>()
         for(i in tx.inputs.indices) {
             var utxoValue: Long? = null
             var utxoScript: ByteArray? = null
+            var nonWitnessUtxo: ByteArray? = null
             val sigs = HashMap<String, ByteArray>()
             val derivations = HashMap<String, Pair<ByteArray, List<Long>>>()
             var finalWitness: List<ByteArray>? = null
-            readMap(r) { key, value ->
+            val unknown = ArrayList<Pair<ByteArray, ByteArray>>()
+            val entries = readEntries(r)
+            for((key, value) in entries) {
                 when(key[0].toInt()) {
+                    IN_NON_WITNESS_UTXO -> nonWitnessUtxo = value
                     IN_WITNESS_UTXO -> {
                         val vr = ByteReader(value)
                         utxoValue = vr.u64le()
                         utxoScript = vr.varBytes()
                     }
                     IN_PARTIAL_SIG -> sigs[key.copyOfRange(1, key.size).toHex()] = value
-                    IN_BIP32_DERIVATION -> {
-                        val vr = ByteReader(value)
-                        val fp = vr.bytes(4)
-                        val path = ArrayList<Long>()
-                        while(vr.remaining() >= 4) path.add(vr.u32le())
-                        derivations[key.copyOfRange(1, key.size).toHex()] = fp to path
-                    }
+                    IN_BIP32_DERIVATION -> derivations[key.copyOfRange(1, key.size).toHex()] = parseDerivation(value)
                     IN_FINAL_SCRIPTWITNESS -> {
                         val vr = ByteReader(value)
                         val count = vr.varInt()
                         finalWitness = List(count.toInt()) { vr.varBytes() }
                     }
+                    else -> unknown += key to value
                 }
             }
-            inputs.add(PsbtInput(utxoValue, utxoScript, sigs, derivations, finalWitness))
+            nonWitnessUtxo?.let { checkNonWitnessUtxo(i, it, tx.inputs[i], utxoValue, utxoScript) }
+            inputs.add(PsbtInput(utxoValue, utxoScript, sigs, derivations, finalWitness,
+                nonWitnessUtxo, unknown, entries))
         }
-        // output maps (ignored content-wise, but must be consumed when present)
-        for(i in tx.outputs.indices) {
-            if(r.remaining() > 0) readMap(r) { _, _ -> }
+        val outputs = tx.outputs.indices.map {
+            // some creators stop after the inputs; a missing output map reads as empty
+            val entries = if(r.remaining() > 0) readEntries(r) else emptyList()
+            val derivations = HashMap<String, Pair<ByteArray, List<Long>>>()
+            val unknown = ArrayList<Pair<ByteArray, ByteArray>>()
+            for((key, value) in entries) {
+                if(key[0].toInt() == OUT_BIP32_DERIVATION) {
+                    derivations[key.copyOfRange(1, key.size).toHex()] = parseDerivation(value)
+                } else {
+                    unknown += key to value
+                }
+            }
+            PsbtOutput(derivations, unknown, entries)
         }
-        return Parsed(txBytes, tx, inputs)
+        val globalUnknown = globalEntries.filter { it.first[0].toInt() != GLOBAL_UNSIGNED_TX }
+        return Parsed(txBytes, tx, inputs, outputs, globalUnknown, globalEntries)
+    }
+
+    private fun parseDerivation(value: ByteArray): Pair<ByteArray, List<Long>> {
+        val vr = ByteReader(value)
+        val fp = vr.bytes(4)
+        val path = ArrayList<Long>()
+        while(vr.remaining() >= 4) path.add(vr.u32le())
+        return fp to path
+    }
+
+    /**
+     * The full previous transaction must be the one the input spends, and must agree with
+     * the witness UTXO: a signer that trusted a different amount could be tricked into fees.
+     */
+    private fun checkNonWitnessUtxo(i: Int, raw: ByteArray, input: TxInput, witnessValue: Long?, witnessScript: ByteArray?) {
+        val prev = runCatching { RawTx.parse(raw) }.getOrNull()
+        val spent = prev?.takeIf { it.txid == input.prevTxid }?.outputs?.getOrNull(input.vout.toInt())
+        val agrees = spent != null && (witnessValue == null ||
+            (spent.value == witnessValue && witnessScript != null && spent.script.contentEquals(witnessScript)))
+        require(agrees) { "Input ${i + 1}: non-witness UTXO does not match the input" }
     }
 
     /**
@@ -166,30 +214,38 @@ object Psbt {
             val sighash = parsed.tx.bip143SighashAll(i, Scripts.p2pkhScriptCode(key.pubKey), value)
             mapOf(pubHex to Ecdsa.signForInput(sighash, key.privKey))
         }
-        return reencode(parsed, sigsPerInput)
+        return serialize(parsed, sigsPerInput)
     }
 
-    private fun reencode(parsed: Parsed, sigsPerInput: List<Map<String, ByteArray>>): ByteArray {
+    /**
+     * Writes [parsed] back out with every pair exactly as read, adding [extraSigs] (per
+     * input, pubkey hex to signature) as partial signatures at the end of each input map.
+     */
+    fun serialize(parsed: Parsed, extraSigs: List<Map<String, ByteArray>> = emptyList()): ByteArray {
         val w = ByteWriter()
         w.bytes(MAGIC)
-        writeEntry(w, byteArrayOf(GLOBAL_UNSIGNED_TX.toByte()), parsed.unsignedTxBytes)
+        for((key, value) in parsed.globalEntries) writeEntry(w, key, value)
         w.bytes(ByteArray(1))
         for((i, input) in parsed.inputs.withIndex()) {
-            if(input.witnessUtxoValue != null && input.witnessUtxoScript != null) {
-                writeEntry(w, byteArrayOf(IN_WITNESS_UTXO.toByte()),
-                    ByteWriter().u64le(input.witnessUtxoValue).varBytes(input.witnessUtxoScript).toByteArray())
-            }
-            for((pubHex, sig) in input.partialSigs + sigsPerInput[i]) {
-                writeEntry(w, byteArrayOf(IN_PARTIAL_SIG.toByte()) + pubHex.hexToBytes(), sig)
-            }
-            for((pubHex, deriv) in input.derivations) {
-                writeEntry(w, byteArrayOf(IN_BIP32_DERIVATION.toByte()) + pubHex.hexToBytes(),
-                    derivationValue(deriv.first, deriv.second))
+            for((key, value) in input.entries) writeEntry(w, key, value)
+            for((pubHex, sig) in extraSigs.getOrNull(i).orEmpty()) {
+                if(pubHex !in input.partialSigs) {
+                    writeEntry(w, byteArrayOf(IN_PARTIAL_SIG.toByte()) + pubHex.hexToBytes(), sig)
+                }
             }
             w.bytes(ByteArray(1))
         }
-        for(unused in parsed.tx.outputs) w.bytes(ByteArray(1))
+        for(j in parsed.tx.outputs.indices) {
+            for((key, value) in parsed.outputs.getOrNull(j)?.entries.orEmpty()) writeEntry(w, key, value)
+            w.bytes(ByteArray(1))
+        }
         return w.toByteArray()
+    }
+
+    private fun readEntries(r: ByteReader): List<Pair<ByteArray, ByteArray>> {
+        val entries = ArrayList<Pair<ByteArray, ByteArray>>()
+        readMap(r) { key, value -> entries += key to value }
+        return entries
     }
 
     private fun readMap(r: ByteReader, onEntry: (ByteArray, ByteArray) -> Unit) {
