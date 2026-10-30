@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
@@ -46,6 +47,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.Network
+import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import com.sparrowwallet.mobile.crypto.PaymentUri
 import com.sparrowwallet.mobile.electrum.WalletSnapshot
 import com.sparrowwallet.mobile.storage.SparrowLink
@@ -99,6 +101,7 @@ private sealed interface Screen {
 @Composable
 private fun App(repo: WalletRepository) {
     var screen by remember { mutableStateOf<Screen>(Screen.WalletList) }
+    var airGapped by remember { mutableStateOf(NetworkPolicy.blocked) }
 
     // one password opens a linked pair: silently unlock the counterpart with the same
     // password so switching between public and private needs no re-entry
@@ -135,10 +138,17 @@ private fun App(repo: WalletRepository) {
         }
     }
     Surface(modifier = Modifier.fillMaxSize()) {
-    Box(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
+    Column(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
+    if(airGapped) {
+        val radios by rememberRadios()
+        Box(modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 8.dp)) { AirGapPill(radioWarning(radios)) }
+    }
+    Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
         when(val s = screen) {
             is Screen.WalletList -> WalletListScreen(
                 repo = repo,
+                airGapped = airGapped,
+                onAirGapChanged = { airGapped = it },
                 onOpen = { screen = Screen.Unlock(it) },
                 onCreate = { screen = Screen.Create(repo.createNewMnemonic()) },
                 onRestore = { screen = Screen.Restore },
@@ -191,7 +201,20 @@ private fun App(repo: WalletRepository) {
                 onDeleted = { screen = Screen.WalletList },
                 onBack = { screen = Screen.WalletList }
             )
-            is Screen.Home -> if(s.data.scriptType == "MWEB") {
+            is Screen.Home -> if(s.data.scriptType == "MWEB" && airGapped) {
+                // the private layer is scanned and spent through mwebd, which needs peers
+                ScreenColumn {
+                    Text(s.name, style = MaterialTheme.typography.headlineSmall)
+                    Text("Private (MWEB) coins need the network. Turn off air-gapped mode to use them.",
+                        style = MaterialTheme.typography.bodyMedium)
+                    s.switched()?.let { paired ->
+                        OutlinedButton(onClick = { screen = paired }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Public wallet")
+                        }
+                    }
+                    BackButton(onClick = { screen = Screen.WalletList })
+                }
+            } else if(s.data.scriptType == "MWEB") {
                 MwebHomeScreen(
                     repo, s.name, s.data, s.linkedData,
                     onSend = { screen = Screen.Send(s) },
@@ -252,6 +275,7 @@ private fun App(repo: WalletRepository) {
     }
     }
     }
+    }
 }
 
 @Composable
@@ -276,6 +300,8 @@ private fun NetworkBadge(network: Network) {
 @Composable
 private fun WalletListScreen(
     repo: WalletRepository,
+    airGapped: Boolean,
+    onAirGapChanged: (Boolean) -> Unit,
     onOpen: (String) -> Unit,
     onCreate: () -> Unit,
     onRestore: () -> Unit,
@@ -355,6 +381,7 @@ private fun WalletListScreen(
                             setOrientationLocked(true)
                         })
                     },
+                    enabled = !airGapped,
                     modifier = Modifier.fillMaxWidth()
                 ) { Text("Import wallet from desktop") }
                 OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
@@ -368,8 +395,11 @@ private fun WalletListScreen(
         }
         pickError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
 
-        // background refresh: scheduled view-only checks + received-funds notifications
         val syncStore = remember { repo.syncStore }
+        AirGapSetting(repo, wallets.map { it.name }, airGapped, onAirGapChanged)
+        if(airGapped) return@ScreenColumn
+
+        // background refresh: scheduled view-only checks + received-funds notifications
         var interval by remember { mutableStateOf(syncStore.intervalMinutes) }
         var notify by remember { mutableStateOf(syncStore.notifyEnabled) }
         val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
@@ -406,6 +436,106 @@ private fun WalletListScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+/** The air-gapped switch: turning on needs a confirm, turning off every wallet's password. */
+@Composable
+private fun AirGapSetting(
+    repo: WalletRepository,
+    walletNames: List<String>,
+    airGapped: Boolean,
+    onChanged: (Boolean) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val settings = remember { context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE) }
+    var entering by remember { mutableStateOf(false) }
+    var leaving by remember { mutableStateOf(false) }
+
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Air-gapped mode", style = MaterialTheme.typography.bodyMedium)
+            Text("Signs PSBTs from a desktop watch-only wallet. Sync, sending, MWEB, prices and Sparrow Link are off.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = airGapped, onCheckedChange = { on -> if(on) entering = true else leaving = true })
+    }
+
+    if(entering) {
+        AlertDialog(
+            onDismissRequest = { entering = false },
+            title = { Text("Turn on air-gapped mode?") },
+            text = {
+                Text("This phone stops all network use. You sign transactions by scanning QR codes from " +
+                    "desktop Sparrow and showing the signed result back. Private (MWEB) coins cannot be " +
+                    "spent in this mode.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    AirGapMode.enter(settings, cancelWork = {
+                        val workManager = androidx.work.WorkManager.getInstance(context)
+                        workManager.cancelUniqueWork(SyncWorker.WORK_NAME)
+                        workManager.cancelUniqueWork("${SyncWorker.WORK_NAME}-now")
+                    })
+                    entering = false
+                    onChanged(true)
+                }) { Text("Turn on") }
+            },
+            dismissButton = { TextButton(onClick = { entering = false }) { Text("Cancel") } }
+        )
+    }
+
+    if(leaving) {
+        val passwords = remember { androidx.compose.runtime.mutableStateMapOf<String, String>() }
+        var error by remember { mutableStateOf<String?>(null) }
+        var busy by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { if(!busy) { leaving = false; passwords.clear(); error = null } },
+            title = { Text("Go back online?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Wallets kept offline will be on a device that connects to the internet. " +
+                        "Enter each wallet's password to continue.")
+                    for(name in walletNames) {
+                        OutlinedTextField(
+                            value = passwords[name] ?: "", onValueChange = { passwords[name] = it },
+                            label = { Text(name) },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !busy, onClick = {
+                    busy = true; error = null
+                    scope.launch {
+                        val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            AirGapMode.leave(settings, walletNames, passwords.toMap()) { n, p -> repo.unlock(n, p) }
+                        }
+                        busy = false
+                        when(result) {
+                            AirGapMode.LeaveResult.Left -> {
+                                leaving = false
+                                passwords.clear()
+                                SyncWorker.schedule(context, repo.syncStore.intervalMinutes)
+                                onChanged(false)
+                            }
+                            is AirGapMode.LeaveResult.WrongPassword -> error = "Wrong password for ${result.wallet}"
+                            is AirGapMode.LeaveResult.MissingPassword -> error = "Enter the password for ${result.wallet}"
+                        }
+                    }
+                }) { Text("Go online") }
+            },
+            dismissButton = {
+                TextButton(enabled = !busy, onClick = { leaving = false; passwords.clear(); error = null }) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -699,6 +829,7 @@ private fun TxDetailScreen(tx: TxInfo, onSaveLabel: ((String) -> Unit)? = null, 
     var usdNow by remember { mutableStateOf<Double?>(null) }
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(tx.txid) {
+        if(NetworkPolicy.blocked) return@LaunchedEffect
         usdNow = PriceService.currentUsd()
         if(tx.timestamp != null && tx.timestamp > 0) usdThen = PriceService.usdOn(context, tx.timestamp)
     }
@@ -829,12 +960,14 @@ private fun HomeScreen(
     var privateSnap by remember(data) { mutableStateOf(linkedData?.let { repo.cachedMwebSnapshot(it) }) }
     var usdNow by remember { mutableStateOf<Double?>(null) }
     var syncing by remember { mutableStateOf(false) }
+    // the mode only changes on the wallet list, so reading it once per entry is enough
+    val gapped = NetworkPolicy.blocked
     var status by remember(data) {
         mutableStateOf(
-            if(repo.cachedSnapshot(data) != null && !repo.snapshotFresh(data)) "Last known — refreshing…" else null
+            if(!gapped && repo.cachedSnapshot(data) != null && !repo.snapshotFresh(data)) "Last known — refreshing…" else null
         )
     }
-    LaunchedEffect(Unit) { usdNow = PriceService.currentUsd() }
+    LaunchedEffect(Unit) { if(!gapped) usdNow = PriceService.currentUsd() }
 
     // One wallet in two layers: refresh syncs the public side and the linked private
     // side together, and the status line reports both.
@@ -860,6 +993,7 @@ private fun HomeScreen(
     }
 
     LaunchedEffect(account) {
+        if(gapped) return@LaunchedEffect
         // refresh only when opened stale, at the configured interval, or on demand —
         // switching between screens/layers just shows the cached snapshot
         val maxAge = repo.syncStore.intervalMinutes.takeIf { it > 0 }?.let { it * 60_000L } ?: 60_000L
@@ -911,13 +1045,17 @@ private fun HomeScreen(
             else -> PillState.OK
         })
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onSend, modifier = Modifier.weight(1f)) { Text("Send") }
+            Button(onClick = onSend, enabled = !gapped, modifier = Modifier.weight(1f)) { Text("Send") }
             Button(onClick = { onReceive(snapshot?.firstUnusedReceiveIndex ?: 0) }, modifier = Modifier.weight(1f)) {
                 Text("Receive")
             }
-            OutlinedButton(onClick = { refresh() }, enabled = !syncing, modifier = Modifier.weight(1f)) {
+            OutlinedButton(onClick = { refresh() }, enabled = !syncing && !gapped, modifier = Modifier.weight(1f)) {
                 Text(if(syncing) "…" else "Refresh")
             }
+        }
+        if(gapped) {
+            Text("Off in air-gapped mode", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
         snapshot?.let { snap ->
@@ -949,10 +1087,10 @@ private fun HomeScreen(
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onDetails, modifier = Modifier.weight(1f)) { Text("Details") }
-            OutlinedButton(onClick = onServer, modifier = Modifier.weight(1f)) { Text("Server") }
+            OutlinedButton(onClick = onServer, enabled = !gapped, modifier = Modifier.weight(1f)) { Text("Server") }
             OutlinedButton(onClick = onSwitch, modifier = Modifier.weight(1f)) { Text("Wallets") }
         }
-        LabelSyncButton(onError = { status = it }, onPairing = onSyncLabels)
+        if(!gapped) LabelSyncButton(onError = { status = it }, onPairing = onSyncLabels)
         onSignPsbt?.let {
             OutlinedButton(onClick = it, modifier = Modifier.fillMaxWidth()) {
                 Text("Sign a transaction (PSBT)…")
@@ -1698,6 +1836,7 @@ private fun SendScreen(
     var feeRate by remember { mutableStateOf<Long?>(null) }
     var utxos by remember { mutableStateOf<List<Long>?>(null) }
     LaunchedEffect(Unit) {
+        if(NetworkPolicy.blocked) return@LaunchedEffect
         usdRate = PriceService.currentUsd()
         feeRate = runCatching { repo.currentFeeRate(network) }.getOrNull()
         utxos = publicData?.let { d ->

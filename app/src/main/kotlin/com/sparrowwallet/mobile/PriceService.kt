@@ -63,6 +63,9 @@ object PriceService {
             connection.connectTimeout = 10_000
             connection.readTimeout = 10_000
             connection.setRequestProperty("Accept", "application/json")
+            // no pooled keep-alive socket: one left idle when air-gapped mode turns on
+            // would still put its close on the wire afterwards
+            connection.setRequestProperty("Connection", "close")
             try {
                 if(connection.responseCode == 200) connection.inputStream.bufferedReader().readText() else null
             } finally {
