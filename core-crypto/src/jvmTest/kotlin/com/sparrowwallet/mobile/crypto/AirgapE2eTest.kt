@@ -8,7 +8,7 @@ import kotlin.test.assertEquals
 /**
  * Host side of the air-gapped emulator run (tools/airgap-e2e/README.md). Does nothing
  * unless AIRGAP_E2E_DIR is set. Writes unsigned.psbt: a desktop-style PSBT (full previous
- * transaction, proprietary pairs) for the abandon-seed testnet wallet the phone restores.
+ * transactions, proprietary pairs) for the abandon-seed testnet wallet the phone restores.
  * When the phone's result is saved there as signed.psbt, checks that only partial
  * signatures were added and that it finalizes to exactly what direct signing produces.
  */
@@ -26,9 +26,11 @@ class AirgapE2eTest {
 
     private val prevTx = Tx(2, listOf(TxInput("cc".repeat(32), 1, 0xFFFFFFFFL, ByteArray(107) { 3 })),
         listOf(TxOutput(1_500_000, Scripts.p2wpkhOutput(key0.pubKey))))
+    private val prevTx2 = Tx(2, listOf(TxInput("dd".repeat(32), 0, 0xFFFFFFFFL, ByteArray(0))),
+        listOf(TxOutput(5_000, destScript), TxOutput(700_000, Scripts.p2wpkhOutput(key1.pubKey))))
     private val inputs = listOf(
         SpendableInput(prevTx.txid(), 0, 1_500_000, key0),
-        SpendableInput("bb".repeat(32), 1, 700_000, key1)
+        SpendableInput(prevTx2.txid(), 1, 700_000, key1)
     )
 
     private fun unsignedPsbt(): ByteArray {
@@ -39,6 +41,7 @@ class AirgapE2eTest {
         return PsbtFixtures.edit(base) { maps ->
             maps[0] += (byteArrayOf(0xFC.toByte(), 0x03) + "e2e".encodeToByteArray()) to byteArrayOf(1)
             maps[1].add(0, byteArrayOf(0x00) to prevTx.serialize())
+            maps[2].add(0, byteArrayOf(0x00) to prevTx2.serialize())
             maps[4] += (byteArrayOf(0xFC.toByte(), 0x03) + "e2e".encodeToByteArray()) to byteArrayOf(2)
         }
     }

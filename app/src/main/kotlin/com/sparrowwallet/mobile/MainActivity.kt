@@ -1530,7 +1530,7 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
             }
         }
         review?.onSuccess { if(signed == null) PsbtReviewCard(it) }
-        (error ?: review?.exceptionOrNull()?.let { it.message ?: "Not a valid PSBT" })?.let {
+        (error ?: review?.exceptionOrNull()?.let { it.message ?: "Not a valid PSBT" } ?: review?.getOrNull()?.refusal)?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }
         if(signed == null) {
@@ -1544,7 +1544,7 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
                         error = t.message ?: "Could not sign the PSBT"
                     }
                 },
-                enabled = review?.isSuccess == true && !scanning,
+                enabled = review?.getOrNull()?.refusal == null && review?.isSuccess == true && !scanning,
                 modifier = Modifier.fillMaxWidth()
             ) { Text("Sign with this wallet") }
         }

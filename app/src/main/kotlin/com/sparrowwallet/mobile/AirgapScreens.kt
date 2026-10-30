@@ -193,7 +193,7 @@ fun ExportToDesktopScreen(repo: WalletRepository, data: VaultData, onBack: () ->
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Text("On the PC, with the Litecoin coin selected: New Wallet, Native Segwit, Airgapped Hardware " +
-            "Wallet, Passport, Scan. Point the webcam at this code.",
+            "Wallet, Sparrow Mobile, Scan. Point the webcam at this code.",
             style = MaterialTheme.typography.bodyMedium)
         AnimatedUrQr(encoder)
         BackButton(onClick = onBack)

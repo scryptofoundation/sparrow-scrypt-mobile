@@ -69,6 +69,7 @@ class PsbtSignerTest {
         var key = master
         for(child in path) key = key.deriveChild(child)
         return edit(fixturePsbt()) { maps ->
+            maps[2].removeAll { it.first[0].toInt() == 0x00 } // the relabelled coin has no previous tx here
             maps[2].replaceAll { (k, v) ->
                 when(k[0].toInt()) {
                     0x01 -> k to ByteWriter().u64le(30_000_000).varBytes(Scripts.p2wpkhOutput(key.pubKey)).toByteArray()
@@ -121,6 +122,7 @@ class PsbtSignerTest {
 
     @Test fun witnessUtxoForOtherKeyIsRefused() {
         val swapped = edit(fixturePsbt()) { maps ->
+            maps[1].removeAll { it.first[0].toInt() == 0x00 } // else parsing already refuses the swap
             val i = maps[1].indexOfFirst { it.first[0].toInt() == 0x01 }
             maps[1][i] = maps[1][i].first to ByteWriter().u64le(50_000_000).varBytes(destScript).toByteArray()
         }
@@ -167,5 +169,39 @@ class PsbtSignerTest {
         val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript)
         val signed = PsbtSigner.sign(Psbt.parse(fixturePsbt()), master, net, account)
         assertContentEquals(direct.tx.serialize(), Psbt.finalize(Psbt.parse(signed)).serialize())
+    }
+
+    // Two signing sessions, each lying about a different input's amount, would combine into a
+    // transaction whose fee the user never saw. The full previous transactions pin the amounts.
+    private val prevTxRefusal = "Inputs 1, 2 are missing the full previous transaction. When a PSBT spends " +
+        "more than one of this wallet's coins, the phone needs each one to check the fee. On the PC, " +
+        "import this wallet with the Sparrow Mobile option."
+
+    @Test fun severalOfOurInputsWithoutPrevTxsAreRefused() {
+        val parsed = Psbt.parse(PsbtFixtures.withoutPrevTxs())
+        val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(parsed, master, net, account) }
+        assertEquals(prevTxRefusal, e.message)
+        assertEquals(prevTxRefusal, PsbtSigner.review(parsed, master, net, account).refusal)
+    }
+
+    @Test fun oneMissingPrevTxIsNamed() {
+        val half = edit(fixturePsbt()) { maps -> maps[2].removeAll { it.first[0].toInt() == 0x00 } }
+        val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(Psbt.parse(half), master, net, account) }
+        assertEquals(prevTxRefusal.replace("Inputs 1, 2 are", "Input 2 is"), e.message)
+    }
+
+    @Test fun singleOwnInputNeedsNoPrevTx() {
+        // input 2 belongs to another signer: one signature from this wallet commits to its own amount
+        val shared = edit(PsbtFixtures.withoutPrevTxs()) { maps ->
+            val i = maps[2].indexOfFirst { it.first[0].toInt() == 0x06 }
+            maps[2][i] = maps[2][i].first to derivationValue(ByteArray(4), accountPath(0, 1))
+        }
+        val parsed = Psbt.parse(shared)
+        assertNull(PsbtSigner.review(parsed, master, net, account).refusal)
+        assertEquals(1, Psbt.parse(PsbtSigner.sign(parsed, master, net, account)).inputs[0].partialSigs.size)
+    }
+
+    @Test fun reviewOfACompletePsbtHasNoRefusal() {
+        assertNull(PsbtSigner.review(Psbt.parse(fixturePsbt()), master, net, account).refusal)
     }
 }

@@ -11,9 +11,15 @@ object PsbtFixtures {
     val changeKey = account.deriveChild(1).deriveChild(0)
     val destKey = account.deriveChild(0).deriveChild(9)
 
+    /** The transactions that created the two coins the fixture spends. */
+    val prevA = Tx(2, listOf(TxInput("aa".repeat(32), 0, 0xFFFFFFFFL, ByteArray(0))),
+        listOf(TxOutput(50_000_000, Scripts.p2wpkhOutput(key0.pubKey))))
+    val prevB = Tx(2, listOf(TxInput("bb".repeat(32), 4, 0xFFFFFFFFL, ByteArray(0))),
+        listOf(TxOutput(1_000, Scripts.p2wpkhOutput(destKey.pubKey)), TxOutput(30_000_000, Scripts.p2wpkhOutput(key1.pubKey))))
+
     val inputs = listOf(
-        SpendableInput("aa".repeat(32), 0, 50_000_000, key0),
-        SpendableInput("bb".repeat(32), 1, 30_000_000, key1)
+        SpendableInput(prevA.txid(), 0, 50_000_000, key0),
+        SpendableInput(prevB.txid(), 1, 30_000_000, key1)
     )
     val destScript = Scripts.p2wpkhOutput(destKey.pubKey)
     val changeScript = Scripts.p2wpkhOutput(changeKey.pubKey)
@@ -36,8 +42,14 @@ object PsbtFixtures {
         changePath = accountPath(1, 0)
     )
 
-    /** dest 0.6 LTC + change, from both inputs (0.8 LTC in). */
-    fun fixturePsbt(): ByteArray =
+    /** dest 0.6 LTC + change, from both inputs (0.8 LTC in), each with its previous transaction. */
+    fun fixturePsbt(): ByteArray = edit(withoutPrevTxs()) { maps ->
+        maps[1].add(0, byteArrayOf(0x00) to prevA.serialize())
+        maps[2].add(0, byteArrayOf(0x00) to prevB.serialize())
+    }
+
+    /** The same spend as Passport-style desktop QRs send it: witness UTXOs only. */
+    fun withoutPrevTxs(): ByteArray =
         createPsbt(TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript))
 
     /** The PSBT's maps in order: global, then one per input, then one per output. */

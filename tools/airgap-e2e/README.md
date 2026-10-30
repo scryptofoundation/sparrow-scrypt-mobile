@@ -23,8 +23,8 @@ It does nothing unless `AIRGAP_E2E_DIR` is set:
 AIRGAP_E2E_DIR=<dir> ./gradlew :core-crypto:jvmTest --tests '*AirgapE2e*' --rerun
 ```
 
-The first run writes `<dir>/unsigned.psbt`. It is a desktop-style PSBT, with the full
-previous transaction and proprietary pairs, for the `abandon ... about` seed on testnet.
+The first run writes `<dir>/unsigned.psbt`. It is a desktop-style PSBT, with both inputs' full
+previous transactions and proprietary pairs, for the `abandon ... about` seed on testnet.
 
 If `<dir>/signed.psbt` exists, the run also checks it:
 - only partial signatures were added;
