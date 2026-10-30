@@ -62,7 +62,7 @@ object PsbtSigner {
         val fee = totalIn?.let { it - totalOut }
         val vsize = parsed.unsignedTxBytes.size + ceil((2 + P2WPKH_WITNESS_BYTES * inputs.size) / 4.0)
         val rate = fee?.let { round(it / vsize * 100) / 100 }
-        return PsbtReview(inputs, outputs, totalIn, totalOut, fee, rate, prevTxRefusal(parsed, master, accountPath))
+        return PsbtReview(inputs, outputs, totalIn, totalOut, fee, rate, prevTxRefusal(parsed))
     }
 
     fun sign(parsed: Psbt.Parsed, master: HDKey, network: Network, accountPath: List<Long>): ByteArray {
@@ -81,24 +81,23 @@ object PsbtSigner {
             mapOf(pubHex to Ecdsa.signForInput(sighash, key.privKey))
         }
         require(ours > 0) { "This PSBT has no inputs belonging to this wallet" }
-        prevTxRefusal(parsed, master, accountPath)?.let { throw IllegalArgumentException(it) }
+        prevTxRefusal(parsed)?.let { throw IllegalArgumentException(it) }
         return Psbt.serialize(parsed, sigs)
     }
 
     /**
-     * A BIP143 signature commits only to its own input's amount. Signing two of our inputs in
-     * two sessions, each lying about the other input's amount, yields a transaction whose real
-     * fee was never shown. Parsing checks each full previous transaction against its witness
-     * UTXO, so requiring them whenever more than one input is ours pins every amount.
+     * A BIP143 signature commits only to its own input's amount. Two sessions, each signing one
+     * input while lying about the other's amount, yield a transaction whose real fee was never
+     * shown. Which inputs are ours is the PSBT's own claim (a desktop can drop a derivation), so
+     * whenever there is more than one input every one must carry its full previous transaction,
+     * which parsing checks against the witness UTXO. A single input's amount is in its signature.
      */
-    private fun prevTxRefusal(parsed: Psbt.Parsed, master: HDKey, accountPath: List<Long>): String? {
-        val ours = parsed.inputs.withIndex().filter { ourDerivation(it.value.derivations, master, accountPath) != null }
-        val missing = ours.filter { it.value.nonWitnessUtxo == null }.map { it.index + 1 }
-        if(ours.size < 2 || missing.isEmpty()) return null
+    private fun prevTxRefusal(parsed: Psbt.Parsed): String? {
+        val missing = parsed.inputs.withIndex().filter { it.value.nonWitnessUtxo == null }.map { it.index + 1 }
+        if(parsed.inputs.size < 2 || missing.isEmpty()) return null
         val which = if(missing.size == 1) "Input ${missing[0]} is" else "Inputs ${missing.joinToString(", ")} are"
-        return "$which missing the full previous transaction. When a PSBT spends more than one of this " +
-            "wallet's coins, the phone needs each one to check the fee. On the PC, import this wallet " +
-            "with the Sparrow Mobile option."
+        return "$which missing the full previous transaction. When a PSBT has more than one input, the " +
+            "phone needs each one to check the fee. On the PC, import this wallet with the Sparrow Mobile option."
     }
 
     /** The derivation naming this wallet's account (pubkey hex to path), not just the first one listed. */

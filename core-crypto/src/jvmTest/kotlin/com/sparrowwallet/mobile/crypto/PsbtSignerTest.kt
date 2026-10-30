@@ -64,19 +64,19 @@ class PsbtSignerTest {
         }
     }
 
-    /** Input 1 relabelled as one of our keys outside this account, with a matching witness UTXO. */
+    /** Input 2 spends a coin of this seed at [path] instead, with its previous transaction. */
     private fun withInput1At(path: List<Long>): ByteArray {
         var key = master
         for(child in path) key = key.deriveChild(child)
-        return edit(fixturePsbt()) { maps ->
-            maps[2].removeAll { it.first[0].toInt() == 0x00 } // the relabelled coin has no previous tx here
-            maps[2].replaceAll { (k, v) ->
-                when(k[0].toInt()) {
-                    0x01 -> k to ByteWriter().u64le(30_000_000).varBytes(Scripts.p2wpkhOutput(key.pubKey)).toByteArray()
-                    0x06 -> (byteArrayOf(0x06) + key.pubKey) to derivationValue(master.fingerprint, path)
-                    else -> k to v
-                }
-            }
+        val prev = Tx(2, listOf(TxInput("ee".repeat(32), 0, 0xFFFFFFFFL, ByteArray(0))),
+            listOf(TxOutput(1_000, destScript), TxOutput(30_000_000, Scripts.p2wpkhOutput(key.pubKey))))
+        val spend = listOf(inputs[0], SpendableInput(prev.txid(), 1, 30_000_000, key))
+        val psbt = Psbt.create(TxBuilder.buildUnsigned(spend, destScript, 60_000_000, 2, changeScript), master.fingerprint,
+            pathFor = { if(it.key == PsbtFixtures.key0) accountPath(0, 0) else path },
+            changeIndex = 1, changePubKey = PsbtFixtures.changeKey.pubKey, changePath = accountPath(1, 0))
+        return edit(psbt) { maps ->
+            maps[1].add(0, byteArrayOf(0x00) to PsbtFixtures.prevA.serialize())
+            maps[2].add(0, byteArrayOf(0x00) to prev.serialize())
         }
     }
 
@@ -173,9 +173,9 @@ class PsbtSignerTest {
 
     // Two signing sessions, each lying about a different input's amount, would combine into a
     // transaction whose fee the user never saw. The full previous transactions pin the amounts.
-    private val prevTxRefusal = "Inputs 1, 2 are missing the full previous transaction. When a PSBT spends " +
-        "more than one of this wallet's coins, the phone needs each one to check the fee. On the PC, " +
-        "import this wallet with the Sparrow Mobile option."
+    private val prevTxRefusal = "Inputs 1, 2 are missing the full previous transaction. When a PSBT has " +
+        "more than one input, the phone needs each one to check the fee. On the PC, import this wallet " +
+        "with the Sparrow Mobile option."
 
     @Test fun severalOfOurInputsWithoutPrevTxsAreRefused() {
         val parsed = Psbt.parse(PsbtFixtures.withoutPrevTxs())
@@ -190,13 +190,20 @@ class PsbtSignerTest {
         assertEquals(prevTxRefusal.replace("Inputs 1, 2 are", "Input 2 is"), e.message)
     }
 
-    @Test fun singleOwnInputNeedsNoPrevTx() {
-        // input 2 belongs to another signer: one signature from this wallet commits to its own amount
-        val shared = edit(PsbtFixtures.withoutPrevTxs()) { maps ->
-            val i = maps[2].indexOfFirst { it.first[0].toInt() == 0x06 }
-            maps[2][i] = maps[2][i].first to derivationValue(ByteArray(4), accountPath(0, 1))
-        }
-        val parsed = Psbt.parse(shared)
+    @Test fun inputHiddenAsForeignStillNeedsPrevTx() {
+        // the desktop drops our derivation from input 2 in one session and from input 1 in the next:
+        // each session signs one input, and the other input's amount in the shown fee is unchecked
+        val hidden = edit(PsbtFixtures.withoutPrevTxs()) { maps -> maps[2].removeAll { it.first[0].toInt() == 0x06 } }
+        val parsed = Psbt.parse(hidden)
+        val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(parsed, master, net, account) }
+        assertEquals(prevTxRefusal, e.message)
+        assertEquals(listOf(true, false), PsbtSigner.review(parsed, master, net, account).inputs.map { it.ours })
+    }
+
+    @Test fun singleInputNeedsNoPrevTx() {
+        // the one signature commits to the only input's amount, so the shown fee is the real one
+        val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(inputs.take(1), destScript, 40_000_000, 2, changeScript))
+        val parsed = Psbt.parse(psbt)
         assertNull(PsbtSigner.review(parsed, master, net, account).refusal)
         assertEquals(1, Psbt.parse(PsbtSigner.sign(parsed, master, net, account)).inputs[0].partialSigs.size)
     }
