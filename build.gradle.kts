@@ -8,7 +8,9 @@ plugins {
 
 // Sources live on /mnt/c (visible to Windows and WSL), but build output goes to the
 // native filesystem — AGP's heavy I/O is unreliable and slow on the 9p /mnt/c mount.
-val buildRoot = File(System.getProperty("user.home"), ".sparrow-ltc-mobile-build")
+// -PsparrowBuildRoot=<dir> gives a second checkout (a worktree) its own output folder.
+val buildRoot = (findProperty("sparrowBuildRoot") as String?)?.let(::File)
+    ?: File(System.getProperty("user.home"), ".sparrow-ltc-mobile-build")
 layout.buildDirectory.set(File(buildRoot, "root"))
 subprojects {
     layout.buildDirectory.set(File(buildRoot, name))
