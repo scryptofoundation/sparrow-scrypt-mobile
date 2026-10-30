@@ -59,6 +59,7 @@ import java.util.Locale
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AirGapMode.load(getSharedPreferences("settings", MODE_PRIVATE))
         val repo = WalletRepository(applicationContext)
         SyncWorker.schedule(applicationContext, repo.syncStore.intervalMinutes)
         setContent { App(repo) }

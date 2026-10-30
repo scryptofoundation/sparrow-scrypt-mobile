@@ -32,6 +32,8 @@ import java.util.concurrent.TimeUnit
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
+        // WorkManager can wake the process without the activity, so read the flag here too
+        AirGapMode.load(applicationContext.getSharedPreferences("settings", Context.MODE_PRIVATE))
         runChecks(applicationContext)
         return Result.success()
     }
