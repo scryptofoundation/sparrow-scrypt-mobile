@@ -48,6 +48,8 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation(libs.kotlinx.serialization.json)
+    // BC-UR animated QR codes, the same version desktop Sparrow uses
+    implementation("com.sparrowwallet:hummingbird:1.7.6")
     // mwebd scanner: gomobile-built daemon + the same gRPC client the desktop uses
     implementation(files("libs/mwebd.aar"))
     implementation("io.grpc:grpc-okhttp:1.79.0")
