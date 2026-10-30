@@ -97,6 +97,7 @@ private sealed interface Screen {
     data class LabelSync(val home: Home, val pairing: SparrowLink.Pairing) : Screen
     data class PsbtSign(val home: Home, val unsigned: WalletRepository.UnsignedSendPreview) : Screen
     data class SignPsbt(val home: Home) : Screen
+    data class ExportToDesktop(val home: Home) : Screen
 }
 
 @Composable
@@ -237,7 +238,8 @@ private fun App(repo: WalletRepository) {
                     onSwitchPair = s.switched()?.let { paired -> { screen = paired } },
                     onTx = { tx -> screen = Screen.TxDetail(s, tx) },
                     onSyncLabels = { pairing -> screen = Screen.LabelSync(s, pairing) },
-                    onSignPsbt = { screen = Screen.SignPsbt(s) }
+                    onSignPsbt = { screen = Screen.SignPsbt(s) },
+                    onExport = { screen = Screen.ExportToDesktop(s) }
                 )
             }
             is Screen.Receive -> ReceiveScreen(repo, s.home, s.startIndex, onBack = { screen = s.home })
@@ -248,8 +250,11 @@ private fun App(repo: WalletRepository) {
             )
             is Screen.PsbtSign -> PsbtSignScreen(repo, s.home, s.unsigned, onBack = { screen = s.home })
             is Screen.SignPsbt -> SignPsbtScreen(repo, s.home, onBack = { screen = s.home })
+            is Screen.ExportToDesktop -> ExportToDesktopScreen(repo, s.home.data, onBack = { screen = s.home })
             is Screen.Server -> ServerScreen(repo, s.home.data, onBack = { screen = s.home })
-            is Screen.Details -> DetailsScreen(repo, s.home.name, s.home.data, onBack = { screen = s.home })
+            is Screen.Details -> DetailsScreen(repo, s.home.name, s.home.data,
+                onExport = { screen = Screen.ExportToDesktop(s.home) },
+                onBack = { screen = s.home })
             is Screen.TxDetail -> TxDetailScreen(
                 s.tx,
                 onSaveLabel = if(s.home.password.isNotEmpty()) { label: String ->
@@ -951,7 +956,8 @@ private fun HomeScreen(
     onSwitchPair: (() -> Unit)? = null,
     onTx: (TxInfo) -> Unit = {},
     onSyncLabels: (SparrowLink.Pairing) -> Unit = {},
-    onSignPsbt: (() -> Unit)? = null
+    onSignPsbt: (() -> Unit)? = null,
+    onExport: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val network = remember(data) { repo.network(data) }
@@ -1095,6 +1101,11 @@ private fun HomeScreen(
         onSignPsbt?.let {
             OutlinedButton(onClick = it, modifier = Modifier.fillMaxWidth()) {
                 Text("Sign a transaction (PSBT)…")
+            }
+        }
+        if(gapped) {
+            OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
+                Text("Export to desktop (air-gapped)")
             }
         }
     }
@@ -1468,12 +1479,17 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
     val walletData = if(home.data.scriptType != "MWEB") home.data
                      else home.linkedData?.takeIf { it.scriptType != "MWEB" } ?: home.data
     var inputText by remember { mutableStateOf("") }
-    var signed by remember { mutableStateOf<String?>(null) }
+    var signed by remember { mutableStateOf<WalletRepository.SignedPsbt?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var copied by remember { mutableStateOf(false) }
-    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
-        result.contents?.let { inputText = it.trim(); error = null; signed = null }
+    var scanning by remember { mutableStateOf(false) }
+    var showText by remember { mutableStateOf(false) }
+    val collector = remember { AirgapUr.PsbtCollector() }
+    // the review is what the user approves; a PSBT that fails it can't be signed
+    val psbt = remember(inputText) {
+        inputText.trim().takeIf { it.isNotEmpty() }?.let { runCatching { Psbt.fromBase64(it) } }
     }
+    val review = remember(psbt) { psbt?.mapCatching { repo.reviewPsbt(walletData, it) } }
 
     ScreenColumn {
         Column {
@@ -1484,51 +1500,67 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
         }
 
         SectionLabel("Unsigned PSBT")
-        OutlinedTextField(
-            value = inputText,
-            onValueChange = { inputText = it; error = null; signed = null },
-            label = { Text("PSBT (base64)") },
-            maxLines = 4,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { scanner.launch(paymentScanOptions()) },
-                modifier = Modifier.weight(1f)) { Text("Scan QR") }
-            OutlinedButton(
+        if(scanning) {
+            UrScanner(
+                onFrame = collector::receive,
+                onDone = { bytes -> inputText = Psbt.toBase64(bytes); error = null; signed = null; scanning = false }
+            )
+            OutlinedButton(onClick = { scanning = false }, modifier = Modifier.fillMaxWidth()) { Text("Cancel scan") }
+        } else {
+            OutlinedTextField(
+                value = inputText,
+                onValueChange = { inputText = it; error = null; signed = null },
+                label = { Text("PSBT (base64)") },
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { scanning = true; signed = null },
+                    modifier = Modifier.weight(1f)) { Text("Scan QR") }
+                OutlinedButton(
+                    onClick = {
+                        clipboard.getText()?.text?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                            inputText = it; error = null; signed = null
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Paste") }
+            }
+        }
+        review?.onSuccess { if(signed == null) PsbtReviewCard(it) }
+        (error ?: review?.exceptionOrNull()?.let { it.message ?: "Not a valid PSBT" })?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        if(signed == null) {
+            Button(
                 onClick = {
-                    clipboard.getText()?.text?.trim()?.takeIf { it.isNotEmpty() }?.let {
-                        inputText = it; error = null; signed = null
+                    try {
+                        signed = repo.signPsbt(walletData, psbt!!.getOrThrow())
+                        copied = false
+                        showText = false
+                    } catch(t: Throwable) {
+                        error = t.message ?: "Could not sign the PSBT"
                     }
                 },
-                modifier = Modifier.weight(1f)
-            ) { Text("Paste") }
+                enabled = review?.isSuccess == true && !scanning,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Sign with this wallet") }
         }
-        error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-        Button(
-            onClick = {
-                try {
-                    signed = repo.signPsbt(walletData, Psbt.fromBase64(inputText)).base64
-                    copied = false
-                } catch(t: Throwable) {
-                    error = t.message ?: "Could not sign the PSBT"
-                }
-            },
-            enabled = inputText.isNotBlank() && signed == null,
-            modifier = Modifier.fillMaxWidth()
-        ) { Text("Sign with this wallet") }
 
         signed?.let { result ->
             Text("✓ Signed", style = MaterialTheme.typography.titleMedium, color = kindColor(TxKind.RECEIVED))
-            SectionLabel("Give this back to the coordinator")
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    QrImage(result)
-                }
+            SectionLabel("Show this to desktop Sparrow")
+            AnimatedUrQr(remember(result) { AirgapUr.psbtEncoder(result.bytes) })
+            if(showText) {
+                Text(result.base64, fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall)
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { showText = !showText }, modifier = Modifier.weight(1f)) {
+                    Text(if(showText) "Hide text" else "Show as text")
+                }
                 OutlinedButton(
                     onClick = {
-                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(result))
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(result.base64))
                         copied = true
                     },
                     modifier = Modifier.weight(1f)
@@ -1537,7 +1569,7 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
                     onClick = {
                         val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                             type = "text/plain"
-                            putExtra(android.content.Intent.EXTRA_TEXT, result)
+                            putExtra(android.content.Intent.EXTRA_TEXT, result.base64)
                         }
                         context.startActivity(android.content.Intent.createChooser(intent, "Share signed PSBT"))
                     },
@@ -1593,7 +1625,7 @@ private fun LabelSyncScreen(
 }
 
 @Composable
-private fun QrImage(text: String) {
+internal fun QrImage(text: String, contentDescription: String = "Address QR code") {
     val bitmap = remember(text) {
         val size = 512
         val matrix = com.google.zxing.qrcode.QRCodeWriter().encode(
@@ -1607,7 +1639,7 @@ private fun QrImage(text: String) {
     }
     androidx.compose.foundation.Image(
         bitmap = bitmap.asImageBitmap(),
-        contentDescription = "Address QR code",
+        contentDescription = contentDescription,
         modifier = Modifier.fillMaxWidth()
     )
 }
@@ -2269,7 +2301,7 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
 }
 
 @Composable
-private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData, onBack: () -> Unit) {
+private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData, onExport: () -> Unit, onBack: () -> Unit) {
     var password by remember { mutableStateOf("") }
     var revealed by remember { mutableStateOf<VaultData?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -2328,6 +2360,11 @@ private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData,
                         "aren't on mobile yet (needs the mwebd scanner); funds sent here are visible on desktop.",
                         style = MaterialTheme.typography.bodySmall)
                 }
+            }
+        }
+        if(data.scriptType != "MWEB") {
+            OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
+                Text("Export to desktop (air-gapped)")
             }
         }
         BackButton(onClick = onBack)

@@ -339,6 +339,9 @@ class WalletRepository(context: Context) {
 
     fun accountKey(data: VaultData): HDKey = masterKey(data).derivePath(data.derivationPath)
 
+    /** The account's derivation as child numbers (hardened ones with the 0x80000000 bit). */
+    fun accountPath(data: VaultData): List<Long> = parsePathChildren(data.derivationPath)
+
     fun receiveAddress(account: HDKey, index: Int, network: Network): String =
         Addresses.p2wpkh(account.deriveChild(0).deriveChild(index.toLong()).pubKey, network.bech32Hrp)
 
@@ -667,7 +670,7 @@ class WalletRepository(context: Context) {
 
     /** What a PSBT does, for the user to check before [signPsbt]. */
     fun reviewPsbt(data: VaultData, psbt: ByteArray): PsbtReview =
-        PsbtSigner.review(Psbt.parse(psbt), masterKey(data), network(data), parsePathChildren(data.derivationPath))
+        PsbtSigner.review(Psbt.parse(psbt), masterKey(data), network(data), accountPath(data))
 
     class SignedPsbt(val bytes: ByteArray, val base64: String)
 

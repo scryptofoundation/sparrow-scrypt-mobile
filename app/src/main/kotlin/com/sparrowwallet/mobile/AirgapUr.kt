@@ -41,8 +41,9 @@ object AirgapUr {
         return CryptoAccount(master.fingerprint, listOf(output)).toUR()
     }
 
-    fun psbtEncoder(psbt: ByteArray): UREncoder =
-        UREncoder(CryptoPSBT(psbt).toUR(), MAX_FRAGMENT, MIN_FRAGMENT, 0)
+    fun encoder(ur: UR): UREncoder = UREncoder(ur, MAX_FRAGMENT, MIN_FRAGMENT, 0)
+
+    fun psbtEncoder(psbt: ByteArray): UREncoder = encoder(CryptoPSBT(psbt).toUR())
 
     sealed interface Progress {
         data object Ignored : Progress
