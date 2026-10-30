@@ -49,6 +49,7 @@ import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import com.sparrowwallet.mobile.crypto.PaymentUri
+import com.sparrowwallet.mobile.crypto.Psbt
 import com.sparrowwallet.mobile.electrum.WalletSnapshot
 import com.sparrowwallet.mobile.storage.SparrowLink
 import com.sparrowwallet.mobile.storage.VaultData
@@ -1506,7 +1507,7 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
         Button(
             onClick = {
                 try {
-                    signed = repo.signPsbt(walletData, inputText)
+                    signed = repo.signPsbt(walletData, Psbt.fromBase64(inputText)).base64
                     copied = false
                 } catch(t: Throwable) {
                     error = t.message ?: "Could not sign the PSBT"

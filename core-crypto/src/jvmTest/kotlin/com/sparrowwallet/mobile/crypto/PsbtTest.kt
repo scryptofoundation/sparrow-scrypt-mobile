@@ -12,39 +12,15 @@ import kotlin.test.assertFailsWith
  * and the txid must be the same before and after signing.
  */
 class PsbtTest {
-    private val hardened = 0x80000000L
-    private val master = HDKey.fromSeed(Bip39.seed(
-        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ""))
-    private val account = master.derivePath("m/84'/2'/0'")
-    private val key0 = account.deriveChild(0).deriveChild(0)
-    private val key1 = account.deriveChild(0).deriveChild(1)
-    private val changeKey = account.deriveChild(1).deriveChild(0)
-    private val destKey = account.deriveChild(0).deriveChild(9)
-
-    private val inputs = listOf(
-        SpendableInput("aa".repeat(32), 0, 50_000_000, key0),
-        SpendableInput("bb".repeat(32), 1, 30_000_000, key1)
-    )
-    private val destScript = Scripts.p2wpkhOutput(destKey.pubKey)
-    private val changeScript = Scripts.p2wpkhOutput(changeKey.pubKey)
-
-    private fun accountPath(chain: Long, index: Long) =
-        listOf(84L + hardened, 2L + hardened, 0L + hardened, chain, index)
-
-    private fun createPsbt(unsigned: UnsignedBuild): ByteArray = Psbt.create(
-        unsigned,
-        masterFingerprint = master.fingerprint,
-        pathFor = { input ->
-            when(input.key) {
-                key0 -> accountPath(0, 0)
-                key1 -> accountPath(0, 1)
-                else -> error("unexpected input key")
-            }
-        },
-        changeIndex = 1,
-        changePubKey = changeKey.pubKey,
-        changePath = accountPath(1, 0)
-    )
+    private val master = PsbtFixtures.master
+    private val key0 = PsbtFixtures.key0
+    private val key1 = PsbtFixtures.key1
+    private val changeKey = PsbtFixtures.changeKey
+    private val inputs = PsbtFixtures.inputs
+    private val destScript = PsbtFixtures.destScript
+    private val changeScript = PsbtFixtures.changeScript
+    private fun accountPath(chain: Long, index: Long) = PsbtFixtures.accountPath(chain, index)
+    private fun createPsbt(unsigned: UnsignedBuild) = PsbtFixtures.createPsbt(unsigned)
 
     @Test
     fun psbtPathMatchesDirectSigningExactly() {
@@ -94,30 +70,8 @@ class PsbtTest {
         listOf(TxOutput(value, Scripts.p2wpkhOutput(key0.pubKey)), TxOutput(1_000, destScript))
     )
 
-    private fun splitMaps(psbt: ByteArray): List<MutableList<Pair<ByteArray, ByteArray>>> {
-        val r = ByteReader(psbt)
-        r.bytes(5)
-        val maps = ArrayList<MutableList<Pair<ByteArray, ByteArray>>>()
-        while(r.remaining() > 0) {
-            val map = ArrayList<Pair<ByteArray, ByteArray>>()
-            while(true) {
-                val keyLen = r.varInt()
-                if(keyLen == 0L) break
-                map += r.bytes(keyLen.toInt()) to r.varBytes()
-            }
-            maps += map
-        }
-        return maps
-    }
-
-    private fun joinMaps(maps: List<List<Pair<ByteArray, ByteArray>>>): ByteArray {
-        val w = ByteWriter().bytes(byteArrayOf(0x70, 0x73, 0x62, 0x74, 0xFF.toByte()))
-        for(map in maps) {
-            for((k, v) in map) w.varBytes(k).varBytes(v)
-            w.u8(0)
-        }
-        return w.toByteArray()
-    }
+    private fun splitMaps(psbt: ByteArray) = PsbtFixtures.splitMaps(psbt)
+    private fun joinMaps(maps: List<List<Pair<ByteArray, ByteArray>>>) = PsbtFixtures.joinMaps(maps)
 
     /**
      * What desktop Sparrow sends: a global xpub, a proprietary global pair, input 0's

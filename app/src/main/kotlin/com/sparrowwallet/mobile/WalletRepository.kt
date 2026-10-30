@@ -8,6 +8,8 @@ import com.sparrowwallet.mobile.crypto.ElectrumSeed
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.Psbt
+import com.sparrowwallet.mobile.crypto.PsbtReview
+import com.sparrowwallet.mobile.crypto.PsbtSigner
 import com.sparrowwallet.mobile.crypto.Scripts
 import com.sparrowwallet.mobile.crypto.SpendableInput
 import com.sparrowwallet.mobile.crypto.TxBuilder
@@ -658,22 +660,16 @@ class WalletRepository(context: Context) {
      * fingerprint and derivation path) — the phone acting as the external signer
      * for a coordinator like desktop Sparrow or a watch-only wallet.
      */
-    fun signPsbt(data: VaultData, psbtBase64: String): String {
-        val parsed = Psbt.parse(Psbt.fromBase64(psbtBase64))
-        val master = masterKey(data)
-        val fingerprint = master.fingerprint.toHex()
-        var signedCount = 0
-        val signed = Psbt.sign(parsed) { pubHex ->
-            parsed.inputs.firstNotNullOfOrNull { it.derivations[pubHex] }?.let { (fp, path) ->
-                if(!fp.toHex().equals(fingerprint, ignoreCase = true)) return@let null
-                var key = master
-                for(child in path) key = key.deriveChild(child)
-                key.takeIf { it.pubKey.toHex() == pubHex }?.also { signedCount++ }
-            }
-        }
-        require(signedCount > 0) { "This PSBT has no inputs belonging to this wallet" }
-        return Psbt.toBase64(signed)
+    fun signPsbt(data: VaultData, psbt: ByteArray): SignedPsbt {
+        val signed = PsbtSigner.sign(Psbt.parse(psbt), masterKey(data), network(data))
+        return SignedPsbt(signed, Psbt.toBase64(signed))
     }
+
+    /** What a PSBT does, for the user to check before [signPsbt]. */
+    fun reviewPsbt(data: VaultData, psbt: ByteArray): PsbtReview =
+        PsbtSigner.review(Psbt.parse(psbt), masterKey(data), network(data))
+
+    class SignedPsbt(val bytes: ByteArray, val base64: String)
 
     private fun parsePathChildren(path: String): List<Long> =
         path.trim().split("/").drop(1).filter { it.isNotEmpty() }.map {
