@@ -33,9 +33,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
@@ -1487,11 +1489,14 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
     var showText by remember { mutableStateOf(false) }
     // a fresh collector per scan, so parts of an abandoned scan never block the next one
     var collector by remember { mutableStateOf(AirgapUr.PsbtCollector()) }
-    // the review is what the user approves; a PSBT that fails it can't be signed
-    val psbt = remember(inputText) {
-        inputText.trim().takeIf { it.isNotEmpty() }?.let { runCatching { Psbt.fromBase64(it) } }
+    // the review is what the user approves; a PSBT that fails it can't be signed. It unlocks
+    // the wallet, so it runs once typing pauses and off the main thread, and counts only
+    // while the field still holds the text it reviewed.
+    val reviewed by produceState<ReviewedPsbt<com.sparrowwallet.mobile.crypto.PsbtReview>?>(null, walletData) {
+        psbtReviews(snapshotFlow { inputText }) { repo.reviewPsbt(walletData, it) }.collect { value = it }
     }
-    val review = remember(psbt) { psbt?.mapCatching { repo.reviewPsbt(walletData, it) } }
+    val current = reviewed?.takeIf { it.isFor(inputText) }
+    val review = current?.result?.map { it.second }
 
     ScreenColumn {
         Column {
@@ -1537,7 +1542,7 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
             Button(
                 onClick = {
                     try {
-                        signed = repo.signPsbt(walletData, psbt!!.getOrThrow())
+                        signed = repo.signPsbt(walletData, current!!.result.getOrThrow().first)
                         copied = false
                         showText = false
                     } catch(t: Throwable) {
