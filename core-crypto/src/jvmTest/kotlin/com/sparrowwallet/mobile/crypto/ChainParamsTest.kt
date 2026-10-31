@@ -2,6 +2,7 @@ package com.sparrowwallet.mobile.crypto
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class ChainParamsTest {
@@ -53,5 +54,15 @@ class ChainParamsTest {
         assertEquals(2000, Coin.DINGOCOIN.feeSize(1001))
         assertEquals(1000, Coin.DINGOCOIN.feeSize(1000))
         assertEquals(1001, Coin.DOGECOIN.feeSize(1001))
+    }
+
+    @Test fun fromIdRejectsUnknownCoin() {
+        assertFailsWith<IllegalArgumentException> { Coin.fromId("bitcoin") }
+        assertEquals(Coin.DOGECOIN, Coin.fromId("DOGECOIN".lowercase()))
+    }
+
+    @Test fun fromNameReadsDrongoNames() {
+        assertEquals(Coin.PEPECOIN, Coin.fromName("PEPECOIN"))
+        assertFailsWith<IllegalArgumentException> { Coin.fromName("BITCOIN") }
     }
 }

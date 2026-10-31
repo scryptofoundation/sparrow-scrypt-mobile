@@ -38,7 +38,9 @@ data class VaultData(
     /** Desktop-recorded MWEB transaction history (see [MwebHistoryEntry]). */
     val mwebHistory: List<MwebHistoryEntry> = emptyList(),
     /** Desktop-recorded transaction labels (txid → label), shown on the history list. */
-    val txLabels: Map<String, String> = emptyMap()
+    val txLabels: Map<String, String> = emptyMap(),
+    /** Coin id ("litecoin", "dogecoin", ...); vaults sealed before this field are Litecoin. */
+    val coin: String = "litecoin"
 )
 
 class VaultException(message: String, cause: Throwable? = null) : Exception(message, cause)

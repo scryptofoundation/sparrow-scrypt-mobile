@@ -1,5 +1,8 @@
 package com.sparrowwallet.mobile.crypto
 
+/** A coin id or name this build does not know; never read as Litecoin. */
+class UnknownCoinException(id: String) : IllegalArgumentException("Unknown coin: $id")
+
 /** How a coin's wallets reach the chain: an Electrum server or an Esplora REST API. */
 enum class BackendKind { ELECTRUM, ESPLORA }
 
@@ -51,6 +54,11 @@ enum class Coin(
     fun feeSize(vsize: Long): Long = if(this == DINGOCOIN) (vsize + 999) / 1000 * 1000 else vsize
 
     companion object {
-        fun fromId(id: String): Coin = entries.firstOrNull { it.id == id.lowercase() } ?: LITECOIN
+        fun fromId(id: String): Coin =
+            entries.firstOrNull { it.id == id.lowercase() } ?: throw UnknownCoinException(id)
+
+        /** Reads drongo's enum names, as desktop writes them ("DOGECOIN"). */
+        fun fromName(name: String): Coin =
+            entries.firstOrNull { it.name == name } ?: throw UnknownCoinException(name)
     }
 }

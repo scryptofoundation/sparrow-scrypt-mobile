@@ -15,6 +15,7 @@ import com.sparrowwallet.mobile.crypto.PsbtSigner
 import com.sparrowwallet.mobile.crypto.Scripts
 import com.sparrowwallet.mobile.crypto.SpendableInput
 import com.sparrowwallet.mobile.crypto.TxBuilder
+import com.sparrowwallet.mobile.crypto.UnknownCoinException
 import com.sparrowwallet.mobile.crypto.XpubKey
 import com.sparrowwallet.mobile.crypto.hexToBytes
 import com.sparrowwallet.mobile.crypto.toHex
@@ -61,7 +62,8 @@ class WalletRepository(context: Context) {
         val network: Network,
         val scriptType: String = "P2WPKH",
         /** Name of the paired public/private counterpart wallet on this phone, if linked. */
-        val linkedWallet: String? = null
+        val linkedWallet: String? = null,
+        val coin: Coin = Coin.LITECOIN
     )
 
     private fun safeName(name: String): String =
@@ -71,24 +73,19 @@ class WalletRepository(context: Context) {
     private fun vaultFile(name: String) = File(walletsDir, "${safeName(name)}.vault")
     private fun metaFile(name: String) = File(walletsDir, "${safeName(name)}.meta")
 
-    private fun writeMeta(name: String, network: Network, scriptType: String = "P2WPKH", linkedWallet: String? = null) {
-        val json = JSONObject().put("network", network.id).put("scriptType", scriptType)
-        linkedWallet?.let { json.put("linkedWallet", it) }
-        metaFile(name).writeText(json.toString())
+    private fun writeMeta(name: String, network: Network, scriptType: String = "P2WPKH", linkedWallet: String? = null,
+                          coin: Coin = Coin.LITECOIN) {
+        metaFile(name).writeText(WalletMeta.encode(network, coin, scriptType, linkedWallet))
     }
 
+    /** Wallets whose metadata names a coin this build does not know are left out (and left on disk). */
     fun listWallets(): List<WalletInfo> =
-        walletsDir.listFiles { f -> f.name.endsWith(".vault") }.orEmpty().sortedBy { it.name }.map { f ->
+        walletsDir.listFiles { f -> f.name.endsWith(".vault") }.orEmpty().sortedBy { it.name }.mapNotNull { f ->
             val name = f.name.removeSuffix(".vault")
-            runCatching {
-                val meta = JSONObject(metaFile(name).readText())
-                WalletInfo(
-                    name,
-                    Network.fromId(meta.getString("network")),
-                    meta.optString("scriptType", "P2WPKH"),
-                    meta.optString("linkedWallet", "").takeIf { it.isNotEmpty() }
-                )
-            }.getOrDefault(WalletInfo(name, Network.MAINNET))
+            runCatching { WalletMeta.decode(metaFile(name).readText()) }.fold(
+                { WalletInfo(name, it.network, it.scriptType, it.linkedWallet, it.coin) },
+                { if(it is UnknownCoinException) null else WalletInfo(name, Network.MAINNET) }
+            )
         }
 
     fun walletInfo(name: String): WalletInfo? = listWallets().firstOrNull { it.name == safeName(name) }
@@ -97,8 +94,8 @@ class WalletRepository(context: Context) {
     fun linkWallets(publicName: String, mwebName: String) {
         val publicInfo = walletInfo(publicName) ?: return
         val mwebInfo = walletInfo(mwebName) ?: return
-        writeMeta(publicName, publicInfo.network, publicInfo.scriptType, safeName(mwebName))
-        writeMeta(mwebName, mwebInfo.network, mwebInfo.scriptType, safeName(publicName))
+        writeMeta(publicName, publicInfo.network, publicInfo.scriptType, safeName(mwebName), publicInfo.coin)
+        writeMeta(mwebName, mwebInfo.network, mwebInfo.scriptType, safeName(publicName), mwebInfo.coin)
     }
 
     fun hasWallets(): Boolean = listWallets().isNotEmpty()
@@ -247,7 +244,7 @@ class WalletRepository(context: Context) {
             baselined = prior?.baselined ?: false,
             knownOutputIds = prior?.knownOutputIds ?: emptyList()
         ) else SyncCredentials(
-            name = name, network = data.network, scriptType = data.scriptType,
+            name = name, network = data.network, scriptType = data.scriptType, coin = data.coin,
             xpub = accountKey(data).xpub(network(data).xpubHeader),
             baselined = prior?.baselined ?: false,
             knownTxids = prior?.knownTxids ?: emptyList()
@@ -333,6 +330,8 @@ class WalletRepository(context: Context) {
     }
 
     fun network(data: VaultData): Network = Network.fromId(data.network)
+
+    fun coin(data: VaultData): Coin = Coin.fromId(data.coin)
 
     fun masterKey(data: VaultData): HDKey {
         val seed = if(data.seedType == "ELECTRUM") ElectrumSeed.toSeed(data.mnemonic, data.passphrase)

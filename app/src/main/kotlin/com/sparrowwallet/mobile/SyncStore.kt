@@ -22,6 +22,7 @@ data class SyncCredentials(
     val name: String,
     val network: String,
     val scriptType: String,               // "P2WPKH" or "MWEB"
+    val coin: String = "litecoin",        // saved before this field: Litecoin
     val xpub: String? = null,             // public wallets
     val scanSecretHex: String? = null,    // MWEB wallets
     val birthHeight: Int = 0,

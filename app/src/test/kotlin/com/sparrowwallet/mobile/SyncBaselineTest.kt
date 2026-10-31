@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -35,5 +36,12 @@ class SyncBaselineTest {
     fun privateOutputsFollowTheSameRules() {
         assertEquals(0, SyncBaseline.newlyReceivedPrivate(creds(), listOf("o1" to 700L)))
         assertEquals(700, SyncBaseline.newlyReceivedPrivate(creds(baselined = true), listOf("o1" to 700L)))
+    }
+
+    @Test
+    fun credentialsWithoutCoinReadAsLitecoin() {
+        val old = Json { ignoreUnknownKeys = true }.decodeFromString(SyncCredentials.serializer(),
+            """{"name":"w","network":"testnet","scriptType":"P2WPKH","xpub":"tpub"}""")
+        assertEquals("litecoin", old.coin)
     }
 }

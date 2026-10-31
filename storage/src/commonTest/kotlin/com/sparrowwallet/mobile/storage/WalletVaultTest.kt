@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile.storage
 
+import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -55,5 +56,20 @@ class WalletVaultTest {
         val electrum = data.copy(seedType = "ELECTRUM", derivationPath = "m/0'")
         val blob = WalletVault.seal(electrum, "pw", iters)
         assertEquals(electrum, WalletVault.open(blob, "pw"))
+    }
+
+    @Test
+    fun vaultWithoutCoinReadsAsLitecoin() {
+        //Vaults sealed before the coin field have no "coin" in their JSON
+        val old = Json { ignoreUnknownKeys = true }.decodeFromString(VaultData.serializer(),
+            """{"mnemonic":"absent essay","network":"testnet","scriptType":"P2WPKH"}""")
+        assertEquals("litecoin", old.coin)
+    }
+
+    @Test
+    fun vaultKeepsCoin() {
+        val doge = data.copy(coin = "dogecoin", derivationPath = "m/44'/3'/0'", scriptType = "P2PKH")
+        val blob = WalletVault.seal(doge, "pw", iters)
+        assertEquals("dogecoin", WalletVault.open(blob, "pw").coin)
     }
 }
