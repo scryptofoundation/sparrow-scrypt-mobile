@@ -228,7 +228,14 @@ class HttpEndpoint(
                 throw IOException("Bad chunk size")
             }
             val size = sizeText.toLong(16)
-            if(size == 0L) return out.toByteArray()
+            if(size == 0L) {
+                //trailer fields end with an empty line; it must be read, or a kept connection's next answer starts mid-message
+                var trailers = 0
+                while(readLine(input).isNotEmpty()) {
+                    if(++trailers > 32) throw IOException("Too many chunk trailers")
+                }
+                return out.toByteArray()
+            }
             if(out.size() + size > MAX_BODY) throw IOException("Response too large")
             out.write(readExactly(input, size.toInt()))
             readLine(input) // CRLF after the chunk

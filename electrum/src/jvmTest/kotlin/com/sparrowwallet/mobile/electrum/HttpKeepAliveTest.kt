@@ -22,7 +22,7 @@ import kotlin.test.assertTrue
  * requests (an HttpServer hides both). Each request on the emulator paid ~1 s of DNS and TLS.
  */
 class HttpKeepAliveTest {
-    private enum class Mode { KEEP_ALIVE, SAYS_CLOSE, CLOSES_SILENTLY }
+    private enum class Mode { KEEP_ALIVE, SAYS_CLOSE, CLOSES_SILENTLY, CHUNKED }
 
     private val params = ChainParams.of(Coin.PEPECOIN, Network.TESTNET)
     private val accepts = AtomicInteger()
@@ -54,7 +54,11 @@ class HttpKeepAliveTest {
             if(method == "POST") posts.incrementAndGet()
             val (status, body) = if(path == "/blocks/tip/height") 200 to "5" else 404 to "not found"
             val close = mode == Mode.SAYS_CLOSE
-            out.write(("HTTP/1.1 $status X\r\nContent-Length: ${body.length}\r\n" +
+            if(mode == Mode.CHUNKED) {
+                //as peppool.space answers: the last chunk is followed by an empty trailer line
+                out.write(("HTTP/1.1 $status X\r\nTransfer-Encoding: chunked\r\n\r\n" +
+                    "${body.length.toString(16)}\r\n$body\r\n0\r\n\r\n").encodeToByteArray())
+            } else out.write(("HTTP/1.1 $status X\r\nContent-Length: ${body.length}\r\n" +
                 (if(close) "Connection: close\r\n" else "") + "\r\n$body").encodeToByteArray())
             out.flush()
             if(close || mode == Mode.CLOSES_SILENTLY) return
@@ -127,5 +131,14 @@ class HttpKeepAliveTest {
         NetworkPolicy.blocked = false
         b.connect()
         assertEquals(2, accepts.get(), "the idle socket was cut when the mode turned on")
+    }
+
+    @Test fun chunkedAnswersShareOneConnection(): Unit = runBlocking {
+        mode = Mode.CHUNKED
+        val b = backend()
+        b.connect()
+        b.connect()
+        assertEquals(5L, b.tipHeight())
+        assertEquals(1, accepts.get())
     }
 }
