@@ -69,11 +69,13 @@ object TxBuilder {
             if(coin == Coin.LITECOIN) "Fee rate must be at least $floor lit/vB" else "Fee rate must be at least $floor sat/vB for ${coin.displayName}"
         }
         val unit = if(coin == Coin.LITECOIN) "litoshi" else coin.subunit
+        val units = if(coin == Coin.LITECOIN) "litoshis" else coin.subunit
         val dust = params.dustLimit
         val sorted = candidates.filter { it.value > 0 }.sortedByDescending { it.value }
         require(sorted.isNotEmpty()) { "No spendable coins" }
         require(sorted.all { it.scriptType == sorted[0].scriptType }) { "All inputs must share the wallet's script type" }
         val inputType = sorted[0].scriptType
+        require(coin.supports(inputType)) { "${coin.displayName} has no $inputType inputs" }
         fun fee(inputs: Int, outputScriptSizes: List<Int>) =
             coin.feeSize(estimateVsize(List(inputs) { inputType }, outputScriptSizes)) * feeRatePerVb
 
@@ -97,7 +99,7 @@ object TxBuilder {
                 break
             }
         }
-        require(total >= amount + fee) { "Insufficient funds: need ${amount + fee} ${unit}s, have $total spendable" }
+        require(total >= amount + fee) { "Insufficient funds: need ${amount + fee} $units, have $total spendable" }
 
         var change = total - amount - fee
         val outputs = ArrayList<TxOutput>()

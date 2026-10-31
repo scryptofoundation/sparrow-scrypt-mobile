@@ -11,11 +11,18 @@ data class ChainParams(
     val wifVersion: Int,
     val xpubHeader: Int,
     val xprvHeader: Int,
-    /** null on chains without segwit. */
+    /** null where the chain has no bech32 addresses on this network. */
     val bech32Hrp: String?,
     /** Litecoin only. */
     val mwebHrp: String?
 ) {
+    /**
+     * Whether witness v1+ outputs (Taproot) are valid destinations: Litecoin, and Junkcoin's testnet
+     * (Taproot active from block 160000; the bridge custody is a tjc1p address). On any other chain an
+     * output to an inactive witness program is anyone-can-spend, so it is refused.
+     */
+    val taproot: Boolean get() = coin == Coin.LITECOIN || (coin == Coin.JUNKCOIN && network == Network.TESTNET)
+
     val defaultScriptType: ScriptType get() = if(coin.segwit) ScriptType.P2WPKH else ScriptType.P2PKH
 
     /** BIP44 coin type for this network: every coin's testnet uses 1, as drongo derives it. */
@@ -46,10 +53,21 @@ data class ChainParams(
         } else when(coin) {
             Coin.LITECOIN -> ChainParams(coin, network, 111, 58, 196, 239, TPUB, TPRV, "tltc", "tmweb")
             Coin.BELLSCOIN -> ChainParams(coin, network, 33, 22, null, 158, TPUB, TPRV, "tbel", null)
-            Coin.JUNKCOIN -> ChainParams(coin, network, 111, 5, null, 239, TPUB, TPRV, null, null)
+            Coin.JUNKCOIN -> ChainParams(coin, network, 111, 5, null, 239, TPUB, TPRV, "tjc", null)
             Coin.DOGECOIN, Coin.PEPECOIN, Coin.LUCKYCOIN, Coin.DINGOCOIN ->
                 ChainParams(coin, network, 113, 196, null, 241, TPUB, TPRV, null, null)
         }
+
+        /**
+         * Every other coin on [network] where a base58 address with this version byte is also well formed,
+         * in declaration order (drongo Coin.coinsSharingAddressEncoding). The collisions cross script types:
+         * Dogecoin P2PKH and Bellscoin P2SH are both 30. A non-empty result means the address does not say
+         * which chain it is for, so a send must warn rather than trust the decode.
+         */
+        fun coinsSharingAddressEncoding(coin: Coin, versionByte: Int, network: Network): List<Coin> =
+            Coin.entries.filter { other ->
+                other != coin && of(other, network).let { it.p2pkhVersion == versionByte || it.p2shVersion == versionByte }
+            }
     }
 }
 

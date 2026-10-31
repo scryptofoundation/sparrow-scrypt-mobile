@@ -110,7 +110,7 @@
       ]
     },
     {"coin": "JUNKCOIN", "network": "TESTNET",
-      "params": {"p2pkhVersion": 111, "p2shVersion": 5, "wifVersion": 239, "xpubHeader": "043587cf", "xprvHeader": "04358394", "bech32Hrp": null, "mwebHrp": null, "coinType": 0, "recommendedFeeRate": 100.0, "dustLimit": 100000, "segwit": false, "mweb": false, "auxPow": true, "ticker": "JKC", "subunit": "sats", "coingeckoId": "junkcoin", "uriScheme": "junkcoin"},
+      "params": {"p2pkhVersion": 111, "p2shVersion": 5, "wifVersion": 239, "xpubHeader": "043587cf", "xprvHeader": "04358394", "bech32Hrp": "tjc", "mwebHrp": null, "coinType": 0, "recommendedFeeRate": 100.0, "dustLimit": 100000, "segwit": false, "mweb": false, "auxPow": true, "ticker": "JKC", "subunit": "sats", "coingeckoId": "junkcoin", "uriScheme": "junkcoin"},
       "scriptTypes": [
         {"scriptType": "P2PKH", "derivationPath": "m/44'/1'/0'", "accountXpub": "tpubDC5FSnBiZDMmhiuCmWAYsLwgLYrrT9rAqvTySfuCCrgsWz8wxMXUS9Tb9iVMvcRbvFcAHGkMD5Kx8koh4GquNGNTfohfk7pgjhaPCdXpoba", "receive0Wif": "cV6NTLu255SZ5iCNkVHezNGDH5qv6CanJpgBPqYgJU13NNKJhRs1",
          "receiveAddresses": ["mkpZhYtJu2r87Js3pDiWJDmPte2NRZ8bJV", "mzpbWabUQm1w8ijuJnAof5eiSTep27deVH"], "changeAddresses": ["mi8nhzZgGZQthq6DQHbru9crMDerUdTKva", "mz9HfS6y833A8HP8bfpLikzCbjonJXaAGW"]}

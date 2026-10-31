@@ -85,8 +85,10 @@ object Addresses {
                 return when {
                     witness.version == 0 && (witness.program.size == 20 || witness.program.size == 32) ->
                         byteArrayOf(0x00, witness.program.size.toByte()) + witness.program
-                    witness.version in 1..16 && witness.program.size in 2..40 ->
+                    witness.version in 1..16 && witness.program.size in 2..40 -> {
+                        require(params.taproot) { "${params.coin.displayName} does not support Taproot addresses" }
                         byteArrayOf((0x50 + witness.version).toByte(), witness.program.size.toByte()) + witness.program
+                    }
                     else -> throw IllegalArgumentException("Invalid witness program length: ${witness.program.size}")
                 }
             }
@@ -100,8 +102,28 @@ object Addresses {
                 byteArrayOf(0x76.toByte(), 0xA9.toByte(), 0x14) + hash + byteArrayOf(0x88.toByte(), 0xAC.toByte())
             params.p2shVersion, params.p2shLegacyVersion ->
                 byteArrayOf(0xA9.toByte(), 0x14) + hash + byteArrayOf(0x87.toByte())
-            else -> throw IllegalArgumentException(notOurs)
+            else -> {
+                val version = payload[0].toInt() and 0xFF
+                val wrongNet = sameCoin.firstOrNull { p ->
+                    p.network != params.network && (p.p2pkhVersion == version || p.p2shVersion == version || p.p2shLegacyVersion == version)
+                }
+                throw IllegalArgumentException(
+                    if(wrongNet != null) "That's a ${wrongNet.network.displayName} address, but this wallet is on ${params.network.displayName}"
+                    else notOurs
+                )
+            }
         }
+    }
+
+    /**
+     * Other coins on the wallet's network where this base58 address is also well formed. An address
+     * never says which chain it is for when this is non-empty (Dogecoin P2PKH and Bellscoin P2SH are
+     * both 30), so a send must warn. Bech32 and undecodable input return an empty list.
+     */
+    fun coinsSharingEncoding(address: String, params: ChainParams): List<Coin> {
+        val payload = runCatching { Base58.decodeChecked(address.trim()) }.getOrNull() ?: return emptyList()
+        if(payload.size != 21) return emptyList()
+        return ChainParams.coinsSharingAddressEncoding(params.coin, payload[0].toInt() and 0xFF, params.network)
     }
 
     fun fromScript(script: ByteArray, network: Network): String? = fromScript(script, network.litecoin)

@@ -46,6 +46,28 @@ class TxBuilderCoinTest {
         assertTrue(built.tx.inputs[0].scriptSig.isNotEmpty())
     }
 
+    @Test fun segwitInputOnALegacyOnlyCoinIsRefused() {
+        val segwitInput = SpendableInput("11".repeat(32), 0, 500_000_000, master.derivePath("m/44'/3'/0'/0/0"))
+        val e = assertFailsWith<IllegalArgumentException> {
+            TxBuilder.build(listOf(segwitInput), p2pkh, 100_000_000, 1000, p2pkh, params = doge)
+        }
+        assertEquals("Dogecoin has no P2WPKH inputs", e.message)
+    }
+
+    @Test fun dogeInsufficientFundsNamesSats() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            TxBuilder.build(listOf(input(100_100_000)), p2pkh, 100_000_000, 1000, p2pkh, params = doge)
+        }
+        assertTrue(e.message!!.endsWith(" sats, have 100100000 spendable"), e.message)
+    }
+
+    @Test fun dingoFeeCrossingAKilobyteIsChargedForTwo() {
+        val inputs = (0 until 7).map { input(1_000_000_000, "m/44'/3'/0'/0/$it") }
+        assertTrue(TxBuilder.estimateVsize(List(7) { ScriptType.P2PKH }, listOf(25, 25)) in 1001..1999)
+        val built = TxBuilder.build(inputs, p2pkh, 6_700_000_000, 100_000, p2pkh, params = dingo)
+        assertEquals(2000L * 100_000, built.fee)
+    }
+
     @Test fun dogeAmountBelowDustIsRefused() {
         val e = assertFailsWith<IllegalArgumentException> {
             TxBuilder.build(listOf(input(500_000_000)), p2pkh, 999_999, 1000, p2pkh, params = doge)

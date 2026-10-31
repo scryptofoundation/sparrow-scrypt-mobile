@@ -106,7 +106,7 @@ public class CoinVectorGeneratorTest {
                 + ", \"wifVersion\": " + network.getDumpedPrivateKeyHeader()
                 + ", \"xpubHeader\": " + q(String.format("%08x", network.getXpubHeader().getHeader()))
                 + ", \"xprvHeader\": " + q(String.format("%08x", network.getXprvHeader().getHeader()))
-                + ", \"bech32Hrp\": " + q(coin.isSegwitSupported() ? network.getBech32AddressHRP() : null)
+                + ", \"bech32Hrp\": " + q(network.getBech32AddressHRP())
                 + ", \"mwebHrp\": " + q(coin.supports(ScriptType.MWEB) ? network.getMwebAddressHrp() : null)
                 + ", \"coinType\": " + coin.getBip44CoinType()
                 + ", \"recommendedFeeRate\": " + coin.getRecommendedFeeRate()

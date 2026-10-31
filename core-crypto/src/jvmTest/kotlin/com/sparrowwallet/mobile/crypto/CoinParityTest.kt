@@ -40,6 +40,30 @@ class CoinParityTest {
         assertEquals("Not a Litecoin address", e.message)
     }
 
+    @Test fun dogeAddressShowsWhichOtherCoinsShareItsEncodingForABellscoinWallet() {
+        // Dogecoin P2PKH and Bellscoin P2SH are both version 30: the address decodes, but is ambiguous
+        val doge = CoinVectors.entry(Coin.DOGECOIN, Network.MAINNET).scriptTypes[0].receiveAddresses[0]
+        val bells = ChainParams.of(Coin.BELLSCOIN, Network.MAINNET)
+        assertEquals(listOf(Coin.DOGECOIN, Coin.DINGOCOIN), Addresses.coinsSharingEncoding(doge, bells))
+        val ltc = CoinVectors.entry(Coin.LITECOIN, Network.MAINNET).scriptTypes.first { it.scriptType == "P2WPKH" }.receiveAddresses[0]
+        assertEquals(emptyList(), Addresses.coinsSharingEncoding(ltc, ChainParams.of(Coin.LITECOIN, Network.MAINNET)))
+    }
+
+    @Test fun litecoinBase58AddressOnTheOtherNetworkNamesIt() {
+        val mainnet = CoinVectors.entry(Coin.LITECOIN, Network.MAINNET).scriptTypes.first { it.scriptType == "P2PKH" }.receiveAddresses[0]
+        val e = assertFailsWith<IllegalArgumentException> { Addresses.toScriptPubKey(mainnet, Network.TESTNET.litecoin) }
+        assertEquals("That's a Mainnet address, but this wallet is on Testnet", e.message)
+    }
+
+    @Test fun witnessV1IsAcceptedOnlyWhereTaprootIsActive() {
+        val program = ByteArray(32) { 7 }
+        assertFailsWith<IllegalArgumentException> {
+            Addresses.toScriptPubKey(Bech32.encodeWitness("bel", 1, program), ChainParams.of(Coin.BELLSCOIN, Network.MAINNET))
+        }
+        Addresses.toScriptPubKey(Bech32.encodeWitness("ltc", 1, program), ChainParams.of(Coin.LITECOIN, Network.MAINNET))
+        Addresses.toScriptPubKey(Bech32.encodeWitness("tjc", 1, program), ChainParams.of(Coin.JUNKCOIN, Network.TESTNET))
+    }
+
     @Test fun bellsSegwitAddressIsRefusedByLegacyOnlyCoins() {
         val bells = CoinVectors.entry(Coin.BELLSCOIN, Network.MAINNET).scriptTypes.first { it.scriptType == "P2WPKH" }.receiveAddresses[0]
         assertFailsWith<IllegalArgumentException> {
