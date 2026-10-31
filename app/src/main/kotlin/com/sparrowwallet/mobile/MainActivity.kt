@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import androidx.compose.foundation.clickable
 import com.sparrowwallet.mobile.crypto.BackendKind
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.material3.Checkbox
@@ -743,27 +744,29 @@ private fun NetworkPicker(selected: Network, onSelect: (Network) -> Unit) {
     }
 }
 
+/** A vertical radio list whose whole row selects, so the label is a target too. */
 @Composable
-private fun CoinPicker(selected: Coin, onSelect: (Coin) -> Unit) {
+private fun <T> RadioList(options: List<T>, selected: T, label: (T) -> String, onSelect: (T) -> Unit) {
     Column {
-        for(coin in Coin.entries) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(selected = selected == coin, onClick = { onSelect(coin) })
-                Text("${coin.displayName} (${coin.ticker})", style = MaterialTheme.typography.bodyMedium)
+        for(option in options) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { onSelect(option) }
+            ) {
+                RadioButton(selected = selected == option, onClick = { onSelect(option) })
+                Text(label(option), style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
 }
 
 @Composable
-private fun ScriptTypePicker(options: List<ScriptType>, selected: ScriptType, onSelect: (ScriptType) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        for(type in options) {
-            RadioButton(selected = selected == type, onClick = { onSelect(type) })
-            Text(WalletSetup.scriptTypeLabel(type), style = MaterialTheme.typography.bodyMedium)
-        }
-    }
-}
+private fun CoinPicker(selected: Coin, onSelect: (Coin) -> Unit) =
+    RadioList(Coin.entries, selected, { "${it.displayName} (${it.ticker})" }, onSelect)
+
+@Composable
+private fun ScriptTypePicker(options: List<ScriptType>, selected: ScriptType, onSelect: (ScriptType) -> Unit) =
+    RadioList(options, selected, { WalletSetup.scriptTypeLabel(it) }, onSelect)
 
 @Composable
 private fun SaveWalletScreen(
