@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile.electrum
 
+import com.sparrowwallet.mobile.crypto.AirGappedException
 import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
@@ -22,7 +23,7 @@ import kotlin.test.assertTrue
  * requests (an HttpServer hides both). Each request on the emulator paid ~1 s of DNS and TLS.
  */
 class HttpKeepAliveTest {
-    private enum class Mode { KEEP_ALIVE, SAYS_CLOSE, CLOSES_SILENTLY, CHUNKED }
+    private enum class Mode { KEEP_ALIVE, SAYS_CLOSE, CLOSES_SILENTLY, CHUNKED, HANGS_AFTER_FIRST, DROPS_POSTS }
 
     private val params = ChainParams.of(Coin.PEPECOIN, Network.TESTNET)
     private val accepts = AtomicInteger()
@@ -44,6 +45,7 @@ class HttpKeepAliveTest {
     private fun serve(s: Socket) = s.use {
         val input = BufferedInputStream(s.getInputStream())
         val out = s.getOutputStream()
+        var served = 0
         while(true) {
             val head = readHead(input) ?: return
             val method = head.first().substringBefore(' ')
@@ -52,7 +54,14 @@ class HttpKeepAliveTest {
             repeat(length) { input.read() }
             requests.incrementAndGet()
             if(method == "POST") posts.incrementAndGet()
-            val (status, body) = if(path == "/blocks/tip/height") 200 to "5" else 404 to "not found"
+            if(mode == Mode.HANGS_AFTER_FIRST && served > 0) { Thread.sleep(10_000); return }
+            if(mode == Mode.DROPS_POSTS && method == "POST") return
+            served++
+            val (status, body) = when {
+                path == "/blocks/tip/height" -> 200 to "5"
+                method == "POST" && path == "/tx" -> 200 to "ab".repeat(32)
+                else -> 404 to "not found"
+            }
             val close = mode == Mode.SAYS_CLOSE
             if(mode == Mode.CHUNKED) {
                 //as peppool.space answers: the last chunk is followed by an empty trailer line
@@ -114,14 +123,49 @@ class HttpKeepAliveTest {
         assertEquals(2, accepts.get())
     }
 
-    @Test fun postIsNeverResentAfterAStaleConnection(): Unit = runBlocking {
+    @Test fun broadcastAfterAnIdleCloseUsesAFreshConnection(): Unit = runBlocking {
+        //the server closed the kept socket while idle: a broadcast must not ride it and fail
         mode = Mode.CLOSES_SILENTLY
         val b = backend()
         b.connect()
         Thread.sleep(200)
+        assertEquals("ab".repeat(32), b.broadcast("00"))
+        assertEquals(1, posts.get())
+        assertEquals(2, accepts.get())
+    }
+
+    @Test fun broadcastIsNeverSentTwice(): Unit = runBlocking {
+        mode = Mode.DROPS_POSTS
+        val b = backend()
+        b.connect()
         assertFailsWith<IOException> { b.broadcast("00") }
-        assertEquals(1, accepts.get(), "a broadcast must not open a second connection")
-        assertTrue(posts.get() <= 1)
+        assertEquals(1, posts.get())
+        assertEquals(2, accepts.get(), "the GET connection, then one fresh one for the POST")
+    }
+
+    @Test fun airGapDuringAWaitingRequestOpensNoNewConnection(): Unit = runBlocking {
+        mode = Mode.HANGS_AFTER_FIRST
+        val b = backend()
+        b.connect()
+        thread(isDaemon = true) { Thread.sleep(300); NetworkPolicy.blocked = true }
+        assertFailsWith<AirGappedException> { b.connect() }
+        Thread.sleep(200)
+        assertEquals(1, accepts.get(), "no connection after the switch")
+    }
+
+    @Test fun slowHandshakeHitsTheDeadline() {
+        //a server that trickles a byte every 100 ms never finishes the TLS handshake; soTimeout alone never fires
+        ServerSocket(0).use { tls ->
+            thread(isDaemon = true) {
+                val c = runCatching { tls.accept() }.getOrNull() ?: return@thread
+                runCatching { repeat(100) { c.getOutputStream().apply { write(0x16); flush() }; Thread.sleep(100) } }
+                runCatching { c.close() }
+            }
+            val endpoint = HttpEndpoint("https://localhost:${tls.localPort}", timeoutMs = 1_000, deadlineMs = 1_500)
+            val started = System.currentTimeMillis()
+            assertFailsWith<IOException> { runBlocking { endpoint.get("/blocks/tip/height") } }
+            assertTrue(System.currentTimeMillis() - started < 4_000, "took ${System.currentTimeMillis() - started} ms")
+        }
     }
 
     @Test fun airGappedModeClosesAnIdleConnection(): Unit = runBlocking {

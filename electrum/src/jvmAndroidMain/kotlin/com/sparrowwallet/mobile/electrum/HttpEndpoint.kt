@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile.electrum
 
+import com.sparrowwallet.mobile.crypto.AirGappedException
 import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -56,8 +57,7 @@ class HttpEndpoint(
 
     suspend fun post(path: String, body: String): Response = request("POST", path, body)
 
-    private class Conn(val raw: Socket, val socket: Socket, val input: InputStream) {
-        var release: () -> Unit = {}
+    private class Conn(val raw: Socket, val socket: Socket, val input: InputStream, val release: () -> Unit) {
         fun close() {
             runCatching { socket.close() }
             runCatching { raw.close() }
@@ -73,24 +73,38 @@ class HttpEndpoint(
 
     /** Closes the kept connection, if any. */
     fun close() {
-        conn?.close()
-        conn = null
+        conn?.let { drop(it) }
+    }
+
+    private fun drop(c: Conn) {
+        c.close()
+        if(conn === c) conn = null
     }
 
     private suspend fun request(method: String, path: String, body: String?): Response = lock.withLock {
         withContext(Dispatchers.IO) {
             NetworkPolicy.check("Esplora")
+            //a broadcast goes on a fresh connection: a kept one may have died while idle, and a POST is never retried
+            if(method != "GET") close()
             try {
                 exchange(method, path, body)
             } catch(e: StaleConnection) {
-                if(method != "GET") throw e.cause as IOException
+                NetworkPolicy.check("Esplora")
                 exchange(method, path, body)
             }
         }
     }
 
-    private fun open(): Conn {
-        val raw = if(proxy != null) Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress(proxy.host, proxy.port))) else Socket()
+    /**
+     * Connects (and handshakes) on [raw]. Air-gapped mode is watched from before the connect, so a
+     * connect or handshake in progress is cut too.
+     */
+    private fun open(raw: Socket): Conn {
+        var made: Conn? = null
+        val release = NetworkPolicy.whileOpen {
+            runCatching { raw.close() }
+            made?.let { if(conn === it) conn = null }
+        }
         try {
             val endpoint = if(proxy != null) InetSocketAddress.createUnresolved(host, port) else InetSocketAddress(host, port)
             raw.connect(endpoint, timeoutMs)
@@ -101,14 +115,10 @@ class HttpEndpoint(
                     s.startHandshake()
                 }
             } else raw
-            return Conn(raw, socket, BufferedInputStream(socket.getInputStream(), 16 * 1024)).also { c ->
-                c.release = NetworkPolicy.whileOpen { // air-gapped mode cuts it, idle or mid-request
-                    runCatching { c.raw.close() }
-                    if(conn === c) conn = null
-                }
-            }
+            return Conn(raw, socket, BufferedInputStream(socket.getInputStream(), 16 * 1024), release).also { made = it }
         } catch(e: Throwable) {
             runCatching { raw.close() }
+            release()
             throw e
         }
     }
@@ -116,13 +126,17 @@ class HttpEndpoint(
     private fun exchange(method: String, path: String, body: String?): Response {
         val started = System.nanoTime()
         val kept = conn
-        val c = kept ?: open().also { conn = it }
-        val opened = System.nanoTime()
+        val raw = kept?.raw ?: if(proxy != null) Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress(proxy.host, proxy.port))) else Socket()
+        //the deadline covers connect and handshake too, however slowly the server trickles
         val expired = AtomicBoolean(false)
-        val deadline = DEADLINES.schedule({ expired.set(true); runCatching { c.raw.close() } }, deadlineMs, TimeUnit.MILLISECONDS)
+        val deadline = DEADLINES.schedule({ expired.set(true); runCatching { raw.close() } }, deadlineMs, TimeUnit.MILLISECONDS)
+        var c: Conn? = kept
+        var opened = started
         var answered = false
         var status = -1
         try {
+            if(c == null) c = open(raw).also { conn = it }
+            opened = System.nanoTime()
             val payload = body?.encodeToByteArray()
             val hostHeader = if((tls && port == 443) || (!tls && port == 80)) host else "$host:$port"
             val head = buildString {
@@ -144,18 +158,21 @@ class HttpEndpoint(
             }
             val (response, reusable) = readResponse(c.input) { answered = true }
             status = response.status
-            if(!reusable) close()
+            if(!reusable) drop(c)
             return response
         } catch(e: IOException) {
-            close()
+            c?.let { drop(it) } ?: runCatching { raw.close() }
+            if(NetworkPolicy.blocked) throw AirGappedException("Esplora")
             if(expired.get()) throw IOException("Request took too long", e)
             if(kept != null && !answered) throw StaleConnection(e)
             throw e
         } catch(e: Throwable) {
-            close()
+            c?.let { drop(it) } ?: runCatching { raw.close() }
             throw e
         } finally {
             deadline.cancel(false)
+            //the deadline may have closed the socket just after the answer was read
+            if(expired.get()) c?.let { drop(it) }
             timingLog?.let { log ->
                 val end = System.nanoTime()
                 log("$method ${route(path)} $status ${if(kept != null) "reused" else "open=${(opened - started) / 1_000_000}"} " +
@@ -194,7 +211,9 @@ class HttpEndpoint(
             }
             else -> { framed = false; readToEnd(input) }
         }
-        val keep = framed && headers["connection"]?.lowercase()?.contains("close") != true
+        //an HTTP/1.0 answer closes unless it says otherwise
+        val connection = headers["connection"]?.lowercase() ?: ""
+        val keep = framed && !connection.contains("close") && (!lines[0].startsWith("HTTP/1.0") || connection.contains("keep-alive"))
         return Response(status, body.decodeToString(), headers) to keep
     }
 
