@@ -140,6 +140,13 @@ object Scripts {
 
     /** BIP143 scriptCode for spending a P2WPKH input (the implied P2PKH script). */
     fun p2pkhScriptCode(pubKey: ByteArray): ByteArray = p2pkhOutput(pubKey)
+
+    /** The scriptPubKey a key pays to under [scriptType]. */
+    fun outputScript(pubKey: ByteArray, scriptType: ScriptType): ByteArray = when(scriptType) {
+        ScriptType.P2PKH -> p2pkhOutput(pubKey)
+        ScriptType.P2SH_P2WPKH -> p2shP2wpkhOutput(pubKey)
+        ScriptType.P2WPKH -> p2wpkhOutput(pubKey)
+    }
 }
 
 object Ecdsa {

@@ -47,64 +47,84 @@ object Addresses {
         return if(change) 0 else nodeIndex + 1
     }
 
+    /** The receive address of [pubKey] for a wallet of [scriptType] on [params]' chain. */
+    fun forKey(pubKey: ByteArray, scriptType: ScriptType, params: ChainParams): String = when(scriptType) {
+        ScriptType.P2PKH -> p2pkh(pubKey, params.p2pkhVersion)
+        ScriptType.P2SH_P2WPKH -> p2shP2wpkh(pubKey, params.p2shVersion)
+        ScriptType.P2WPKH -> p2wpkh(pubKey, requireNotNull(params.bech32Hrp) { "${params.coin.displayName} has no segwit addresses" })
+    }
+
+    /** Litecoin decoding, kept for the call sites that predate the coin axis. */
+    fun toScriptPubKey(address: String, network: Network = Network.MAINNET): ByteArray =
+        toScriptPubKey(address, network.litecoin)
+
     /**
-     * Decodes a Litecoin address to its scriptPubKey, for building transaction outputs.
-     * Accepts bech32 segwit (v0 P2WPKH/P2WSH and v1+ per BIP350), base58 P2PKH, and
-     * base58 P2SH (current plus deprecated Bitcoin-shared version) for the given network.
-     * Throws IllegalArgumentException with a user-facing message on anything else.
+     * Decodes an address of [params]' coin and network to its scriptPubKey, for building
+     * transaction outputs. Accepts bech32 segwit (v0 P2WPKH/P2WSH and v1+ per BIP350) where the
+     * coin has segwit, base58 P2PKH, and base58 P2SH (plus Litecoin's deprecated Bitcoin-shared
+     * version). Throws IllegalArgumentException with a user-facing message on anything else.
+     * The coin comes from the wallet: a Dogecoin address decodes for a Dingocoin wallet, since
+     * the two chains share every address byte.
      */
-    fun toScriptPubKey(address: String, network: Network = Network.MAINNET): ByteArray {
+    fun toScriptPubKey(address: String, params: ChainParams): ByteArray {
         val addr = address.trim()
         val lower = addr.lowercase()
-        for(net in Network.entries) {
-            if(lower.startsWith(net.mwebHrp + "1")) {
-                throw IllegalArgumentException("MWEB destinations aren't supported on mobile yet")
+        val sameCoin = Network.entries.map { ChainParams.of(params.coin, it) }
+        if(sameCoin.any { p -> p.mwebHrp?.let { lower.startsWith(it + "1") } == true }) {
+            throw IllegalArgumentException("MWEB destinations aren't supported on mobile yet")
+        }
+        val hrp = params.bech32Hrp
+        if(hrp != null) {
+            val wrongNet = sameCoin.firstOrNull { p -> p.network != params.network && p.bech32Hrp?.let { lower.startsWith(it + "1") } == true }
+            if(wrongNet != null && !lower.startsWith(hrp + "1")) {
+                throw IllegalArgumentException("That's a ${wrongNet.network.displayName} address, but this wallet is on ${params.network.displayName}")
+            }
+            if(lower.startsWith(hrp + "1")) {
+                val witness = Bech32.decodeWitness(addr)
+                require(witness.hrp == hrp) { "Wrong address network: ${witness.hrp}" }
+                return when {
+                    witness.version == 0 && (witness.program.size == 20 || witness.program.size == 32) ->
+                        byteArrayOf(0x00, witness.program.size.toByte()) + witness.program
+                    witness.version in 1..16 && witness.program.size in 2..40 ->
+                        byteArrayOf((0x50 + witness.version).toByte(), witness.program.size.toByte()) + witness.program
+                    else -> throw IllegalArgumentException("Invalid witness program length: ${witness.program.size}")
+                }
             }
         }
-        val wrongNet = Network.entries.firstOrNull { it != network && lower.startsWith(it.bech32Hrp + "1") }
-        if(wrongNet != null && !lower.startsWith(network.bech32Hrp + "1")) {
-            throw IllegalArgumentException("That's a ${wrongNet.displayName} address — this wallet is on ${network.displayName}")
-        }
-        if(lower.startsWith(network.bech32Hrp + "1")) {
-            val witness = Bech32.decodeWitness(addr)
-            require(witness.hrp == network.bech32Hrp) { "Wrong address network: ${witness.hrp}" }
-            return when {
-                witness.version == 0 && (witness.program.size == 20 || witness.program.size == 32) ->
-                    byteArrayOf(0x00, witness.program.size.toByte()) + witness.program
-                witness.version in 1..16 && witness.program.size in 2..40 ->
-                    byteArrayOf((0x50 + witness.version).toByte(), witness.program.size.toByte()) + witness.program
-                else -> throw IllegalArgumentException("Invalid witness program length: ${witness.program.size}")
-            }
-        }
+        val notOurs = "Not a ${params.coin.displayName} address"
         val payload = Base58.decodeChecked(addr)
         require(payload.size == 21) { "Invalid address payload length: ${payload.size}" }
         val hash = payload.copyOfRange(1, 21)
         return when(payload[0].toInt() and 0xFF) {
-            network.p2pkhVersion ->
+            params.p2pkhVersion ->
                 byteArrayOf(0x76.toByte(), 0xA9.toByte(), 0x14) + hash + byteArrayOf(0x88.toByte(), 0xAC.toByte())
-            network.p2shVersion, network.p2shLegacyVersion ->
+            params.p2shVersion, params.p2shLegacyVersion ->
                 byteArrayOf(0xA9.toByte(), 0x14) + hash + byteArrayOf(0x87.toByte())
-            else -> throw IllegalArgumentException("Not a ${network.displayName} Litecoin address (version byte ${payload[0].toInt() and 0xFF})")
+            else -> throw IllegalArgumentException(notOurs)
         }
     }
 
+    fun fromScript(script: ByteArray, network: Network): String? = fromScript(script, network.litecoin)
+
     /**
-     * The address a scriptPubKey pays, for showing outputs in a PSBT review; null for
-     * anything that has no address form (OP_RETURN, MWEB peg-ins, nonstandard scripts).
+     * The address a scriptPubKey pays on [params]' chain, for showing outputs in a PSBT review;
+     * null for anything with no address form there (OP_RETURN, MWEB peg-ins, segwit on a chain
+     * without it, nonstandard scripts).
      */
-    fun fromScript(script: ByteArray, network: Network): String? {
+    fun fromScript(script: ByteArray, params: ChainParams): String? {
         val op = { i: Int -> script[i].toInt() and 0xFF }
+        val hrp = params.bech32Hrp
         return when {
-            script.size == 22 && op(0) == 0x00 && op(1) == 0x14 ->
-                Bech32.encodeWitness(network.bech32Hrp, 0, script.copyOfRange(2, 22))
-            script.size == 34 && op(0) == 0x00 && op(1) == 0x20 ->
-                Bech32.encodeWitness(network.bech32Hrp, 0, script.copyOfRange(2, 34))
-            script.size == 34 && op(0) == 0x51 && op(1) == 0x20 ->
-                Bech32.encodeWitness(network.bech32Hrp, 1, script.copyOfRange(2, 34))
+            hrp != null && script.size == 22 && op(0) == 0x00 && op(1) == 0x14 ->
+                Bech32.encodeWitness(hrp, 0, script.copyOfRange(2, 22))
+            hrp != null && script.size == 34 && op(0) == 0x00 && op(1) == 0x20 ->
+                Bech32.encodeWitness(hrp, 0, script.copyOfRange(2, 34))
+            hrp != null && script.size == 34 && op(0) == 0x51 && op(1) == 0x20 ->
+                Bech32.encodeWitness(hrp, 1, script.copyOfRange(2, 34))
             script.size == 25 && op(0) == 0x76 && op(1) == 0xA9 && op(2) == 0x14 && op(23) == 0x88 && op(24) == 0xAC ->
-                Base58.encodeChecked(byteArrayOf(network.p2pkhVersion.toByte()) + script.copyOfRange(3, 23))
+                Base58.encodeChecked(byteArrayOf(params.p2pkhVersion.toByte()) + script.copyOfRange(3, 23))
             script.size == 23 && op(0) == 0xA9 && op(1) == 0x14 && op(22) == 0x87 ->
-                Base58.encodeChecked(byteArrayOf(network.p2shVersion.toByte()) + script.copyOfRange(2, 22))
+                Base58.encodeChecked(byteArrayOf(params.p2shVersion.toByte()) + script.copyOfRange(2, 22))
             else -> null
         }
     }
