@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import com.sparrowwallet.mobile.crypto.Coin
 import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -158,7 +159,7 @@ fun PsbtReviewCard(review: PsbtReview) {
                         Text("change", fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Text(formatLtc(out.value), fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall)
+                    Text(formatAmount(Coin.LITECOIN, out.value), fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall)
                 }
             }
             val signedHere = review.inputs.count { it.ours }
@@ -166,7 +167,7 @@ fun PsbtReviewCard(review: PsbtReview) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 review.fee?.let { fee ->
-                    "Fee ${formatLtc(fee)}" + (review.feeRateLitPerVb?.let { " (%.2f lit/vB)".format(it) } ?: "")
+                    "Fee ${formatAmount(Coin.LITECOIN, fee)}" + (review.feeRateLitPerVb?.let { " (%.2f lit/vB)".format(it) } ?: "")
                 } ?: "Fee unknown",
                 style = MaterialTheme.typography.bodyMedium
             )

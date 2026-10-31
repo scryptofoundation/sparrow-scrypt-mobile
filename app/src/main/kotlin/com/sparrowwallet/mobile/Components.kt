@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import com.sparrowwallet.mobile.crypto.Coin
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -36,8 +37,6 @@ import java.util.Date
 import java.util.Locale
 
 // ---- formatting (shared by all screens) ----
-
-internal fun formatLtc(litoshis: Long): String = "%.8f LTC".format(litoshis / 1e8)
 
 internal fun formatUsd(litoshis: Long, price: Double?): String =
     price?.let { "$%,.2f".format(kotlin.math.abs(litoshis) / 1e8 * it) } ?: "—"
@@ -224,7 +223,8 @@ internal fun BalanceHeader(
     publicPart: Long? = null,
     privatePart: Long? = null,
     pending: Long? = null,
-    fiatNote: String? = null
+    fiatNote: String? = null,
+    coin: Coin = Coin.LITECOIN
 ) {
     val dark = isSystemInDarkTheme()
     val blue = if(dark) LtcPalette.blueDark else LtcPalette.blueLight
@@ -241,7 +241,7 @@ internal fun BalanceHeader(
         Text(
             listOfNotNull(
                 total?.let { "≈ ${formatUsd(it, usdNow)}" },
-                usdNow?.let { "$%,.2f / LTC".format(it) },
+                usdNow?.let { "$%,.2f / %s".format(it, coin.ticker) },
                 fiatNote
             ).joinToString(" · ").ifEmpty { " " },
             fontFamily = MonoFont, fontSize = 11.sp,
@@ -281,7 +281,7 @@ internal fun BalanceHeader(
             }
         }
         pending?.takeIf { it != 0L }?.let {
-            Text("${formatLtc(it)} pending", fontFamily = MonoFont, fontSize = 10.sp,
+            Text("${formatAmount(coin, it)} pending", fontFamily = MonoFont, fontSize = 10.sp,
                 color = LtcPalette.amber, modifier = Modifier.padding(top = 5.dp))
         }
     }
@@ -295,12 +295,6 @@ internal fun kindTitle(kind: TxKind): String = when(kind) {
     TxKind.SENT -> "Sent"
     TxKind.MOVE_PRIVATE -> "Moved to Private"
     TxKind.MOVE_PUBLIC -> "Moved to Public"
-}
-
-/** LTC amount without the trailing-zero noise: 0.02412456 stays, 0.50000000 → 0.5 */
-internal fun formatLtcShort(litoshis: Long): String {
-    val s = "%.8f".format(kotlin.math.abs(litoshis) / 1e8).trimEnd('0')
-    return if(s.endsWith('.')) s + "0" else s
 }
 
 @Composable
@@ -342,7 +336,7 @@ internal fun ActivityRow(tx: TxInfo, usdNow: Double?, onClick: () -> Unit) {
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(
-                (if(tx.delta >= 0) "+" else "−") + formatLtcShort(tx.delta),
+                (if(tx.delta >= 0) "+" else "−") + formatUnitsShort(tx.delta),
                 fontFamily = MonoFont, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                 color = if(tx.delta >= 0) kindColor(TxKind.RECEIVED)
                         else MaterialTheme.colorScheme.onSurface

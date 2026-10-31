@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import com.sparrowwallet.mobile.crypto.Coin
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -65,13 +66,13 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         if(!snap.initialScanComplete) continue // not caught up — next period retries
                         val unspent = snap.utxos.filter { !it.spent }
                         val fresh = SyncBaseline.newlyReceivedPrivate(creds, unspent.map { it.outputId to it.value })
-                        if(fresh > 0) received += "${formatLtc(fresh)} → ${creds.name} (private)"
+                        if(fresh > 0) received += "${formatAmount(Coin.LITECOIN, fresh)} → ${creds.name} (private)"
                         store.save(creds.copy(baselined = true, knownOutputIds = unspent.map { it.outputId }))
                     } else {
                         if(creds.xpub == null) continue
                         val snap = repo.scanXpub(creds)
                         val fresh = SyncBaseline.newlyReceived(creds, snap.history.map { it.txid to it.delta })
-                        if(fresh > 0) received += "${formatLtc(fresh)} → ${creds.name}"
+                        if(fresh > 0) received += "${formatAmount(Coin.fromId(creds.coin), fresh)} → ${creds.name}"
                         store.save(creds.copy(baselined = true, knownTxids = snap.history.map { it.txid }))
                     }
                 } catch(t: Throwable) {

@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import androidx.compose.material3.Checkbox
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -261,7 +262,7 @@ private fun App(repo: WalletRepository) {
                 onExport = { screen = Screen.ExportToDesktop(s.home) },
                 onBack = { screen = s.home })
             is Screen.TxDetail -> TxDetailScreen(
-                s.tx,
+                s.tx, repo.coin(s.home.data), repo.network(s.home.data),
                 onSaveLabel = if(s.home.password.isNotEmpty()) { label: String ->
                     val newData = repo.updateLabel(s.home.name, s.home.data, s.home.password, s.tx.txid, label)
                     val cleaned = label.trim().ifEmpty { null }
@@ -863,7 +864,7 @@ private fun UnlockScreen(name: String, repo: WalletRepository, onUnlocked: (Vaul
  * confirmations, block, txid with tap-to-copy, and the fiat value then and now.
  */
 @Composable
-private fun TxDetailScreen(tx: TxInfo, onSaveLabel: ((String) -> Unit)? = null, onBack: () -> Unit) {
+private fun TxDetailScreen(tx: TxInfo, coin: Coin, network: Network, onSaveLabel: ((String) -> Unit)? = null, onBack: () -> Unit) {
     val context = LocalContext.current
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     var usdThen by remember(tx.txid) { mutableStateOf<Double?>(null) }
@@ -886,7 +887,7 @@ private fun TxDetailScreen(tx: TxInfo, onSaveLabel: ((String) -> Unit)? = null, 
         Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
             TypeChip(tx.kind)
             Text(
-                (if(tx.delta >= 0) "+" else "") + formatLtc(tx.delta),
+                (if(tx.delta >= 0) "+" else "") + formatAmount(coin, tx.delta),
                 fontFamily = MonoFont, style = MaterialTheme.typography.headlineSmall,
                 color = if(tx.delta >= 0) kindColor(TxKind.RECEIVED) else MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.padding(top = 8.dp)
@@ -952,7 +953,7 @@ private fun TxDetailScreen(tx: TxInfo, onSaveLabel: ((String) -> Unit)? = null, 
                 kv("Date", formatDate(tx.timestamp?.takeIf { it > 0 }))
                 kv(if(tx.mweb && tx.txid.length != 64) "Output id" else "Txid",
                     tx.txid.take(10) + "…" + tx.txid.takeLast(8))
-                usdThen?.let { kv("Value then", "$%,.2f / LTC".format(it)) }
+                usdThen?.let { kv("Value then", "$%,.2f / %s".format(it, coin.ticker)) }
             }
         }
         Button(
@@ -963,12 +964,13 @@ private fun TxDetailScreen(tx: TxInfo, onSaveLabel: ((String) -> Unit)? = null, 
             modifier = Modifier.fillMaxWidth()
         ) { Text(if(copied) "Copied ✓" else if(tx.mweb && tx.txid.length != 64) "Copy output id" else "Copy txid") }
         // the browser would tie this txid to the phone's IP: not from an air-gapped signer
-        if(!tx.mweb && !NetworkPolicy.blocked) {
+        val explorerUrl = if(tx.mweb) null else Explorers.txUrl(coin, network, tx.txid)
+        if(explorerUrl != null && !NetworkPolicy.blocked) {
             OutlinedButton(
                 onClick = {
                     context.startActivity(android.content.Intent(
                         android.content.Intent.ACTION_VIEW,
-                        android.net.Uri.parse("https://litecoinspace.org/tx/${tx.txid}")
+                        android.net.Uri.parse(explorerUrl)
                     ))
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -1076,6 +1078,7 @@ private fun HomeScreen(
             val publicTotal = snapshot?.balance?.total
             val privateTotal = privateSnap?.let { it.confirmed + it.unconfirmed }
             BalanceHeader(
+                coin = repo.coin(data),
                 eyebrow = if(privateTotal != null) "Total balance" else "Balance",
                 total = publicTotal?.let { it + (privateTotal ?: 0) },
                 usdNow = usdNow,
@@ -1354,7 +1357,7 @@ private fun MwebHomeScreen(
                     for(utxo in snap.utxos.sortedByDescending { it.height }) {
                         Column {
                             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(formatLtc(utxo.value), style = MaterialTheme.typography.bodyMedium,
+                                Text(formatAmount(Coin.LITECOIN, utxo.value), style = MaterialTheme.typography.bodyMedium,
                                     color = if(utxo.spent) MaterialTheme.colorScheme.outline
                                             else MaterialTheme.colorScheme.primary)
                                 Text(
@@ -1429,8 +1432,8 @@ private fun PsbtSignScreen(
 
         ReviewCard(listOf(
             "To" to shortAddress(unsigned.toAddress),
-            "Amount" to formatLtc(unsigned.amount),
-            "Fee" to "${formatLtc(unsigned.fee)} (${unsigned.feeRatePerVb} lit/vB)",
+            "Amount" to formatAmount(repo.coin(home.data), unsigned.amount),
+            "Fee" to "${formatAmount(repo.coin(home.data), unsigned.fee)} (${unsigned.feeRatePerVb} ${feeUnit(repo.coin(home.data))})",
             "Txid" to shortAddress(unsigned.txid)
         ))
 
@@ -1715,7 +1718,7 @@ private fun ReceiveScreen(repo: WalletRepository, home: Screen.Home, startIndex:
             // stay inside the 20-address scan lookahead so a rotated-to address is still watched
             val index = (startIndex + offset).coerceAtMost(19)
             val address = remember(account, index, data) { repo.receiveAddress(data, account, index) }
-            QrImage(address)
+            QrImage(PaymentUri.build(repo.coin(data), address))
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Address #$index", style = MaterialTheme.typography.titleSmall)
@@ -1754,15 +1757,6 @@ private fun mwebStateText(s: MwebdService.MwebSnapshot): String = when {
     else -> ""
 }
 
-/** Parses a decimal LTC amount into litoshis, or null if it isn't a valid amount. */
-private fun ltcToLitoshis(text: String): Long? =
-    try {
-        val litoshis = text.trim().toBigDecimal().movePointRight(8)
-        if(litoshis.stripTrailingZeros().scale() > 0) null else litoshis.longValueExact().takeIf { it > 0 }
-    } catch(e: Exception) {
-        null
-    }
-
 /** Converts a USD amount string to litoshis at [rate] (USD per LTC), or null if invalid. */
 private fun usdToLitoshis(text: String, rate: Double): Long? =
     try {
@@ -1800,7 +1794,8 @@ private fun AmountSection(
     onMaxToggle: () -> Unit,
     usdRate: Double?,
     amountLitoshis: Long?,
-    maxHint: String
+    maxHint: String,
+    coin: Coin
 ) {
     SectionLabel("Amount")
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1815,10 +1810,10 @@ private fun AmountSection(
             trailingIcon = {
                 if(usdRate != null && !sendMax) {
                     TextButton(onClick = onUnitToggle) {
-                        Text(if(amountIsUsd) "USD ⇅" else "LTC ⇅", fontFamily = MonoFont)
+                        Text(if(amountIsUsd) "USD ⇅" else "${coin.ticker} ⇅", fontFamily = MonoFont)
                     }
                 } else {
-                    Text(if(amountIsUsd) "USD" else "LTC", fontFamily = MonoFont,
+                    Text(if(amountIsUsd) "USD" else coin.ticker, fontFamily = MonoFont,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(end = 14.dp))
                 }
@@ -1834,7 +1829,7 @@ private fun AmountSection(
     Text(
         when {
             sendMax -> "sending entire balance"
-            amountLitoshis != null && amountIsUsd -> "≈ ${formatLtc(amountLitoshis)}"
+            amountLitoshis != null && amountIsUsd -> "≈ ${formatAmount(coin, amountLitoshis)}"
             amountLitoshis != null -> "≈ ${formatUsd(amountLitoshis, usdRate)}"
             else -> " "
         },
@@ -1868,8 +1863,11 @@ private fun shortAddress(address: String): String =
  * utxos with the P2WPKH size formula (~11 + 68/input + 31/output vB). Returns null
  * when the amount can't be covered. Review still shows the exact built fee.
  */
-private fun estimatePublicFee(utxosDesc: List<Long>, amount: Long, sendMax: Boolean, ratePerVb: Long): Long? {
-    fun vsize(inputs: Int, outputs: Int): Long = 11L + 68L * inputs + 31L * outputs
+private fun estimatePublicFee(utxosDesc: List<Long>, amount: Long, sendMax: Boolean, ratePerVb: Long,
+                              coin: Coin = Coin.LITECOIN, inputType: ScriptType = ScriptType.P2WPKH): Long? {
+    val inputVbytes = when(inputType) { ScriptType.P2PKH -> 148L; ScriptType.P2SH_P2WPKH -> 91L; ScriptType.P2WPKH -> 68L }
+    val outputVbytes = if(inputType == ScriptType.P2WPKH) 31L else 34L
+    fun vsize(inputs: Int, outputs: Int): Long = coin.feeSize(11L + inputVbytes * inputs + outputVbytes * outputs)
     if(utxosDesc.isEmpty()) return null
     if(sendMax) return vsize(utxosDesc.size, 1) * ratePerVb
     var selected = 0
@@ -1923,7 +1921,7 @@ private fun SendScreen(
     val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         result.contents?.let { text ->
             try {
-                val payment = PaymentUri.parse(text)
+                val payment = PaymentUri.parse(text, sendCoin)
                 address = payment.address
                 payment.amount?.let { amountText = it; sendMax = false; amountIsUsd = false }
                 preview = null
@@ -1934,11 +1932,14 @@ private fun SendScreen(
         }
     }
 
-    val isMwebDest = repo.isMwebAddress(address, network)
+    val isMwebDest = sendCoin == Coin.LITECOIN && repo.isMwebAddress(address, network)
     val addressError = address.trim().takeIf { it.isNotEmpty() }
         ?.let { if(isMwebDest) null else repo.validateAddress(it, walletParams(sendCoin, network)) }
+    val sharedWarning = if(isMwebDest || addressError != null || address.isBlank()) null
+                        else sendWarning(sendCoin, network, address.trim())
+    var sharedConfirmed by remember(address) { mutableStateOf(false) }
     val amountLitoshis = if(amountIsUsd) usdRate?.let { usdToLitoshis(amountText, it) }
-                         else ltcToLitoshis(amountText)
+                         else parseAmount(amountText)
 
     val publicAvail = utxos?.sum() ?: publicData?.let { repo.cachedSnapshot(it)?.balance?.total }
     // spendable = 6+ confirmations, matching the builder's coin rule
@@ -1954,7 +1955,8 @@ private fun SendScreen(
         val rate = feeRate ?: return@run null
         val coins = utxos ?: return@run null
         if(publicData == null) return@run null
-        estimatePublicFee(coins, (amountLitoshis ?: 0L) + peginFee, sendMax, rate)?.plus(peginFee)
+        estimatePublicFee(coins, (amountLitoshis ?: 0L) + peginFee, sendMax, rate, sendCoin, repo.scriptType(publicData))
+            ?.plus(peginFee)
     }
     val privateFeeEst: Long? = run {
         val rate = feeRate ?: return@run null
@@ -2105,6 +2107,13 @@ private fun SendScreen(
                 ) { Text("→ My Private") }
             }
         }
+        if(sharedWarning != null) {
+            Text(sharedWarning, style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = sharedConfirmed, onCheckedChange = { sharedConfirmed = it; preview = null })
+                Text("The recipient expects ${sendCoin.displayName}", style = MaterialTheme.typography.bodySmall)
+            }
+        }
         if(address.isNotBlank() && addressError == null) {
             when {
                 fundingPrivate == true && isMwebDest ->
@@ -2149,7 +2158,7 @@ private fun SendScreen(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
                 SectionLabel("Public")
-                Text("${formatLtcShort(avail)} LTC · ${formatUsd(avail, usdRate)}",
+                Text("${formatAmountShort(sendCoin, avail)} · ${formatUsd(avail, usdRate)}",
                     fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall, maxLines = 1,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -2158,7 +2167,7 @@ private fun SendScreen(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
                 SectionLabel("Private")
-                Text("${formatLtcShort(avail)} LTC · ${formatUsd(avail, usdRate)}",
+                Text("${formatAmountShort(Coin.LITECOIN, avail)} · ${formatUsd(avail, usdRate)}",
                     fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall, maxLines = 1,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -2169,7 +2178,7 @@ private fun SendScreen(
             Text(
                 when {
                     estimatedFee != null && fundingCovers ->
-                        "≈ ${formatLtcShort(estimatedFee)} LTC · ${formatUsd(estimatedFee, usdRate)}"
+                        "≈ ${formatAmountShort(sendCoin, estimatedFee)} · ${formatUsd(estimatedFee, usdRate)}"
                     !amountEntered -> "…"
                     fundingPrivate == false -> "public coins can't cover this"
                     fundingPrivate == true -> "private coins can't cover this"
@@ -2189,24 +2198,25 @@ private fun SendScreen(
             onMaxToggle = { sendMax = !sendMax; preview = null },
             usdRate = usdRate,
             amountLitoshis = amountLitoshis,
-            maxHint = if(fundingPrivate == true) "Entire private balance" else "Entire public balance"
+            maxHint = if(fundingPrivate == true) "Entire private balance" else "Entire public balance",
+            coin = sendCoin
         )
 
         (preview as? WalletRepository.SendPreview)?.let { p ->
             ReviewCard(listOf(
                 "From" to "Public layer",
                 "To" to shortAddress(p.toAddress),
-                "Amount" to "${formatLtc(p.amount)} · ${formatUsd(p.amount, usdRate)}",
-                "Fee" to "${formatLtc(p.fee)} · ${formatUsd(p.fee, usdRate)}",
-                "Total" to "${formatLtc(p.amount + p.fee)} · ${formatUsd(p.amount + p.fee, usdRate)}"
+                "Amount" to "${formatAmount(sendCoin, p.amount)} · ${formatUsd(p.amount, usdRate)}",
+                "Fee" to "${formatAmount(sendCoin, p.fee)} · ${formatUsd(p.fee, usdRate)}",
+                "Total" to "${formatAmount(sendCoin, p.amount + p.fee)} · ${formatUsd(p.amount + p.fee, usdRate)}"
             ))
         }
         (preview as? WalletRepository.MwebSendPreview)?.let { p ->
             ReviewCard(listOf(
                 "From" to "Private layer",
                 "To" to shortAddress(p.toAddress),
-                "Amount" to "${formatLtc(p.amount)} · ${formatUsd(p.amount, usdRate)}",
-                "MWEB fee" to "${formatLtc(p.fee)} · ${formatUsd(p.fee, usdRate)}",
+                "Amount" to "${formatAmount(Coin.LITECOIN, p.amount)} · ${formatUsd(p.amount, usdRate)}",
+                "MWEB fee" to "${formatAmount(Coin.LITECOIN, p.fee)} · ${formatUsd(p.fee, usdRate)}",
                 "Type" to if(p.pegOut) "Move to Public (peg-out)" else "Private transfer"
             ))
         }
@@ -2217,7 +2227,8 @@ private fun SendScreen(
             Button(
                 onClick = { buildPreview() },
                 enabled = !busy && address.trim().isNotEmpty() && addressError == null
-                        && amountValid && fundingPrivate != null && fundingCovers,
+                        && amountValid && fundingPrivate != null && fundingCovers
+                        && (sharedWarning == null || sharedConfirmed),
                 modifier = Modifier.fillMaxWidth()
             ) { Text(if(busy) "Building…" else "Preview") }
         } else {

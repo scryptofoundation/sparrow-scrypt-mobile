@@ -2,7 +2,8 @@ package com.sparrowwallet.mobile.crypto
 
 /**
  * BIP21 payment URI parsing for scanned QR codes:
- *   litecoin:<address>?amount=<LTC decimal>&label=...&message=...
+ *   <coin scheme>:<address>?amount=<decimal>&label=...&message=...
+ * The scheme must be the wallet's coin's; another coin's request is refused.
  * Also accepts a bare address, and whole-payload-uppercase QRs (encoders uppercase
  * the entire string for QR alphanumeric mode, which has no lowercase letters).
  * Address validity is NOT checked here — callers validate against their network.
@@ -18,13 +19,23 @@ object PaymentUri {
 
     private val AMOUNT_REGEX = Regex("""\d+(\.\d{1,8})?""")
 
-    fun parse(text: String): Payment {
+    fun build(coin: Coin, address: String): String = "${coin.uriScheme}:$address"
+
+    fun parse(text: String, coin: Coin = Coin.LITECOIN): Payment {
         var body = text.trim()
-        if(body.length >= 9 && body.substring(0, 9).equals("litecoin:", ignoreCase = true)) {
-            body = body.substring(9).removePrefix("//")
+        val colon = body.indexOf(':')
+        if(colon > 0) {
+            val scheme = body.substring(0, colon)
+            val schemeCoin = Coin.entries.firstOrNull { it.uriScheme.equals(scheme, ignoreCase = true) }
+            if(schemeCoin != null) {
+                require(schemeCoin == coin) {
+                    "That is a ${schemeCoin.displayName} request; this is a ${coin.displayName} wallet"
+                }
+                body = body.substring(colon + 1).removePrefix("//")
+            }
         }
         val queryStart = body.indexOf('?')
-        val address = normalizeAddress(if(queryStart < 0) body else body.substring(0, queryStart))
+        val address = normalizeAddress(if(queryStart < 0) body else body.substring(0, queryStart), coin)
         require(address.isNotEmpty()) { "No address in the scanned code" }
 
         var amount: String? = null
@@ -56,12 +67,13 @@ object PaymentUri {
      * Lowercases an all-uppercase bech32 address (base58 is case-sensitive, so only
      * addresses whose lowercased form starts with a known HRP are touched).
      */
-    private fun normalizeAddress(raw: String): String {
+    private fun normalizeAddress(raw: String, coin: Coin): String {
         val addr = raw.trim()
         if(addr.any { it in 'a'..'z' }) return addr
         val lower = addr.lowercase()
         for(net in Network.entries) {
-            if(lower.startsWith(net.bech32Hrp + "1") || lower.startsWith(net.mwebHrp + "1")) {
+            val hrps = listOfNotNull(ChainParams.of(coin, net).bech32Hrp, net.mwebHrp.takeIf { coin.mweb })
+            if(hrps.any { lower.startsWith(it + "1") }) {
                 return lower
             }
         }

@@ -1,6 +1,7 @@
 package com.sparrowwallet.mobile.crypto
 
 import kotlin.test.Test
+import kotlin.test.assertTrue
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
@@ -95,5 +96,38 @@ class PaymentUriTest {
     fun multiByteUtf8LabelDecodes() {
         val p = PaymentUri.parse("litecoin:$bech32Addr?label=caf%C3%A9")
         assertEquals("café", p.label)
+    }
+
+    @Test
+    fun ownSchemeIsParsed() {
+        val p = PaymentUri.parse("dogecoin:DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L?amount=2.5", Coin.DOGECOIN)
+        assertEquals("DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L", p.address)
+        assertEquals("2.5", p.amount)
+    }
+
+    @Test
+    fun bareAddressIsAccepted() {
+        assertEquals("DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L",
+            PaymentUri.parse("DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L", Coin.DOGECOIN).address)
+    }
+
+    @Test
+    fun otherCoinsSchemeIsRefused() {
+        val e = assertFailsWith<IllegalArgumentException> {
+            PaymentUri.parse("DOGECOIN:DH5yaieqoZN36fDVciNyRueRGvGLR3mr7L", Coin.LITECOIN)
+        }
+        assertTrue("Dogecoin" in e.message!!, e.message)
+        assertTrue("Litecoin" in e.message!!, e.message)
+    }
+
+    @Test
+    fun buildUsesTheCoinsScheme() {
+        assertEquals("pepecoin:Pabc", PaymentUri.build(Coin.PEPECOIN, "Pabc"))
+        assertEquals("litecoin:ltc1qabc", PaymentUri.build(Coin.LITECOIN, "ltc1qabc"))
+    }
+
+    @Test
+    fun uppercaseBellsBech32IsLowercased() {
+        assertEquals("bel1qabc", PaymentUri.parse("BELLSCOIN:BEL1QABC", Coin.BELLSCOIN).address)
     }
 }
