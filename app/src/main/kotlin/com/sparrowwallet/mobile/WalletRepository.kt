@@ -6,6 +6,7 @@ import com.sparrowwallet.mobile.crypto.Bech32
 import com.sparrowwallet.mobile.crypto.Bip39
 import com.sparrowwallet.mobile.crypto.ElectrumSeed
 import com.sparrowwallet.mobile.crypto.HDKey
+import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.Psbt
@@ -18,7 +19,7 @@ import com.sparrowwallet.mobile.crypto.XpubKey
 import com.sparrowwallet.mobile.crypto.hexToBytes
 import com.sparrowwallet.mobile.crypto.toHex
 import com.sparrowwallet.mobile.electrum.ElectrumBackend
-import com.sparrowwallet.mobile.electrum.ElectrumClient
+import com.sparrowwallet.mobile.electrum.ChainBackend
 import com.sparrowwallet.mobile.electrum.SocksProxy
 import com.sparrowwallet.mobile.electrum.WalletScanner
 import com.sparrowwallet.mobile.electrum.WalletSnapshot
@@ -256,7 +257,7 @@ class WalletRepository(context: Context) {
 
     /** Balance/history check from a cached xpub alone — the background-sync read path. */
     suspend fun scanXpub(network: Network, xpub: String): WalletSnapshot =
-        withServer(network) { WalletScanner(ElectrumBackend(it)).sync(XpubKey.fromXpub(xpub)) }
+        withBackend(Coin.LITECOIN, network) { WalletScanner(it).sync(XpubKey.fromXpub(xpub)) }
 
     /** MWEB coin check from a cached scan key alone — the background-sync read path. */
     suspend fun mwebSnapshotFromScanKey(network: Network, scanSecretHex: String, birthHeight: Int): MwebdService.MwebSnapshot {
@@ -437,48 +438,47 @@ class WalletRepository(context: Context) {
 
     fun saveServerSettings(network: Network, s: ServerSettings) = saveServerSettings(Coin.LITECOIN, network, s)
 
-    private fun newClient(s: ServerSettings) = ElectrumClient(
-        s.host, s.port, s.useTls,
-        if(s.useProxy) SocksProxy(s.proxyHost, s.proxyPort) else null,
-        s.allowSelfSigned
-    )
-
-    /** Connects with the given settings and returns [serverSoftware, protocolVersion]. */
-    suspend fun testConnection(s: ServerSettings): List<String> = withContext(Dispatchers.IO) {
-        val client = newClient(s)
-        try {
-            client.connect()
-            client.serverVersion()
-        } finally {
-            client.close()
+    /**
+     * Connects with the given settings and returns what identifies the server:
+     * [software, protocol] for Electrum, ["Esplora", tip height] for an Esplora API.
+     */
+    suspend fun testConnection(s: ServerSettings, coin: Coin = Coin.LITECOIN, network: Network = Network.MAINNET): List<String> =
+        withContext(Dispatchers.IO) {
+            val backend = Backends.open(s, ChainParams.of(coin, network))
+            try {
+                backend.connect()
+                if(backend is ElectrumBackend) backend.serverVersion() else listOf("Esplora", backend.tipHeight().toString())
+            } finally {
+                backend.close()
+            }
         }
-    }
 
     /**
      * Connects to the user's server, or to the first public server that answers (the last one that
      * worked first). Only connecting falls back: once [block] starts, its errors are final, so a
      * broadcast is never sent twice.
      */
-    private suspend fun <T> withServer(network: Network, block: suspend (ElectrumClient) -> T): T =
+    private suspend fun <T> withBackend(coin: Coin, network: Network, block: suspend (ChainBackend) -> T): T =
         withContext(Dispatchers.IO) {
-            val custom = hasCustomServer(network)
-            val candidates = if(custom) listOf(serverSettings(network)) else publicServers(Coin.LITECOIN, network)
-            val (used, client) = ServerFallback.firstWorking(candidates) { s ->
-                val c = newClient(s)
+            val custom = hasCustomServer(coin, network)
+            val candidates = if(custom) listOf(serverSettings(coin, network)) else publicServers(coin, network)
+            if(candidates.isEmpty()) throw IllegalStateException("${coin.displayName} ${network.displayName} needs your own server")
+            val params = ChainParams.of(coin, network)
+            val (used, backend) = ServerFallback.firstWorking(candidates) { s ->
+                val b = Backends.open(s, params)
                 try {
-                    c.connect()
-                    c.serverVersion()
-                    c
+                    b.connect()
+                    b
                 } catch(e: Exception) {
-                    c.close()
+                    b.close()
                     throw e
                 }
             }
-            if(!custom) prefs.edit().putString(lastPublicKey(Coin.LITECOIN, network), used.host).apply()
+            if(!custom) prefs.edit().putString(lastPublicKey(coin, network), used.host).apply()
             try {
-                block(client)
+                block(backend)
             } finally {
-                client.close()
+                backend.close()
             }
         }
 
@@ -510,7 +510,7 @@ class WalletRepository(context: Context) {
             mwebSnapshotAt[data]?.let { System.currentTimeMillis() - it < maxAgeMs } == true
 
     suspend fun syncWallet(data: VaultData, account: HDKey): WalletSnapshot =
-        withServer(network(data)) { WalletScanner(ElectrumBackend(it)).sync(account) }
+        withBackend(Coin.LITECOIN, network(data)) { WalletScanner(it).sync(account) }
             .also { snapshotCache[data] = it; snapshotAt[data] = System.currentTimeMillis() }
 
     // ---- Sending ----
@@ -545,8 +545,8 @@ class WalletRepository(context: Context) {
             return preparePegIn(data, account, toAddress, amountLitoshis, sendMax)
         }
         val destScript = Addresses.toScriptPubKey(toAddress, net)
-        return withServer(net) { client ->
-            val feeRate = feeRatePerVb(client.estimateFee(2))
+        return withBackend(Coin.LITECOIN, net) { client ->
+            val feeRate = feeRatePerVb(client.feeRate(2))
             val (candidates, changeScript) = collectSpendables(client, account)
             val built = TxBuilder.build(candidates, destScript, amountLitoshis, feeRate, changeScript, sendMax)
             SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex())
@@ -564,9 +564,9 @@ class WalletRepository(context: Context) {
         snap.utxos.filter { !it.spent && confirmedEnough(snap.status.blockHeaderHeight.toLong(), it.height) }
             .sumOf { it.value }
 
-    private suspend fun collectSpendables(client: ElectrumClient, account: HDKey): Pair<List<SpendableInput>, ByteArray> {
+    private suspend fun collectSpendables(client: ChainBackend, account: HDKey): Pair<List<SpendableInput>, ByteArray> {
         val tip = client.tipHeight()
-        val scan = WalletScanner(ElectrumBackend(client)).utxos(account)
+        val scan = WalletScanner(client).utxos(account)
         val candidates = scan.utxos
             .filter { confirmedEnough(tip, it.utxo.height) }
             .map {
@@ -604,10 +604,10 @@ class WalletRepository(context: Context) {
             return preparePegInPsbt(data, account, toAddress, amountLitoshis, sendMax)
         }
         val destScript = Addresses.toScriptPubKey(toAddress, net)
-        return withServer(net) { client ->
-            val feeRate = feeRatePerVb(client.estimateFee(2))
+        return withBackend(Coin.LITECOIN, net) { client ->
+            val feeRate = feeRatePerVb(client.feeRate(2))
             val tip = client.tipHeight()
-            val scan = WalletScanner(ElectrumBackend(client)).utxos(account)
+            val scan = WalletScanner(client).utxos(account)
             val accountPath = parsePathChildren(data.derivationPath)
             val pathByKey = HashMap<HDKey, List<Long>>()
             val candidates = scan.utxos
@@ -642,10 +642,10 @@ class WalletRepository(context: Context) {
         val net = network(data)
         val program = Bech32.decodeWitness(toAddress.trim()).program
         require(program.size == 66) { "Not a valid MWEB address" }
-        val feeRate = withServer(net) { feeRatePerVb(it.estimateFee(2)) }
+        val feeRate = withBackend(Coin.LITECOIN, net) { feeRatePerVb(it.feeRate(2)) }
         val service = mwebd(data)
 
-        val (scan, tip) = withServer(net) { WalletScanner(ElectrumBackend(it)).utxos(account) to it.tipHeight() }
+        val (scan, tip) = withBackend(Coin.LITECOIN, net) { WalletScanner(it).utxos(account) to it.tipHeight() }
         val accountPath = parsePathChildren(data.derivationPath)
         val pathByKey = HashMap<HDKey, List<Long>>()
         val candidates = scan.utxos
@@ -737,7 +737,7 @@ class WalletRepository(context: Context) {
 
     /** Broadcasts a previously prepared transaction; returns the txid the server accepted. */
     suspend fun broadcast(network: Network, txHex: String): String =
-        withServer(network) { it.broadcast(txHex) }
+        withBackend(Coin.LITECOIN, network) { it.broadcast(txHex) }
 
     /**
      * Server estimatefee is LTC/kB (-1 when unknown). Converts to litoshis/vbyte,
@@ -745,19 +745,20 @@ class WalletRepository(context: Context) {
      */
     /** Current network fee rate (lit/vB) for up-front estimates on the send screens. */
     suspend fun currentFeeRate(network: Network): Long =
-        withServer(network) { feeRatePerVb(it.estimateFee(2)) }
+        withBackend(Coin.LITECOIN, network) { feeRatePerVb(it.feeRate(2)) }
 
     /** Spendable utxo values (confirmation rule applied), largest first — for live estimates. */
     suspend fun utxoValues(data: VaultData, account: HDKey): List<Long> =
-        withServer(network(data)) { client ->
+        withBackend(Coin.LITECOIN, network(data)) { client ->
             val tip = client.tipHeight()
-            WalletScanner(ElectrumBackend(client)).utxos(account).utxos
+            WalletScanner(client).utxos(account).utxos
                 .filter { confirmedEnough(tip, it.utxo.height) }
                 .map { it.utxo.value }
         }.sortedDescending()
 
-    private fun feeRatePerVb(ltcPerKb: Double): Long =
-        if(ltcPerKb <= 0) 10L else ceil(ltcPerKb * 1e8 / 1000).toLong().coerceIn(1L, 10_000L)
+    /** The server's estimate in sats (lits) per vbyte; 10 when it has none, clamped against absurd values. */
+    private fun feeRatePerVb(satPerVb: Double?): Long =
+        if(satPerVb == null || satPerVb <= 0) 10L else ceil(satPerVb).toLong().coerceIn(1L, 10_000L)
 
     // ---- Sparrow Link (desktop ↔ mobile transfer) ----
 
@@ -857,7 +858,7 @@ class WalletRepository(context: Context) {
             pegOut = true
         }
 
-        val feeRatePerKb = withServer(net) { feeRatePerVb(it.estimateFee(2)) } * 1000
+        val feeRatePerKb = withBackend(Coin.LITECOIN, net) { feeRatePerVb(it.feeRate(2)) } * 1000
         val snapshot = service.snapshot(scanSecret, mwebBirthHeight(data))
         // map each coin's stealth address back to its index (change = 0, receive i = i+1)
         val indexByAddress = buildMap {
@@ -928,8 +929,8 @@ class WalletRepository(context: Context) {
         val program = Bech32.decodeWitness(toAddress.trim()).program
         require(program.size == 66) { "Not a valid MWEB address" }
 
-        val feeRate = withServer(net) { feeRatePerVb(it.estimateFee(2)) }
-        val (candidates, changeScript) = withServer(net) { collectSpendables(it, account) }
+        val feeRate = withBackend(Coin.LITECOIN, net) { feeRatePerVb(it.feeRate(2)) }
+        val (candidates, changeScript) = withBackend(Coin.LITECOIN, net) { collectSpendables(it, account) }
         val service = mwebd(data)
 
         // Relay rules charge fee on the MWEB blob's bytes too (min relay = size × rate),

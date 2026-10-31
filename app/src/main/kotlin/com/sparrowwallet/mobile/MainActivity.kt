@@ -2284,7 +2284,7 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
                     busy = true; status = "Connecting…"
                     scope.launch {
                         status = try {
-                            val v = repo.testConnection(s)
+                            val v = repo.testConnection(s, network = network)
                             "Connected: ${v.getOrNull(0)} (protocol ${v.getOrNull(1)})"
                         } catch(t: Throwable) {
                             "Connection failed: ${t.message}"
