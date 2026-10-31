@@ -32,6 +32,11 @@ kotlin {
     }
 }
 
+// -PskipLive leaves out the tests that need public servers, which are sometimes all down
+tasks.withType<Test>().configureEach {
+    if(project.hasProperty("skipLive")) filter { excludeTestsMatching("*Live*") }
+}
+
 android {
     namespace = "com.sparrowwallet.mobile.electrum"
     compileSdk = 35

@@ -8,7 +8,7 @@ class SpendableInput(
     val vout: Long,
     val value: Long,  // smallest units (litoshis, sats)
     val key: HDKey,
-    val scriptType: ScriptType = ScriptType.P2WPKH
+    val scriptType: ScriptType
 )
 
 class BuiltTx(val tx: Tx, val amount: Long, val fee: Long, val change: Long) {
@@ -47,7 +47,7 @@ object TxBuilder {
         feeRatePerVb: Long,
         changeScript: ByteArray,
         sendMax: Boolean = false,
-        params: ChainParams = Network.MAINNET.litecoin
+        params: ChainParams
     ): BuiltTx {
         val unsigned = buildUnsigned(candidates, destScript, amount, feeRatePerVb, changeScript, sendMax, params)
         return sign(unsigned)
@@ -61,7 +61,7 @@ object TxBuilder {
         feeRatePerVb: Long,
         changeScript: ByteArray,
         sendMax: Boolean = false,
-        params: ChainParams = Network.MAINNET.litecoin
+        params: ChainParams
     ): UnsignedBuild {
         val coin = params.coin
         val floor = ceil(coin.recommendedFeeRate).toLong()

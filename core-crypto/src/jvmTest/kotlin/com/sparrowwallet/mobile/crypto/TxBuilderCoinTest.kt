@@ -47,7 +47,7 @@ class TxBuilderCoinTest {
     }
 
     @Test fun segwitInputOnALegacyOnlyCoinIsRefused() {
-        val segwitInput = SpendableInput("11".repeat(32), 0, 500_000_000, master.derivePath("m/44'/3'/0'/0/0"))
+        val segwitInput = SpendableInput("11".repeat(32), 0, 500_000_000, master.derivePath("m/44'/3'/0'/0/0"), ScriptType.P2WPKH)
         val e = assertFailsWith<IllegalArgumentException> {
             TxBuilder.build(listOf(segwitInput), p2pkh, 100_000_000, 1000, p2pkh, params = doge)
         }
@@ -73,5 +73,18 @@ class TxBuilderCoinTest {
             TxBuilder.build(listOf(input(500_000_000)), p2pkh, 999_999, 1000, p2pkh, params = doge)
         }
         assertEquals("Amount is below the 1000000 sats dust limit", e.message)
+    }
+
+    @Test fun dogeSendUsesLegacyChangeAndCoinFloor() {
+        val change = Scripts.outputScript(master.derivePath("m/44'/3'/0'/1/0").pubKey, ScriptType.P2PKH)
+        assertEquals(25, change.size)
+        assertTrue(change.toHex().startsWith("76a914"))
+        val inputs = listOf(input(300_000_000, "m/44'/3'/0'/0/0"), input(300_000_000, "m/44'/3'/0'/0/1"))
+        val built = TxBuilder.build(inputs, p2pkh, 400_000_000, 1000, change, params = doge)
+        val vsize = TxBuilder.estimateVsize(List(2) { ScriptType.P2PKH }, listOf(25, 25))
+        assertTrue(built.fee >= vsize * 1000)
+        assertTrue(built.tx.outputs.any { it.script.contentEquals(change) })
+        val raw = built.tx.serialize()
+        assertTrue(raw[4] != 0.toByte(), "no segwit marker")
     }
 }

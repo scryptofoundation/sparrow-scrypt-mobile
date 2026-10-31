@@ -12,6 +12,7 @@ import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.Psbt
 import com.sparrowwallet.mobile.crypto.PsbtReview
 import com.sparrowwallet.mobile.crypto.PsbtSigner
+import com.sparrowwallet.mobile.crypto.ScriptType
 import com.sparrowwallet.mobile.crypto.Scripts
 import com.sparrowwallet.mobile.crypto.SpendableInput
 import com.sparrowwallet.mobile.crypto.TxBuilder
@@ -245,7 +246,7 @@ class WalletRepository(context: Context) {
             knownOutputIds = prior?.knownOutputIds ?: emptyList()
         ) else SyncCredentials(
             name = name, network = data.network, scriptType = data.scriptType, coin = data.coin,
-            xpub = accountKey(data).xpub(network(data).xpubHeader),
+            xpub = accountXpub(data),
             baselined = prior?.baselined ?: false,
             knownTxids = prior?.knownTxids ?: emptyList()
         )
@@ -253,8 +254,12 @@ class WalletRepository(context: Context) {
     }
 
     /** Balance/history check from a cached xpub alone — the background-sync read path. */
-    suspend fun scanXpub(network: Network, xpub: String): WalletSnapshot =
-        withBackend(Coin.LITECOIN, network) { WalletScanner(it).sync(XpubKey.fromXpub(xpub)) }
+    suspend fun scanXpub(creds: SyncCredentials): WalletSnapshot {
+        val xpub = requireNotNull(creds.xpub) { "No xpub" }
+        return withBackend(Coin.fromId(creds.coin), Network.fromId(creds.network)) {
+            WalletScanner(it, walletScriptType(creds.scriptType)).sync(XpubKey.fromXpub(xpub))
+        }
+    }
 
     /** MWEB coin check from a cached scan key alone — the background-sync read path. */
     suspend fun mwebSnapshotFromScanKey(network: Network, scanSecretHex: String, birthHeight: Int): MwebdService.MwebSnapshot {
@@ -333,6 +338,10 @@ class WalletRepository(context: Context) {
 
     fun coin(data: VaultData): Coin = Coin.fromId(data.coin)
 
+    fun params(data: VaultData): ChainParams = walletParams(coin(data), network(data))
+
+    fun scriptType(data: VaultData): ScriptType = walletScriptType(data.scriptType)
+
     fun masterKey(data: VaultData): HDKey {
         val seed = if(data.seedType == "ELECTRUM") ElectrumSeed.toSeed(data.mnemonic, data.passphrase)
                    else Bip39.seed(data.mnemonic, data.passphrase)
@@ -344,10 +353,10 @@ class WalletRepository(context: Context) {
     /** The account's derivation as child numbers (hardened ones with the 0x80000000 bit). */
     fun accountPath(data: VaultData): List<Long> = parsePathChildren(data.derivationPath)
 
-    fun receiveAddress(account: HDKey, index: Int, network: Network): String =
-        Addresses.p2wpkh(account.deriveChild(0).deriveChild(index.toLong()).pubKey, network.bech32Hrp)
+    fun receiveAddress(data: VaultData, account: HDKey, index: Int): String =
+        Addresses.forKey(account.deriveChild(0).deriveChild(index.toLong()).pubKey, scriptType(data), params(data))
 
-    fun accountXpub(data: VaultData): String = accountKey(data).xpub(network(data).xpubHeader)
+    fun accountXpub(data: VaultData): String = accountKey(data).xpub(params(data).xpubHeader)
 
     /** MWEB keys/address, derived exactly like desktop drongo's Keystore (m/1000', scan 0', spend 1'). */
     data class MwebInfo(val firstAddress: String, val scanSecretHex: String, val spendPubKeyHex: String)
@@ -509,7 +518,7 @@ class WalletRepository(context: Context) {
             mwebSnapshotAt[data]?.let { System.currentTimeMillis() - it < maxAgeMs } == true
 
     suspend fun syncWallet(data: VaultData, account: HDKey): WalletSnapshot =
-        withBackend(Coin.LITECOIN, network(data)) { WalletScanner(it).sync(account) }
+        withBackend(coin(data), network(data)) { WalletScanner(it, scriptType(data)).sync(account) }
             .also { snapshotCache[data] = it; snapshotAt[data] = System.currentTimeMillis() }
 
     // ---- Sending ----
@@ -525,9 +534,9 @@ class WalletRepository(context: Context) {
     )
 
     /** Returns a user-facing error for an unusable destination address, or null if it's fine. */
-    fun validateAddress(address: String, network: Network): String? =
+    fun validateAddress(address: String, params: ChainParams): String? =
         try {
-            Addresses.toScriptPubKey(address, network)
+            Addresses.toScriptPubKey(address, params)
             null
         } catch(e: Exception) {
             e.message ?: "Invalid address"
@@ -540,14 +549,16 @@ class WalletRepository(context: Context) {
      */
     suspend fun prepareSend(data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean): SendPreview {
         val net = network(data)
-        if(isMwebAddress(toAddress, net)) {
+        val coin = coin(data)
+        if(coin == Coin.LITECOIN && isMwebAddress(toAddress, net)) {
             return preparePegIn(data, account, toAddress, amountLitoshis, sendMax)
         }
-        val destScript = Addresses.toScriptPubKey(toAddress, net)
-        return withBackend(Coin.LITECOIN, net) { client ->
-            val feeRate = feeRatePerVb(client.feeRate(2))
-            val (candidates, changeScript) = collectSpendables(client, account)
-            val built = TxBuilder.build(candidates, destScript, amountLitoshis, feeRate, changeScript, sendMax)
+        val params = params(data)
+        val destScript = Addresses.toScriptPubKey(toAddress, params)
+        return withBackend(coin, net) { client ->
+            val feeRate = clampFeeRate(coin, client.feeRate(2))
+            val (candidates, changeScript) = collectSpendables(client, account, scriptType(data))
+            val built = TxBuilder.build(candidates, destScript, amountLitoshis, feeRate, changeScript, sendMax, params)
             SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex())
         }
     }
@@ -563,19 +574,19 @@ class WalletRepository(context: Context) {
         snap.utxos.filter { !it.spent && confirmedEnough(snap.status.blockHeaderHeight.toLong(), it.height) }
             .sumOf { it.value }
 
-    private suspend fun collectSpendables(client: ChainBackend, account: HDKey): Pair<List<SpendableInput>, ByteArray> {
+    private suspend fun collectSpendables(client: ChainBackend, account: HDKey, scriptType: ScriptType): Pair<List<SpendableInput>, ByteArray> {
         val tip = client.tipHeight()
-        val scan = WalletScanner(client).utxos(account)
+        val scan = WalletScanner(client, scriptType).utxos(account)
         val candidates = scan.utxos
             .filter { confirmedEnough(tip, it.utxo.height) }
             .map {
                 SpendableInput(
                     it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value,
-                    account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
+                    account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong()), scriptType
                 )
             }
         val changePub = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong()).pubKey
-        return candidates to Scripts.p2wpkhOutput(changePub)
+        return candidates to Scripts.outputScript(changePub, scriptType)
     }
 
     class UnsignedSendPreview(
@@ -599,14 +610,21 @@ class WalletRepository(context: Context) {
         data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean
     ): UnsignedSendPreview {
         val net = network(data)
-        if(isMwebAddress(toAddress, net)) {
+        val coin = coin(data)
+        if(coin == Coin.LITECOIN && isMwebAddress(toAddress, net)) {
             return preparePegInPsbt(data, account, toAddress, amountLitoshis, sendMax)
         }
-        val destScript = Addresses.toScriptPubKey(toAddress, net)
-        return withBackend(Coin.LITECOIN, net) { client ->
-            val feeRate = feeRatePerVb(client.feeRate(2))
+        //PSBTs carry witness UTXOs only; legacy and nested inputs need phase 5's full previous transactions
+        require(scriptType(data) == ScriptType.P2WPKH) {
+            if(!coin.segwit) "Signing on another device is not available for ${coin.displayName} wallets yet"
+            else "Signing on another device is only available for Native Segwit wallets so far"
+        }
+        val params = params(data)
+        val destScript = Addresses.toScriptPubKey(toAddress, params)
+        return withBackend(coin, net) { client ->
+            val feeRate = clampFeeRate(coin, client.feeRate(2))
             val tip = client.tipHeight()
-            val scan = WalletScanner(client).utxos(account)
+            val scan = WalletScanner(client, ScriptType.P2WPKH).utxos(account)
             val accountPath = parsePathChildren(data.derivationPath)
             val pathByKey = HashMap<HDKey, List<Long>>()
             val candidates = scan.utxos
@@ -614,12 +632,12 @@ class WalletRepository(context: Context) {
                 .map {
                     val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                     pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
-                    SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key)
+                    SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key, ScriptType.P2WPKH)
                 }
             val changeKey = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong())
             val unsigned = TxBuilder.buildUnsigned(
                 candidates, destScript, amountLitoshis, feeRate,
-                Scripts.p2wpkhOutput(changeKey.pubKey), sendMax
+                Scripts.p2wpkhOutput(changeKey.pubKey), sendMax, params
             )
             val psbt = Psbt.create(
                 unsigned, masterKey(data).fingerprint,
@@ -641,10 +659,13 @@ class WalletRepository(context: Context) {
         val net = network(data)
         val program = Bech32.decodeWitness(toAddress.trim()).program
         require(program.size == 66) { "Not a valid MWEB address" }
-        val feeRate = withBackend(Coin.LITECOIN, net) { feeRatePerVb(it.feeRate(2)) }
+        requirePegInWallet(data)
+        val feeRate = withBackend(Coin.LITECOIN, net) { clampFeeRate(Coin.LITECOIN, it.feeRate(2)) }
         val service = mwebd(data)
 
-        val (scan, tip) = withBackend(Coin.LITECOIN, net) { WalletScanner(it).utxos(account) to it.tipHeight() }
+        val (scan, tip) = withBackend(Coin.LITECOIN, net) {
+            WalletScanner(it, ScriptType.P2WPKH).utxos(account) to it.tipHeight()
+        }
         val accountPath = parsePathChildren(data.derivationPath)
         val pathByKey = HashMap<HDKey, List<Long>>()
         val candidates = scan.utxos
@@ -652,7 +673,7 @@ class WalletRepository(context: Context) {
             .map {
                 val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                 pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
-                SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key)
+                SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key, ScriptType.P2WPKH)
             }
         val changeKey = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong())
         val changeScript = Scripts.p2wpkhOutput(changeKey.pubKey)
@@ -679,7 +700,8 @@ class WalletRepository(context: Context) {
             val template = service.createPegIn(
                 mwebScanSecret(data), mwebSpendSecret(data), program, amount, feeRate * 1000)
             val unsigned = TxBuilder.buildUnsigned(
-                candidates, template.peginScript, template.peginValue, effectiveRate, changeScript, sendMax)
+                candidates, template.peginScript, template.peginValue, effectiveRate, changeScript, sendMax,
+                ChainParams.of(Coin.LITECOIN, net))
             if(sendMax) {
                 require(unsigned.tx.outputs[0].value == template.peginValue) {
                     "Peg-in max calculation mismatch — enter a specific amount instead"
@@ -728,36 +750,28 @@ class WalletRepository(context: Context) {
 
     /** Finalizes an externally signed PSBT (base64) and broadcasts it; returns the txid.
      *  [mwebBlob] re-attaches a peg-in's MWEB extension that never left the phone. */
-    suspend fun finalizeAndBroadcast(network: Network, psbtBase64: String, mwebBlob: ByteArray? = null): String {
+    suspend fun finalizeAndBroadcast(coin: Coin, network: Network, psbtBase64: String, mwebBlob: ByteArray? = null): String {
         val tx = Psbt.finalize(Psbt.parse(Psbt.fromBase64(psbtBase64)))
         tx.mwebExtension = mwebBlob
-        return broadcast(network, tx.serialize().toHex())
+        return broadcast(coin, network, tx.serialize().toHex())
     }
 
     /** Broadcasts a previously prepared transaction; returns the txid the server accepted. */
-    suspend fun broadcast(network: Network, txHex: String): String =
-        withBackend(Coin.LITECOIN, network) { it.broadcast(txHex) }
+    suspend fun broadcast(coin: Coin, network: Network, txHex: String): String =
+        withBackend(coin, network) { it.broadcast(txHex) }
 
-    /**
-     * Server estimatefee is LTC/kB (-1 when unknown). Converts to litoshis/vbyte,
-     * falling back to 10 lit/vB and clamping against absurd server values.
-     */
-    /** Current network fee rate (lit/vB) for up-front estimates on the send screens. */
-    suspend fun currentFeeRate(network: Network): Long =
-        withBackend(Coin.LITECOIN, network) { feeRatePerVb(it.feeRate(2)) }
+    /** Current fee rate in the coin's sats (lits) per vbyte, for up-front estimates on the send screens. */
+    suspend fun currentFeeRate(coin: Coin, network: Network): Long =
+        withBackend(coin, network) { clampFeeRate(coin, it.feeRate(2)) }
 
     /** Spendable utxo values (confirmation rule applied), largest first — for live estimates. */
     suspend fun utxoValues(data: VaultData, account: HDKey): List<Long> =
-        withBackend(Coin.LITECOIN, network(data)) { client ->
+        withBackend(coin(data), network(data)) { client ->
             val tip = client.tipHeight()
-            WalletScanner(client).utxos(account).utxos
+            WalletScanner(client, scriptType(data)).utxos(account).utxos
                 .filter { confirmedEnough(tip, it.utxo.height) }
                 .map { it.utxo.value }
         }.sortedDescending()
-
-    /** The server's estimate in sats (lits) per vbyte; 10 when it has none, clamped against absurd values. */
-    private fun feeRatePerVb(satPerVb: Double?): Long =
-        if(satPerVb == null || satPerVb <= 0) 10L else ceil(satPerVb).toLong().coerceIn(1L, 10_000L)
 
     // ---- Sparrow Link (desktop ↔ mobile transfer) ----
 
@@ -776,7 +790,7 @@ class WalletRepository(context: Context) {
                 mnemonic = data.mnemonic,
                 derivationPath = data.derivationPath,
                 masterFingerprint = masterKey(data).fingerprint.toHex(),
-                xpub = accountKey(data).xpub(net.xpubHeader),
+                xpub = accountXpub(data),
                 password = password
             )
         }
@@ -857,7 +871,7 @@ class WalletRepository(context: Context) {
             pegOut = true
         }
 
-        val feeRatePerKb = withBackend(Coin.LITECOIN, net) { feeRatePerVb(it.feeRate(2)) } * 1000
+        val feeRatePerKb = withBackend(Coin.LITECOIN, net) { clampFeeRate(Coin.LITECOIN, it.feeRate(2)) } * 1000
         val snapshot = service.snapshot(scanSecret, mwebBirthHeight(data))
         // map each coin's stealth address back to its index (change = 0, receive i = i+1)
         val indexByAddress = buildMap {
@@ -923,13 +937,21 @@ class WalletRepository(context: Context) {
      * and hands back a kernel-bound peg-in output, which is then funded and signed like a
      * normal transaction, with the MWEB blob attached.
      */
+    /** Peg-ins move Litecoin into MWEB; their fee sizing assumes Native Segwit inputs. */
+    private fun requirePegInWallet(data: VaultData) {
+        require(coin(data) == Coin.LITECOIN && scriptType(data) == ScriptType.P2WPKH) {
+            "Moving coins into MWEB needs a Native Segwit Litecoin wallet"
+        }
+    }
+
     private suspend fun preparePegIn(data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean): SendPreview {
         val net = network(data)
         val program = Bech32.decodeWitness(toAddress.trim()).program
         require(program.size == 66) { "Not a valid MWEB address" }
 
-        val feeRate = withBackend(Coin.LITECOIN, net) { feeRatePerVb(it.feeRate(2)) }
-        val (candidates, changeScript) = withBackend(Coin.LITECOIN, net) { collectSpendables(it, account) }
+        requirePegInWallet(data)
+        val feeRate = withBackend(Coin.LITECOIN, net) { clampFeeRate(Coin.LITECOIN, it.feeRate(2)) }
+        val (candidates, changeScript) = withBackend(Coin.LITECOIN, net) { collectSpendables(it, account, ScriptType.P2WPKH) }
         val service = mwebd(data)
 
         // Relay rules charge fee on the MWEB blob's bytes too (min relay = size × rate),
@@ -959,7 +981,7 @@ class WalletRepository(context: Context) {
                 mwebScanSecret(data), mwebSpendSecret(data), program, amount, feeRate * 1000
             )
             val built = TxBuilder.build(candidates, template.peginScript, template.peginValue,
-                effectiveRate, changeScript, sendMax)
+                effectiveRate, changeScript, sendMax, ChainParams.of(Coin.LITECOIN, net))
             if(sendMax) {
                 require(built.tx.outputs[0].value == template.peginValue) {
                     "Peg-in max calculation mismatch — enter a specific amount instead"

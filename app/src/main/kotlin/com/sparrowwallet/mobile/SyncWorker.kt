@@ -68,8 +68,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         if(fresh > 0) received += "${formatLtc(fresh)} → ${creds.name} (private)"
                         store.save(creds.copy(baselined = true, knownOutputIds = unspent.map { it.outputId }))
                     } else {
-                        val xpub = creds.xpub ?: continue
-                        val snap = repo.scanXpub(network, xpub)
+                        if(creds.xpub == null) continue
+                        val snap = repo.scanXpub(creds)
                         val fresh = SyncBaseline.newlyReceived(creds, snap.history.map { it.txid to it.delta })
                         if(fresh > 0) received += "${formatLtc(fresh)} → ${creds.name}"
                         store.save(creds.copy(baselined = true, knownTxids = snap.history.map { it.txid }))

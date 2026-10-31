@@ -47,6 +47,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.NetworkPolicy
@@ -1454,7 +1455,7 @@ private fun PsbtSignScreen(
                 busy = true; error = null
                 scope.launch {
                     try {
-                        sentTxid = repo.finalizeAndBroadcast(network, signedText, unsigned.mwebBlob)
+                        sentTxid = repo.finalizeAndBroadcast(repo.coin(home.data), network, signedText, unsigned.mwebBlob)
                         if(sentTxid != null) repo.invalidateSnapshots(home.data, home.linkedData)
                     } catch(t: Throwable) {
                         error = t.message ?: "Could not finalize the PSBT"
@@ -1678,7 +1679,7 @@ private fun ReceiveScreen(repo: WalletRepository, home: Screen.Home, startIndex:
             var offset by remember { mutableStateOf(0) }
             // stay inside the 20-address scan lookahead so a rotated-to address is still watched
             val index = (startIndex + offset).coerceAtMost(19)
-            val address = remember(account, index, network) { repo.receiveAddress(account, index, network) }
+            val address = remember(account, index, data) { repo.receiveAddress(data, account, index) }
             QrImage(address)
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1861,6 +1862,7 @@ private fun SendScreen(
                       else home.linkedData?.takeIf { it.scriptType == "MWEB" }
     val scope = rememberCoroutineScope()
     val network = remember(home.data) { repo.network(home.data) }
+    val sendCoin = remember(publicData) { publicData?.let { repo.coin(it) } ?: Coin.LITECOIN }
     val publicAccount = remember(publicData) { publicData?.let { repo.accountKey(it) } }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
 
@@ -1878,7 +1880,7 @@ private fun SendScreen(
     LaunchedEffect(Unit) {
         if(NetworkPolicy.blocked) return@LaunchedEffect
         usdRate = PriceService.currentUsd()
-        feeRate = runCatching { repo.currentFeeRate(network) }.getOrNull()
+        feeRate = runCatching { repo.currentFeeRate(sendCoin, network) }.getOrNull()
         utxos = publicData?.let { d ->
             runCatching { repo.utxoValues(d, publicAccount!!) }.getOrNull()
         } ?: emptyList()
@@ -1899,7 +1901,7 @@ private fun SendScreen(
 
     val isMwebDest = repo.isMwebAddress(address, network)
     val addressError = address.trim().takeIf { it.isNotEmpty() }
-        ?.let { if(isMwebDest) null else repo.validateAddress(it, network) }
+        ?.let { if(isMwebDest) null else repo.validateAddress(it, walletParams(sendCoin, network)) }
     val amountLitoshis = if(amountIsUsd) usdRate?.let { usdToLitoshis(amountText, it) }
                          else ltcToLitoshis(amountText)
 
@@ -1989,7 +1991,7 @@ private fun SendScreen(
         scope.launch {
             try {
                 sentTxid = when(val p = preview) {
-                    is WalletRepository.SendPreview -> repo.broadcast(network, p.txHex)
+                    is WalletRepository.SendPreview -> repo.broadcast(sendCoin, network, p.txHex)
                     is WalletRepository.MwebSendPreview -> repo.broadcastMweb(privateData!!, p.rawTx)
                     else -> null
                 }
@@ -2051,8 +2053,8 @@ private fun SendScreen(
             if(publicData != null && publicAccount != null) {
                 OutlinedButton(
                     onClick = {
-                        address = repo.receiveAddress(publicAccount,
-                            repo.cachedSnapshot(publicData)?.firstUnusedReceiveIndex ?: 0, network)
+                        address = repo.receiveAddress(publicData, publicAccount,
+                            repo.cachedSnapshot(publicData)?.firstUnusedReceiveIndex ?: 0)
                         sendMax = false; preview = null
                     },
                     enabled = !busy, modifier = Modifier.weight(1f)

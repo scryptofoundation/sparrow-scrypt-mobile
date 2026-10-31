@@ -19,9 +19,9 @@ class TxBuilderTest {
     private fun fakeTxid(fill: Int): String = fill.toString(16).padStart(2, '0').repeat(32)
 
     private val candidates = listOf(
-        SpendableInput(fakeTxid(1), 0, 50_000, account.deriveChild(0).deriveChild(0)),
-        SpendableInput(fakeTxid(2), 1, 30_000, account.deriveChild(0).deriveChild(1)),
-        SpendableInput(fakeTxid(3), 0, 20_000, account.deriveChild(1).deriveChild(0))
+        SpendableInput(fakeTxid(1), 0, 50_000, account.deriveChild(0).deriveChild(0), ScriptType.P2WPKH),
+        SpendableInput(fakeTxid(2), 1, 30_000, account.deriveChild(0).deriveChild(1), ScriptType.P2WPKH),
+        SpendableInput(fakeTxid(3), 0, 20_000, account.deriveChild(1).deriveChild(0), ScriptType.P2WPKH)
     )
     private val destScript = Scripts.p2wpkhOutput(account.deriveChild(0).deriveChild(5).pubKey)
     private val changeScript = Scripts.p2wpkhOutput(account.deriveChild(1).deriveChild(1).pubKey)
@@ -32,7 +32,7 @@ class TxBuilderTest {
 
     @Test
     fun selectsLargestFirstAndReturnsChange() {
-        val built = TxBuilder.build(candidates, destScript, 60_000, 2, changeScript)
+        val built = TxBuilder.build(candidates, destScript, 60_000, 2, changeScript, params = Network.MAINNET.litecoin)
         assertEquals(2, built.tx.inputs.size) // 50k + 30k cover it, 20k untouched
         assertEquals(2, built.tx.outputs.size)
         assertEquals(60_000L, built.tx.outputs[0].value)
@@ -45,7 +45,7 @@ class TxBuilderTest {
 
     @Test
     fun everyInputCarriesAWitness() {
-        val built = TxBuilder.build(candidates, destScript, 60_000, 2, changeScript)
+        val built = TxBuilder.build(candidates, destScript, 60_000, 2, changeScript, params = Network.MAINNET.litecoin)
         for(input in built.tx.inputs) {
             assertEquals(2, input.witness.size)
             assertEquals(33, input.witness[1].size) // compressed pubkey
@@ -58,7 +58,7 @@ class TxBuilderTest {
 
     @Test
     fun sendMaxSweepsEverythingWithSingleOutput() {
-        val built = TxBuilder.build(candidates, destScript, 0, 1, changeScript, sendMax = true)
+        val built = TxBuilder.build(candidates, destScript, 0, 1, changeScript, sendMax = true, params = Network.MAINNET.litecoin)
         assertEquals(3, built.tx.inputs.size)
         assertEquals(1, built.tx.outputs.size)
         assertEquals(TxBuilder.estimateVsize(3, listOf(22)), built.fee)
@@ -70,7 +70,7 @@ class TxBuilderTest {
     @Test
     fun dustChangeIsFoldedIntoFee() {
         // 50k+30k selected; change = 80_000 - 79_500 - 209 = 291 < 546 dust
-        val built = TxBuilder.build(candidates, destScript, 79_500, 1, changeScript)
+        val built = TxBuilder.build(candidates, destScript, 79_500, 1, changeScript, params = Network.MAINNET.litecoin)
         assertEquals(1, built.tx.outputs.size)
         assertEquals(0L, built.change)
         assertEquals(80_000L - 79_500L, built.fee)
@@ -80,7 +80,7 @@ class TxBuilderTest {
     @Test
     fun insufficientFundsThrows() {
         val error = assertFailsWith<IllegalArgumentException> {
-            TxBuilder.build(candidates, destScript, 99_900, 2, changeScript)
+            TxBuilder.build(candidates, destScript, 99_900, 2, changeScript, params = Network.MAINNET.litecoin)
         }
         assertTrue(error.message!!.contains("Insufficient"))
     }
@@ -88,14 +88,14 @@ class TxBuilderTest {
     @Test
     fun dustAmountThrows() {
         assertFailsWith<IllegalArgumentException> {
-            TxBuilder.build(candidates, destScript, 500, 1, changeScript)
+            TxBuilder.build(candidates, destScript, 500, 1, changeScript, params = Network.MAINNET.litecoin)
         }
     }
 
     @Test
     fun feeRateFloorEnforced() {
         assertFailsWith<IllegalArgumentException> {
-            TxBuilder.build(candidates, destScript, 60_000, 0, changeScript)
+            TxBuilder.build(candidates, destScript, 60_000, 0, changeScript, params = Network.MAINNET.litecoin)
         }
     }
 }

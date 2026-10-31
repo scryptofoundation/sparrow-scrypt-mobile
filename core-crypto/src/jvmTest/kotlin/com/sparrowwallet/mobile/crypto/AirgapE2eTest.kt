@@ -29,12 +29,12 @@ class AirgapE2eTest {
     private val prevTx2 = Tx(2, listOf(TxInput("dd".repeat(32), 0, 0xFFFFFFFFL, ByteArray(0))),
         listOf(TxOutput(5_000, destScript), TxOutput(700_000, Scripts.p2wpkhOutput(key1.pubKey))))
     private val inputs = listOf(
-        SpendableInput(prevTx.txid(), 0, 1_500_000, key0),
-        SpendableInput(prevTx2.txid(), 1, 700_000, key1)
+        SpendableInput(prevTx.txid(), 0, 1_500_000, key0, ScriptType.P2WPKH),
+        SpendableInput(prevTx2.txid(), 1, 700_000, key1, ScriptType.P2WPKH)
     )
 
     private fun unsignedPsbt(): ByteArray {
-        val unsigned = TxBuilder.buildUnsigned(inputs, destScript, 1_900_000, 3, changeScript)
+        val unsigned = TxBuilder.buildUnsigned(inputs, destScript, 1_900_000, 3, changeScript, params = Network.MAINNET.litecoin)
         val base = Psbt.create(unsigned, master.fingerprint,
             pathFor = { if(it.key == key0) path(0, 0) else path(0, 1) },
             changeIndex = 1, changePubKey = changeKey.pubKey, changePath = path(1, 0))
@@ -61,7 +61,7 @@ class AirgapE2eTest {
             val kept = after[m].filter { !(m in 1..2 && it.first[0].toInt() == 0x02) }
             assertEquals(before[m].map { it.first.toHex() + it.second.toHex() }, kept.map { it.first.toHex() + it.second.toHex() })
         }
-        val direct = TxBuilder.build(inputs, destScript, 1_900_000, 3, changeScript)
+        val direct = TxBuilder.build(inputs, destScript, 1_900_000, 3, changeScript, params = Network.MAINNET.litecoin)
         val final = Psbt.finalize(Psbt.parse(signed))
         assertContentEquals(direct.tx.serialize(), final.serialize())
         File(dir, "verified.txt").writeText("signed by the phone, finalizes to txid ${final.txid()}\n")

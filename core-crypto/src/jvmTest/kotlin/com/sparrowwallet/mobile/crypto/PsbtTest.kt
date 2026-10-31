@@ -24,8 +24,8 @@ class PsbtTest {
 
     @Test
     fun psbtPathMatchesDirectSigningExactly() {
-        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript)
-        val unsigned = TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript)
+        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
+        val unsigned = TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
         val psbt = createPsbt(unsigned)
 
         val parsed = Psbt.parse(psbt)
@@ -46,14 +46,14 @@ class PsbtTest {
 
     @Test
     fun finalizeRejectsUnsignedPsbt() {
-        val unsigned = TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript)
+        val unsigned = TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
         val parsed = Psbt.parse(createPsbt(unsigned))
         assertFailsWith<IllegalArgumentException> { Psbt.finalize(parsed) }
     }
 
     @Test
     fun base64RoundTrip() {
-        val unsigned = TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript)
+        val unsigned = TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
         val psbt = createPsbt(unsigned)
         assertContentEquals(psbt, Psbt.fromBase64(Psbt.toBase64(psbt)))
         assertFailsWith<IllegalArgumentException> { Psbt.fromBase64("not base64 !!!") }
@@ -79,10 +79,10 @@ class PsbtTest {
      */
     private fun desktopStylePsbt(prevRaw: ByteArray = prevTx().serialize(), prevTxid: String = prevTx().txid()): ByteArray {
         val spend = listOf(
-            SpendableInput(prevTxid, 0, 50_000_000, key0),
-            SpendableInput("bb".repeat(32), 1, 30_000_000, key1)
+            SpendableInput(prevTxid, 0, 50_000_000, key0, ScriptType.P2WPKH),
+            SpendableInput("bb".repeat(32), 1, 30_000_000, key1, ScriptType.P2WPKH)
         )
-        val maps = splitMaps(createPsbt(TxBuilder.buildUnsigned(spend, destScript, 60_000_000, 2, changeScript)))
+        val maps = splitMaps(createPsbt(TxBuilder.buildUnsigned(spend, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)))
         maps[0] += (byteArrayOf(0x01) + ByteArray(78) { 7 }) to (master.fingerprint + ByteArray(12))
         maps[0] += (byteArrayOf(0xFC.toByte(), 0x04) + "test".encodeToByteArray() + byteArrayOf(0x01)) to byteArrayOf(9, 9)
         maps[1].add(0, byteArrayOf(0x00) to prevRaw)

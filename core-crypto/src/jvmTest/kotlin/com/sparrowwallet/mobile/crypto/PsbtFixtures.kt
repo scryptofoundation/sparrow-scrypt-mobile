@@ -18,8 +18,8 @@ object PsbtFixtures {
         listOf(TxOutput(1_000, Scripts.p2wpkhOutput(destKey.pubKey)), TxOutput(30_000_000, Scripts.p2wpkhOutput(key1.pubKey))))
 
     val inputs = listOf(
-        SpendableInput(prevA.txid(), 0, 50_000_000, key0),
-        SpendableInput(prevB.txid(), 1, 30_000_000, key1)
+        SpendableInput(prevA.txid(), 0, 50_000_000, key0, ScriptType.P2WPKH),
+        SpendableInput(prevB.txid(), 1, 30_000_000, key1, ScriptType.P2WPKH)
     )
     val destScript = Scripts.p2wpkhOutput(destKey.pubKey)
     val changeScript = Scripts.p2wpkhOutput(changeKey.pubKey)
@@ -50,7 +50,7 @@ object PsbtFixtures {
 
     /** The same spend as Passport-style desktop QRs send it: witness UTXOs only. */
     fun withoutPrevTxs(): ByteArray =
-        createPsbt(TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript))
+        createPsbt(TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin))
 
     /** The PSBT's maps in order: global, then one per input, then one per output. */
     fun splitMaps(psbt: ByteArray): List<MutableList<Pair<ByteArray, ByteArray>>> {

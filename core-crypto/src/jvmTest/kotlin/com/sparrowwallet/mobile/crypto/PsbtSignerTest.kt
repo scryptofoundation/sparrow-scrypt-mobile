@@ -55,7 +55,7 @@ class PsbtSignerTest {
             otherAccount to listOf(84L + PsbtFixtures.HARDENED, 2L + PsbtFixtures.HARDENED, 1L + PsbtFixtures.HARDENED, 1, 0)
         )) {
             val script = Scripts.p2wpkhOutput(key.pubKey)
-            val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(inputs, script, 60_000_000, 2, changeScript))
+            val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(inputs, script, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin))
             val claimed = edit(psbt) { maps ->
                 maps[3] += (byteArrayOf(0x02) + key.pubKey) to derivationValue(master.fingerprint, path)
             }
@@ -70,8 +70,8 @@ class PsbtSignerTest {
         for(child in path) key = key.deriveChild(child)
         val prev = Tx(2, listOf(TxInput("ee".repeat(32), 0, 0xFFFFFFFFL, ByteArray(0))),
             listOf(TxOutput(1_000, destScript), TxOutput(30_000_000, Scripts.p2wpkhOutput(key.pubKey))))
-        val spend = listOf(inputs[0], SpendableInput(prev.txid(), 1, 30_000_000, key))
-        val psbt = Psbt.create(TxBuilder.buildUnsigned(spend, destScript, 60_000_000, 2, changeScript), master.fingerprint,
+        val spend = listOf(inputs[0], SpendableInput(prev.txid(), 1, 30_000_000, key, ScriptType.P2WPKH))
+        val psbt = Psbt.create(TxBuilder.buildUnsigned(spend, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin), master.fingerprint,
             pathFor = { if(it.key == PsbtFixtures.key0) accountPath(0, 0) else path },
             changeIndex = 1, changePubKey = PsbtFixtures.changeKey.pubKey, changePath = accountPath(1, 0))
         return edit(psbt) { maps ->
@@ -106,14 +106,14 @@ class PsbtSignerTest {
     @Test fun staleSignatureForOurKeyIsReplaced() {
         val stale = edit(fixturePsbt()) { maps -> maps[1] += (byteArrayOf(0x02) + PsbtFixtures.key0.pubKey) to ByteArray(71) { 1 } }
         val signed = PsbtSigner.sign(Psbt.parse(stale), master, net, account)
-        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript)
+        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
         assertEquals(1, Psbt.parse(signed).inputs[0].partialSigs.size)
         assertContentEquals(direct.tx.serialize(), Psbt.finalize(Psbt.parse(signed)).serialize())
     }
 
     @Test fun unknownScriptShownRawNotChange() {
         val opReturn = byteArrayOf(0x6a, 0x04, 1, 2, 3, 4)
-        val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(inputs, opReturn, 60_000_000, 2, changeScript))
+        val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(inputs, opReturn, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin))
         val r = PsbtSigner.review(Psbt.parse(psbt), master, net, account)
         assertNull(r.outputs[0].address)
         assertEquals("6a0401020304", r.outputs[0].scriptHex)
@@ -166,7 +166,7 @@ class PsbtSignerTest {
     }
 
     @Test fun signMatchesDirectSigning() {
-        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript)
+        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
         val signed = PsbtSigner.sign(Psbt.parse(fixturePsbt()), master, net, account)
         assertContentEquals(direct.tx.serialize(), Psbt.finalize(Psbt.parse(signed)).serialize())
     }
@@ -202,7 +202,7 @@ class PsbtSignerTest {
 
     @Test fun singleInputNeedsNoPrevTx() {
         // the one signature commits to the only input's amount, so the shown fee is the real one
-        val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(inputs.take(1), destScript, 40_000_000, 2, changeScript))
+        val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(inputs.take(1), destScript, 40_000_000, 2, changeScript, params = Network.MAINNET.litecoin))
         val parsed = Psbt.parse(psbt)
         assertNull(PsbtSigner.review(parsed, master, net, account).refusal)
         assertEquals(1, Psbt.parse(PsbtSigner.sign(parsed, master, net, account)).inputs[0].partialSigs.size)
