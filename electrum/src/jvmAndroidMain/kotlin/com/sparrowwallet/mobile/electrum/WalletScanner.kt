@@ -1,30 +1,25 @@
 package com.sparrowwallet.mobile.electrum
 
 import com.sparrowwallet.mobile.crypto.Bip32Pub
+import com.sparrowwallet.mobile.crypto.ScriptType
 import com.sparrowwallet.mobile.crypto.Scripts
 import com.sparrowwallet.mobile.crypto.toHex
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
 
 /**
- * Scans the wallet's derived addresses against an Electrum server. A pragmatic fixed
- * lookahead per chain rather than a growing gap-limit walk; enough for early wallets,
- * revisit when an address explorer screen lands.
+ * Scans the wallet's derived addresses through a [ChainBackend], for any single-key script
+ * type. A pragmatic fixed lookahead per chain rather than a growing gap-limit walk; enough
+ * for early wallets, revisit when an address explorer screen lands.
  */
-class WalletScanner(private val client: ElectrumClient) {
-    suspend fun p2wpkhBalance(accountKey: Bip32Pub, addressesPerChain: Int = 20): Balance {
+class WalletScanner(private val backend: ChainBackend, private val scriptType: ScriptType = ScriptType.P2WPKH) {
+    private fun script(accountKey: Bip32Pub, chain: Int, index: Int): ByteArray =
+        Scripts.outputScript(accountKey.deriveChild(chain.toLong()).deriveChild(index.toLong()).pubKey, scriptType)
+
+    suspend fun balance(accountKey: Bip32Pub, addressesPerChain: Int = 20): Balance {
         var confirmed = 0L
         var unconfirmed = 0L
         for(chain in 0..1) { // 0 = receive, 1 = change
-            val chainKey = accountKey.deriveChild(chain.toLong())
             for(i in 0 until addressesPerChain) {
-                val pub = chainKey.deriveChild(i.toLong()).pubKey
-                val scriptHash = ElectrumProtocol.scriptHash(Scripts.p2wpkhOutput(pub))
-                val bal = client.getBalance(scriptHash)
+                val bal = backend.balance(script(accountKey, chain, i))
                 confirmed += bal.confirmed
                 unconfirmed += bal.unconfirmed
             }
@@ -38,21 +33,19 @@ class WalletScanner(private val client: ElectrumClient) {
     class UtxoScan(val utxos: List<ChainUtxo>, val nextChangeIndex: Int)
 
     /**
-     * Collects all spendable P2WPKH utxos over the same lookahead as [p2wpkhBalance],
-     * and finds the first never-used change index for the change output.
+     * Collects all spendable utxos over the same lookahead as [balance], and finds the
+     * first never-used change index for the change output.
      */
-    suspend fun p2wpkhUtxos(accountKey: Bip32Pub, addressesPerChain: Int = 20): UtxoScan {
+    suspend fun utxos(accountKey: Bip32Pub, addressesPerChain: Int = 20): UtxoScan {
         val utxos = ArrayList<ChainUtxo>()
         var nextChangeIndex = addressesPerChain
         for(chain in 0..1) {
-            val chainKey = accountKey.deriveChild(chain.toLong())
             for(i in 0 until addressesPerChain) {
-                val pub = chainKey.deriveChild(i.toLong()).pubKey
-                val scriptHash = ElectrumProtocol.scriptHash(Scripts.p2wpkhOutput(pub))
-                for(utxo in client.listUnspent(scriptHash)) {
+                val script = script(accountKey, chain, i)
+                for(utxo in backend.unspent(script)) {
                     utxos.add(ChainUtxo(utxo, chain, i))
                 }
-                if(chain == 1 && i < nextChangeIndex && client.getHistory(scriptHash).isEmpty()) {
+                if(chain == 1 && i < nextChangeIndex && backend.history(script).isEmpty()) {
                     nextChangeIndex = i
                 }
             }
@@ -62,9 +55,9 @@ class WalletScanner(private val client: ElectrumClient) {
 
     /**
      * One full wallet sync: balance, transaction history with net wallet deltas, and the
-     * first unused receive index. Deltas come from verbose transactions: outputs paying
-     * our scripts count in, inputs spending our previous outputs count out (prev txs are
-     * fetched and cached, so a wallet tx's funding side resolves in one extra call each).
+     * first unused receive index. Outputs paying our scripts count in, inputs spending our
+     * previous outputs count out. A spent output comes with the input when the server
+     * includes it (Esplora), else from the previous transaction, fetched once per sync.
      */
     suspend fun sync(accountKey: Bip32Pub, addressesPerChain: Int = 20): WalletSnapshot {
         val ourScripts = HashSet<String>()
@@ -73,15 +66,13 @@ class WalletScanner(private val client: ElectrumClient) {
         var firstUnusedReceive = addressesPerChain
         val heights = LinkedHashMap<String, Int>() // txid → height
         for(chain in 0..1) {
-            val chainKey = accountKey.deriveChild(chain.toLong())
             for(i in 0 until addressesPerChain) {
-                val script = Scripts.p2wpkhOutput(chainKey.deriveChild(i.toLong()).pubKey)
+                val script = script(accountKey, chain, i)
                 ourScripts.add(script.toHex())
-                val scriptHash = ElectrumProtocol.scriptHash(script)
-                val bal = client.getBalance(scriptHash)
+                val bal = backend.balance(script)
                 confirmed += bal.confirmed
                 unconfirmed += bal.unconfirmed
-                val history = client.getHistory(scriptHash)
+                val history = backend.history(script)
                 if(chain == 0 && i < firstUnusedReceive && history.isEmpty()) {
                     firstUnusedReceive = i
                 }
@@ -91,36 +82,31 @@ class WalletScanner(private val client: ElectrumClient) {
             }
         }
 
-        val txCache = HashMap<String, JsonObject>()
-        suspend fun fetchTx(txid: String): JsonObject =
-            txCache[txid] ?: client.getTransactionVerbose(txid).also { txCache[txid] = it }
+        val txCache = HashMap<String, TxDetail>()
+        suspend fun fetchTx(txid: String): TxDetail =
+            txCache[txid] ?: backend.transaction(txid).also { txCache[txid] = it }
 
         val summaries = heights.map { (txid, height) ->
             val tx = fetchTx(txid)
             var delta = 0L
-            for(out in tx["vout"]!!.jsonArray) {
-                val o = out.jsonObject
-                val scriptHex = o["scriptPubKey"]?.jsonObject?.get("hex")?.jsonPrimitive?.content
-                if(scriptHex != null && ourScripts.contains(scriptHex)) {
-                    delta += ElectrumProtocol.ltcToLitoshis(o["value"]!!.jsonPrimitive.content)
+            for(out in tx.outputs) {
+                if(ourScripts.contains(out.scriptHex)) {
+                    delta += out.value
                 }
             }
-            for(inp in tx["vin"]!!.jsonArray) {
-                val i = inp.jsonObject
-                val prevTxid = i["txid"]?.jsonPrimitive?.content ?: continue // coinbase
-                val prevIndex = i["vout"]?.jsonPrimitive?.intOrNull ?: continue
-                val prevOut = fetchTx(prevTxid)["vout"]!!.jsonArray[prevIndex].jsonObject
-                val scriptHex = prevOut["scriptPubKey"]?.jsonObject?.get("hex")?.jsonPrimitive?.content
-                if(scriptHex != null && ourScripts.contains(scriptHex)) {
-                    delta -= ElectrumProtocol.ltcToLitoshis(prevOut["value"]!!.jsonPrimitive.content)
+            for(input in tx.inputs) {
+                val prevTxid = input.prevTxid ?: continue // coinbase
+                val spent = input.prevOut ?: input.prevVout?.let { fetchTx(prevTxid).outputs.getOrNull(it) } ?: continue
+                if(ourScripts.contains(spent.scriptHex)) {
+                    delta -= spent.value
                 }
             }
             TxSummary(
                 txid = txid,
                 height = height,
-                timestamp = tx["time"]?.jsonPrimitive?.longOrNull,
+                timestamp = tx.time,
                 delta = delta,
-                confirmations = tx["confirmations"]?.jsonPrimitive?.intOrNull ?: 0
+                confirmations = tx.confirmations
             )
         }.sortedWith(compareByDescending<TxSummary> { it.height <= 0 }.thenByDescending { it.height })
 

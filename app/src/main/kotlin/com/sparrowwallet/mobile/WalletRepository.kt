@@ -16,6 +16,7 @@ import com.sparrowwallet.mobile.crypto.TxBuilder
 import com.sparrowwallet.mobile.crypto.XpubKey
 import com.sparrowwallet.mobile.crypto.hexToBytes
 import com.sparrowwallet.mobile.crypto.toHex
+import com.sparrowwallet.mobile.electrum.ElectrumBackend
 import com.sparrowwallet.mobile.electrum.ElectrumClient
 import com.sparrowwallet.mobile.electrum.SocksProxy
 import com.sparrowwallet.mobile.electrum.WalletScanner
@@ -254,7 +255,7 @@ class WalletRepository(context: Context) {
 
     /** Balance/history check from a cached xpub alone — the background-sync read path. */
     suspend fun scanXpub(network: Network, xpub: String): WalletSnapshot =
-        withServer(network) { WalletScanner(it).sync(XpubKey.fromXpub(xpub)) }
+        withServer(network) { WalletScanner(ElectrumBackend(it)).sync(XpubKey.fromXpub(xpub)) }
 
     /** MWEB coin check from a cached scan key alone — the background-sync read path. */
     suspend fun mwebSnapshotFromScanKey(network: Network, scanSecretHex: String, birthHeight: Int): MwebdService.MwebSnapshot {
@@ -482,7 +483,7 @@ class WalletRepository(context: Context) {
             mwebSnapshotAt[data]?.let { System.currentTimeMillis() - it < maxAgeMs } == true
 
     suspend fun syncWallet(data: VaultData, account: HDKey): WalletSnapshot =
-        withServer(network(data)) { WalletScanner(it).sync(account) }
+        withServer(network(data)) { WalletScanner(ElectrumBackend(it)).sync(account) }
             .also { snapshotCache[data] = it; snapshotAt[data] = System.currentTimeMillis() }
 
     // ---- Sending ----
@@ -538,7 +539,7 @@ class WalletRepository(context: Context) {
 
     private suspend fun collectSpendables(client: ElectrumClient, account: HDKey): Pair<List<SpendableInput>, ByteArray> {
         val tip = client.tipHeight()
-        val scan = WalletScanner(client).p2wpkhUtxos(account)
+        val scan = WalletScanner(ElectrumBackend(client)).utxos(account)
         val candidates = scan.utxos
             .filter { confirmedEnough(tip, it.utxo.height) }
             .map {
@@ -579,7 +580,7 @@ class WalletRepository(context: Context) {
         return withServer(net) { client ->
             val feeRate = feeRatePerVb(client.estimateFee(2))
             val tip = client.tipHeight()
-            val scan = WalletScanner(client).p2wpkhUtxos(account)
+            val scan = WalletScanner(ElectrumBackend(client)).utxos(account)
             val accountPath = parsePathChildren(data.derivationPath)
             val pathByKey = HashMap<HDKey, List<Long>>()
             val candidates = scan.utxos
@@ -617,7 +618,7 @@ class WalletRepository(context: Context) {
         val feeRate = withServer(net) { feeRatePerVb(it.estimateFee(2)) }
         val service = mwebd(data)
 
-        val (scan, tip) = withServer(net) { WalletScanner(it).p2wpkhUtxos(account) to it.tipHeight() }
+        val (scan, tip) = withServer(net) { WalletScanner(ElectrumBackend(it)).utxos(account) to it.tipHeight() }
         val accountPath = parsePathChildren(data.derivationPath)
         val pathByKey = HashMap<HDKey, List<Long>>()
         val candidates = scan.utxos
@@ -723,7 +724,7 @@ class WalletRepository(context: Context) {
     suspend fun utxoValues(data: VaultData, account: HDKey): List<Long> =
         withServer(network(data)) { client ->
             val tip = client.tipHeight()
-            WalletScanner(client).p2wpkhUtxos(account).utxos
+            WalletScanner(ElectrumBackend(client)).utxos(account).utxos
                 .filter { confirmedEnough(tip, it.utxo.height) }
                 .map { it.utxo.value }
         }.sortedDescending()
