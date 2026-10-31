@@ -19,6 +19,18 @@ JAVA_HOME=~/jvm/jdk-25.0.2+10 ./gradlew :drongo:test --tests '*GoldenVectorGener
 
 (Generator source: `sparrow/drongo/src/test/java/com/sparrowwallet/drongo/wallet/GoldenVectorGeneratorTest.java`)
 
+## Regenerate per-coin vectors
+
+`vectors/coins.json` holds chain parameters, keys, addresses and signed transactions for every
+coin, network and script type. Copy `tools/vectorgen/CoinVectorGeneratorTest.java` into a drongo
+checkout's `src/test/java/com/sparrowwallet/drongo/wallet/`, then from that drongo checkout:
+
+```sh
+COIN_VECTORS_OUT=<this repo>/vectors/coins.json JAVA_HOME=~/jvm/jdk-25.0.2+10 ./gradlew test --tests '*CoinVectorGenerator*'
+```
+
+Commit the new `vectors/coins.json`. Never hand-edit it.
+
 ## Run parity tests
 
 ```sh
