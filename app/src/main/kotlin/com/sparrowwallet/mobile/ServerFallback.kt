@@ -72,6 +72,30 @@ object PublicServers {
     fun ordered(network: Network, lastGoodHost: String?) = ordered(Coin.LITECOIN, network, lastGoodHost)
 }
 
+/** What the Server screen shows: the saved or default server, or that the coin needs the user's own. */
+sealed interface ServerScreenState {
+    data object NeedsOwnServer : ServerScreenState
+    data class Configured(val settings: WalletRepository.ServerSettings) : ServerScreenState
+}
+
+fun serverScreenState(settings: WalletRepository.ServerSettings?): ServerScreenState =
+    settings?.let { ServerScreenState.Configured(it) } ?: ServerScreenState.NeedsOwnServer
+
+/** testConnection's result in words: [software, protocol] for Electrum, ["Esplora", tip] for Esplora. */
+fun connectionSummary(result: List<String>): String =
+    if(result.firstOrNull() == "Esplora") "Esplora, tip ${result.getOrNull(1)}"
+    else "Electrum ${result.getOrNull(0)}, protocol ${result.getOrNull(1)}"
+
+/** Settings for an Esplora API base URL (http or https), or null when it is not one. */
+fun esploraSettings(url: String, useProxy: Boolean, proxyHost: String, proxyPort: Int): WalletRepository.ServerSettings? {
+    val clean = url.trim().trimEnd('/')
+    val uri = runCatching { java.net.URI(clean) }.getOrNull() ?: return null
+    if(uri.scheme != "https" && uri.scheme != "http") return null
+    val host = uri.host ?: return null
+    val port = if(uri.port > 0) uri.port else if(uri.scheme == "https") 443 else 80
+    return WalletRepository.ServerSettings(host, port, uri.scheme == "https", false, useProxy, proxyHost, proxyPort, esploraUrl = clean)
+}
+
 object ServerFallback {
     /**
      * Runs [attempt] against each candidate in turn and returns the first that succeeds with its

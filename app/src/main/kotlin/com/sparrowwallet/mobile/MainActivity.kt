@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import com.sparrowwallet.mobile.crypto.BackendKind
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.material3.Checkbox
 import android.os.Bundle
@@ -2295,38 +2296,53 @@ private fun LabeledSwitch(label: String, checked: Boolean, onChange: (Boolean) -
 private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val network = remember(data) { repo.network(data) }
-    val saved = remember { repo.serverSettings(network) }
-    var host by remember { mutableStateOf(saved.host) }
-    var port by remember { mutableStateOf(saved.port.toString()) }
-    var useTls by remember { mutableStateOf(saved.useTls) }
-    var selfSigned by remember { mutableStateOf(saved.allowSelfSigned) }
-    var useProxy by remember { mutableStateOf(saved.useProxy) }
-    var proxyHost by remember { mutableStateOf(saved.proxyHost) }
-    var proxyPort by remember { mutableStateOf(saved.proxyPort.toString()) }
+    val coin = remember(data) { repo.coin(data) }
+    val esplora = coin.backend == BackendKind.ESPLORA
+    val state = remember { serverScreenState(repo.serverSettings(coin, network)) }
+    val saved = (state as? ServerScreenState.Configured)?.settings
+    var host by remember { mutableStateOf(saved?.host ?: "") }
+    var port by remember { mutableStateOf(saved?.port?.toString() ?: "50002") }
+    var esploraUrl by remember { mutableStateOf(saved?.esploraUrl ?: "") }
+    var useTls by remember { mutableStateOf(saved?.useTls ?: true) }
+    var selfSigned by remember { mutableStateOf(saved?.allowSelfSigned ?: false) }
+    var useProxy by remember { mutableStateOf(saved?.useProxy ?: false) }
+    var proxyHost by remember { mutableStateOf(saved?.proxyHost ?: "127.0.0.1") }
+    var proxyPort by remember { mutableStateOf(saved?.proxyPort?.toString() ?: "9050") }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
 
     fun current(): WalletRepository.ServerSettings? {
-        val p = port.toIntOrNull() ?: return null
         val pp = proxyPort.toIntOrNull() ?: return null
-        if(host.isBlank() || (useProxy && proxyHost.isBlank())) return null
+        if(useProxy && proxyHost.isBlank()) return null
+        if(esplora) return esploraSettings(esploraUrl, useProxy, proxyHost.trim(), pp)
+        val p = port.toIntOrNull() ?: return null
+        if(host.isBlank()) return null
         return WalletRepository.ServerSettings(host.trim(), p, useTls, selfSigned, useProxy, proxyHost.trim(), pp)
     }
 
     ScreenColumn {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically) {
-            Text("Electrum server", style = MaterialTheme.typography.headlineSmall)
+            Text(if(esplora) "Esplora server" else "Electrum server", style = MaterialTheme.typography.headlineSmall)
             NetworkBadge(network)
         }
-        Text("The node this wallet reads the Litecoin network through. Settings are stored per network.",
+        Text("The node this wallet reads the ${coin.displayName} network through. Settings are stored per coin and network.",
             style = MaterialTheme.typography.bodySmall)
-        OutlinedTextField(value = host, onValueChange = { host = it },
-            label = { Text("Host (.onion needs the Tor proxy below)") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = port, onValueChange = { port = it }, label = { Text("Port") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
-        LabeledSwitch("Use TLS", useTls) { useTls = it }
-        LabeledSwitch("Accept self-signed certificate (most public Electrum-LTC servers)", selfSigned) { selfSigned = it }
+        if(state == ServerScreenState.NeedsOwnServer) {
+            Text("${coin.displayName} ${network.displayName} has no public server. Enter your own node's server to use this wallet.",
+                style = MaterialTheme.typography.bodyMedium, color = LtcPalette.amber)
+        }
+        if(esplora) {
+            OutlinedTextField(value = esploraUrl, onValueChange = { esploraUrl = it },
+                label = { Text("Esplora API URL (https://…/api)") }, modifier = Modifier.fillMaxWidth())
+        } else {
+            OutlinedTextField(value = host, onValueChange = { host = it },
+                label = { Text("Host (.onion needs the Tor proxy below)") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = port, onValueChange = { port = it }, label = { Text("Port") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+            LabeledSwitch("Use TLS", useTls) { useTls = it }
+            LabeledSwitch("Accept self-signed certificate", selfSigned) { selfSigned = it }
+        }
         LabeledSwitch("Route through Tor / SOCKS5 proxy (Orbot)", useProxy) { useProxy = it }
         if(useProxy) {
             OutlinedTextField(value = proxyHost, onValueChange = { proxyHost = it },
@@ -2341,12 +2357,11 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
                 onClick = {
-                    val s = current() ?: run { status = "Fix the host/port fields first"; return@OutlinedButton }
+                    val s = current() ?: run { status = "Fix the server fields first"; return@OutlinedButton }
                     busy = true; status = "Connecting…"
                     scope.launch {
                         status = try {
-                            val v = repo.testConnection(s, network = network)
-                            "Connected: ${v.getOrNull(0)} (protocol ${v.getOrNull(1)})"
+                            "Connected: " + connectionSummary(repo.testConnection(s, coin, network))
                         } catch(t: Throwable) {
                             "Connection failed: ${t.message}"
                         }
@@ -2357,9 +2372,9 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
             ) { Text("Test") }
             Button(
                 onClick = {
-                    val s = current() ?: run { status = "Fix the host/port fields first"; return@Button }
-                    repo.saveServerSettings(network, s)
-                    status = "Saved for ${network.displayName}"
+                    val s = current() ?: run { status = "Fix the server fields first"; return@Button }
+                    repo.saveServerSettings(coin, network, s)
+                    status = "Saved for ${coin.displayName} ${network.displayName}"
                 },
                 enabled = !busy, modifier = Modifier.weight(1f)
             ) { Text("Save") }

@@ -293,7 +293,7 @@ class WalletRepository(context: Context) {
 
     /** MWEB coin check from a cached scan key alone — the background-sync read path. */
     suspend fun mwebSnapshotFromScanKey(network: Network, scanSecretHex: String, birthHeight: Int): MwebdService.MwebSnapshot {
-        val s = serverSettings(network)
+        val s = litecoinServer(network)
         val service = MwebdService.get(appContext, network, if(s.useProxy) "${s.proxyHost}:${s.proxyPort}" else null)
         return service.snapshot(scanSecretHex.hexToBytes(), birthHeight)
     }
@@ -433,8 +433,6 @@ class WalletRepository(context: Context) {
     /** Whether the user saved their own server; otherwise the public list is used with fallback. */
     fun hasCustomServer(coin: Coin, network: Network): Boolean = prefs.contains("${settingsPrefix(coin, network)}.host")
 
-    fun hasCustomServer(network: Network): Boolean = hasCustomServer(Coin.LITECOIN, network)
-
     private fun lastPublicKey(coin: Coin, network: Network) = "${ServerKeys.prefix(coin, network)}.lastPublic"
 
     private fun lastPublicHost(coin: Coin, network: Network): String? =
@@ -444,11 +442,15 @@ class WalletRepository(context: Context) {
     private fun publicServers(coin: Coin, network: Network) =
         PublicServers.ordered(coin, network, lastPublicHost(coin, network))
 
-    fun serverSettings(coin: Coin, network: Network): ServerSettings {
+    /** The first public server for the coin and network, or null when it has none (your own node only). */
+    fun defaultServerSettings(coin: Coin, network: Network): ServerSettings? = publicServers(coin, network).firstOrNull()
+
+    /** The saved server, else the public default; null when the coin needs the user's own server. */
+    fun serverSettings(coin: Coin, network: Network): ServerSettings? {
         val p = settingsPrefix(coin, network)
-        val d = publicServers(coin, network).firstOrNull()
+        val d = defaultServerSettings(coin, network)
             ?: if(prefs.contains("$p.host")) ServerSettings("", 50002, true, false, false, "127.0.0.1", 9050)
-               else throw IllegalStateException("${coin.displayName} ${network.displayName} needs your own server")
+               else return null
         return ServerSettings(
             prefs.getString("$p.host", d.host)!!,
             prefs.getInt("$p.port", d.port),
@@ -461,7 +463,9 @@ class WalletRepository(context: Context) {
         )
     }
 
-    fun serverSettings(network: Network): ServerSettings = serverSettings(Coin.LITECOIN, network)
+    /** Litecoin always has public servers; MWEB reads its proxy from these settings. */
+    private fun litecoinServer(network: Network): ServerSettings =
+        serverSettings(Coin.LITECOIN, network) ?: throw IllegalStateException("Litecoin ${network.displayName} has no server")
 
     fun saveServerSettings(coin: Coin, network: Network, s: ServerSettings) {
         val p = ServerKeys.prefix(coin, network)
@@ -473,8 +477,6 @@ class WalletRepository(context: Context) {
             .putString("$p.esploraUrl", s.esploraUrl)
             .apply()
     }
-
-    fun saveServerSettings(network: Network, s: ServerSettings) = saveServerSettings(Coin.LITECOIN, network, s)
 
     /**
      * Connects with the given settings and returns what identifies the server:
@@ -499,7 +501,7 @@ class WalletRepository(context: Context) {
     private suspend fun <T> withBackend(coin: Coin, network: Network, block: suspend (ChainBackend) -> T): T =
         withContext(Dispatchers.IO) {
             val custom = hasCustomServer(coin, network)
-            val candidates = if(custom) listOf(serverSettings(coin, network)) else publicServers(coin, network)
+            val candidates = if(custom) listOfNotNull(serverSettings(coin, network)) else publicServers(coin, network)
             if(candidates.isEmpty()) throw IllegalStateException("${coin.displayName} ${network.displayName} needs your own server")
             val params = ChainParams.of(coin, network)
             val (used, backend) = ServerFallback.firstWorking(candidates) { s ->
@@ -840,7 +842,7 @@ class WalletRepository(context: Context) {
 
     private suspend fun mwebd(data: VaultData): MwebdService = withContext(Dispatchers.IO) {
         val net = network(data)
-        val s = serverSettings(net)
+        val s = litecoinServer(net)
         MwebdService.get(appContext, net, if(s.useProxy) "${s.proxyHost}:${s.proxyPort}" else null)
     }
 
