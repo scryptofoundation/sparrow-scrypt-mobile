@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.material3.Checkbox
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -345,28 +346,40 @@ private fun WalletListScreen(
         if(wallets.isEmpty()) {
             Text("A Litecoin wallet in sync with your desktop.", style = MaterialTheme.typography.bodyMedium)
         } else {
-            Text("Wallets", style = MaterialTheme.typography.titleMedium)
-            // a linked pair is one wallet with two layers — show it as one card
-            val names = wallets.map { it.name }.toSet()
-            val visible = wallets.filter { w ->
-                !(w.scriptType == "MWEB" && w.linkedWallet != null && w.linkedWallet in names)
+            // one section per coin; a linked pair is one wallet with two layers, shown as one card
+            val groups = remember(wallets) { groupByCoin(wallets) }
+            val prices = remember { mutableStateMapOf<Coin, Double>() }
+            LaunchedEffect(groups, airGapped) {
+                if(airGapped) return@LaunchedEffect
+                for((coin, _) in groups) PriceService.currentUsd(coin)?.let { prices[coin] = it }
             }
-            for(w in visible) {
-                val pairedPrivate = w.scriptType != "MWEB" && w.linkedWallet?.let { ln ->
-                    wallets.any { it.name == ln && it.scriptType == "MWEB" }
-                } == true
-                OutlinedButton(onClick = { onOpen(w.name) }, modifier = Modifier.fillMaxWidth()) {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(w.name)
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier.padding(top = 5.dp)) {
-                                LayerTag(privateLayer = w.scriptType == "MWEB")
-                                if(pairedPrivate) LayerTag(privateLayer = true)
+            for((coin, coinWallets) in groups) {
+                val total = coinTotal(coinWallets) { repo.sessionBalance(it) }
+                Text(
+                    listOfNotNull(
+                        coin.displayName,
+                        total?.let { formatAmountShort(coin, it) },
+                        total?.let { t -> prices[coin]?.let { formatUsd(t, it) } }
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                for(w in coinWallets) {
+                    val pairedPrivate = w.scriptType != "MWEB" && w.linkedWallet?.let { ln ->
+                        wallets.any { it.name == ln && it.scriptType == "MWEB" }
+                    } == true
+                    OutlinedButton(onClick = { onOpen(w.name) }, modifier = Modifier.fillMaxWidth()) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(w.name)
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier.padding(top = 5.dp)) {
+                                    LayerTag(privateLayer = w.scriptType == "MWEB")
+                                    if(pairedPrivate) LayerTag(privateLayer = true)
+                                }
                             }
+                            NetworkBadge(w.network)
                         }
-                        NetworkBadge(w.network)
                     }
                 }
             }
@@ -872,8 +885,8 @@ private fun TxDetailScreen(tx: TxInfo, coin: Coin, network: Network, onSaveLabel
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(tx.txid) {
         if(NetworkPolicy.blocked) return@LaunchedEffect
-        usdNow = PriceService.currentUsd()
-        if(tx.timestamp != null && tx.timestamp > 0) usdThen = PriceService.usdOn(context, tx.timestamp)
+        usdNow = PriceService.currentUsd(coin)
+        if(tx.timestamp != null && tx.timestamp > 0) usdThen = PriceService.usdOn(context, coin, tx.timestamp)
     }
     ScreenColumn {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
@@ -1012,7 +1025,7 @@ private fun HomeScreen(
             if(!gapped && repo.cachedSnapshot(data) != null && !repo.snapshotFresh(data)) "Last known — refreshing…" else null
         )
     }
-    LaunchedEffect(Unit) { if(!gapped) usdNow = PriceService.currentUsd() }
+    LaunchedEffect(Unit) { if(!gapped) usdNow = PriceService.currentUsd(repo.coin(data)) }
 
     // One wallet in two layers: refresh syncs the public side and the linked private
     // side together, and the status line reports both.
@@ -1211,7 +1224,7 @@ private fun MwebHomeScreen(
             if(repo.cachedMwebSnapshot(data) != null && !repo.mwebSnapshotFresh(data)) "Last known — refreshing…" else null
         )
     }
-    LaunchedEffect(Unit) { usdNow = PriceService.currentUsd() }
+    LaunchedEffect(Unit) { usdNow = PriceService.currentUsd(Coin.LITECOIN) }
 
     fun refresh() {
         syncing = true
@@ -1912,7 +1925,7 @@ private fun SendScreen(
     var utxos by remember { mutableStateOf<List<Long>?>(null) }
     LaunchedEffect(Unit) {
         if(NetworkPolicy.blocked) return@LaunchedEffect
-        usdRate = PriceService.currentUsd()
+        usdRate = PriceService.currentUsd(sendCoin)
         feeRate = runCatching { repo.currentFeeRate(sendCoin, network) }.getOrNull()
         utxos = publicData?.let { d ->
             runCatching { repo.utxoValues(d, publicAccount!!) }.getOrNull()

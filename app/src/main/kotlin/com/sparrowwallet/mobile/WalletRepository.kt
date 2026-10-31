@@ -239,7 +239,24 @@ class WalletRepository(context: Context) {
     /** Opens a wallet's vault; throws VaultException on wrong password. */
     fun unlock(name: String, password: String): VaultData =
         WalletVault.open(vaultFile(name).readBytes(), password)
-            .also { runCatching { cacheSyncCredentials(name, it) } }
+            .also { unlockedByName[safeName(name)] = it; runCatching { cacheSyncCredentials(name, it) } }
+
+    /** Wallets opened since the app started, for the wallet list's in-memory balances. */
+    private val unlockedByName = java.util.concurrent.ConcurrentHashMap<String, VaultData>()
+
+    /**
+     * A wallet's last synced balance this session (a public wallet includes its linked MWEB
+     * wallet), or null when it has not been opened and synced: balances are never stored.
+     */
+    fun sessionBalance(name: String): Long? {
+        val data = unlockedByName[safeName(name)] ?: return null
+        val own = if(data.scriptType == "MWEB") cachedMwebSnapshot(data)?.let { it.confirmed + it.unconfirmed }
+                  else cachedSnapshot(data)?.balance?.total
+        val linked = walletInfo(name)?.linkedWallet?.let { unlockedByName[it] }
+            ?.takeIf { it.scriptType == "MWEB" && data.scriptType != "MWEB" }
+            ?.let { cachedMwebSnapshot(it) }?.let { it.confirmed + it.unconfirmed }
+        return if(own == null && linked == null) null else (own ?: 0) + (linked ?: 0)
+    }
 
     val syncStore by lazy { SyncStore(appContext) }
 

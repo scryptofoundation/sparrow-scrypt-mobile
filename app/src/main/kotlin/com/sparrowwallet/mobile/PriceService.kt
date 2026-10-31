@@ -1,5 +1,10 @@
 package com.sparrowwallet.mobile
 
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.double
+import kotlinx.serialization.json.Json
+import com.sparrowwallet.mobile.crypto.Coin
 import android.content.Context
 import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import kotlinx.coroutines.Dispatchers
@@ -15,36 +20,40 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * LTC/USD prices from CoinGecko (no API key): the current spot price (cached a few
- * minutes) and historical daily closes (cached permanently per date — they never
- * change). Fetches are best-effort: on rate limits or network failure callers get
- * null and show a placeholder.
+ * USD prices per coin from CoinGecko (no API key), by the coin's CoinGecko id: the current
+ * spot price (cached a few minutes) and historical daily closes (cached permanently per
+ * date — they never change). Fetches are best-effort: on rate limits or network failure
+ * callers get null and show a placeholder.
  */
 object PriceService {
-    private const val CURRENT_URL = "https://api.coingecko.com/api/v3/simple/price?ids=litecoin&vs_currencies=usd"
-    private const val HISTORY_URL = "https://api.coingecko.com/api/v3/coins/litecoin/history?date=%s&localization=false"
+    private const val CURRENT_URL = "https://api.coingecko.com/api/v3/simple/price?ids=%s&vs_currencies=usd"
+    private const val HISTORY_URL = "https://api.coingecko.com/api/v3/coins/%s/history?date=%s&localization=false"
 
-    private var current: Pair<Double, Long>? = null // price, fetchedAtMs
+    private val current = HashMap<Coin, Pair<Double, Long>>() // price, fetchedAtMs
     private val mutex = Mutex()
 
-    suspend fun currentUsd(): Double? = mutex.withLock {
-        current?.takeIf { System.currentTimeMillis() - it.second < 5 * 60_000 }?.first
-            ?: fetch(CURRENT_URL)?.let {
-                runCatching { JSONObject(it).getJSONObject("litecoin").getDouble("usd") }.getOrNull()
-            }?.also { current = it to System.currentTimeMillis() }
+    suspend fun currentUsd(coin: Coin): Double? = mutex.withLock {
+        current[coin]?.takeIf { System.currentTimeMillis() - it.second < 5 * 60_000 }?.first
+            ?: fetch(CURRENT_URL.format(coin.coingeckoId))?.let { parseSpot(it, coin) }
+                ?.also { current[coin] = it to System.currentTimeMillis() }
     }
 
-    /** USD price on the day of [unixSeconds], cached permanently. */
-    suspend fun usdOn(context: Context, unixSeconds: Long): Double? {
+    internal fun parseSpot(json: String, coin: Coin): Double? = runCatching {
+        Json.parseToJsonElement(json).jsonObject[coin.coingeckoId]?.jsonObject?.get("usd")?.jsonPrimitive?.double
+    }.getOrNull()
+
+    /** USD price of [coin] on the day of [unixSeconds], cached permanently. */
+    suspend fun usdOn(context: Context, coin: Coin, unixSeconds: Long): Double? {
         val format = SimpleDateFormat("dd-MM-yyyy", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
         val day = format.format(Date(unixSeconds * 1000))
         val prefs = context.getSharedPreferences("prices", Context.MODE_PRIVATE)
-        val key = "usd.$day"
+        // Litecoin keeps the keys cached before other coins existed
+        val key = if(coin == Coin.LITECOIN) "usd.$day" else "usd.${coin.id}.$day"
         if(prefs.contains(key)) {
             return prefs.getFloat(key, 0f).toDouble().takeIf { it > 0 }
         }
         val price = mutex.withLock {
-            fetch(HISTORY_URL.format(day))?.let {
+            fetch(HISTORY_URL.format(coin.coingeckoId, day))?.let {
                 runCatching {
                     JSONObject(it).getJSONObject("market_data").getJSONObject("current_price").getDouble("usd")
                 }.getOrNull()
