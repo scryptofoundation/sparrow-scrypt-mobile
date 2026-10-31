@@ -98,7 +98,9 @@ class HttpEndpoint(baseUrl: String, private val proxy: SocksProxy? = null, priva
         val body = when {
             headers["transfer-encoding"]?.lowercase()?.contains("chunked") == true -> readChunked(input)
             headers["content-length"] != null -> {
-                val length = headers["content-length"]!!.toLongOrNull() ?: throw IOException("Bad Content-Length")
+                val text = headers["content-length"]!!
+                if(text.isEmpty() || text.length > 12 || !text.all { it.isDigit() }) throw IOException("Bad Content-Length")
+                val length = text.toLong()
                 if(length > MAX_BODY) throw IOException("Response too large")
                 readExactly(input, length.toInt())
             }
@@ -132,8 +134,11 @@ class HttpEndpoint(baseUrl: String, private val proxy: SocksProxy? = null, priva
     private fun readChunked(input: InputStream): ByteArray {
         val out = ByteArrayOutputStream()
         while(true) {
-            val sizeLine = readLine(input)
-            val size = sizeLine.substringBefore(';').trim().toLongOrNull(16) ?: throw IOException("Bad chunk size")
+            val sizeText = readLine(input).substringBefore(';').trim()
+            if(sizeText.isEmpty() || sizeText.length > 8 || !sizeText.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+                throw IOException("Bad chunk size")
+            }
+            val size = sizeText.toLong(16)
             if(size == 0L) return out.toByteArray()
             if(out.size() + size > MAX_BODY) throw IOException("Response too large")
             out.write(readExactly(input, size.toInt()))

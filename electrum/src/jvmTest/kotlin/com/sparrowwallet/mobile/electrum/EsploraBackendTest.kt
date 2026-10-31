@@ -193,6 +193,29 @@ class EsploraBackendTest {
         assertEquals(listOf("esplora-api.invalid:8080", "esplora-api.invalid:8080"), asked) // connect, then tipHeight
     }
 
+    /** Serves one fixed raw HTTP response per connection, for framing a well-behaved server would never send. */
+    private fun rawServer(response: String, block: (String) -> Unit) {
+        ServerSocket(0).use { s ->
+            thread(isDaemon = true) {
+                while(!s.isClosed) {
+                    val c = runCatching { s.accept() }.getOrNull() ?: break
+                    runCatching { c.use { it.getInputStream().read(ByteArray(4096)); it.getOutputStream().write(response.encodeToByteArray()) } }
+                }
+            }
+            block("http://127.0.0.1:${s.localPort}")
+        }
+    }
+
+    @Test fun negativeChunkSizeIsRefused() = rawServer("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n-1\r\nx\r\n0\r\n\r\n") { url ->
+        val e = assertFailsWith<IOException> { runBlocking { EsploraBackend(url, params).connect() } }
+        assertEquals("Bad chunk size", e.message)
+    }
+
+    @Test fun negativeContentLengthIsRefused() = rawServer("HTTP/1.1 200 OK\r\nContent-Length: -5\r\n\r\n12") { url ->
+        val e = assertFailsWith<IOException> { runBlocking { EsploraBackend(url, params).connect() } }
+        assertEquals("Bad Content-Length", e.message)
+    }
+
     @Test fun noFeeEstimateIsNull(): Unit = runBlocking {
         routes = { _, path, _ -> if(path == "/blocks/tip/height") 200 to "5" else 404 to "" }
         val b = EsploraBackend(base, params).also { it.connect() }
