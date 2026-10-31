@@ -2,7 +2,10 @@ package com.sparrowwallet.mobile.electrum
 
 import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
@@ -20,8 +23,12 @@ import javax.net.ssl.SSLSocketFactory
  * A minimal HTTP/1.1 client for REST servers, built on a plain socket the way [ElectrumClient]
  * is, so a SOCKS proxy (Tor) gets the hostname unresolved and nothing is looked up locally
  * (the JDK's HttpURLConnection resolves the host before handing it to a SOCKS proxy). TLS
- * checks the certificate and the hostname. One request per connection; bodies are capped,
- * since the server is untrusted.
+ * checks the certificate and the hostname. Bodies are capped, since the server is untrusted.
+ *
+ * One connection is kept open between requests (a request on the emulator spent ~1 s of every
+ * ~1.1 s on DNS, connect and the TLS handshake). A kept connection the server has since closed is
+ * reopened only for a GET that got no answer byte; a POST (a broadcast) is never sent twice.
+ * Air-gapped mode cuts the kept connection whether or not a request is running.
  */
 class HttpEndpoint(
     baseUrl: String,
@@ -49,12 +56,41 @@ class HttpEndpoint(
 
     suspend fun post(path: String, body: String): Response = request("POST", path, body)
 
-    private suspend fun request(method: String, path: String, body: String?): Response = withContext(Dispatchers.IO) {
-        NetworkPolicy.check("Esplora")
+    private class Conn(val raw: Socket, val socket: Socket, val input: InputStream) {
+        var release: () -> Unit = {}
+        fun close() {
+            runCatching { socket.close() }
+            runCatching { raw.close() }
+            release()
+        }
+    }
+
+    /** A kept connection that died before answering: safe to retry a GET on a new one. */
+    private class StaleConnection(cause: IOException) : IOException(cause)
+
+    private val lock = Mutex()
+    @Volatile private var conn: Conn? = null
+
+    /** Closes the kept connection, if any. */
+    fun close() {
+        conn?.close()
+        conn = null
+    }
+
+    private suspend fun request(method: String, path: String, body: String?): Response = lock.withLock {
+        withContext(Dispatchers.IO) {
+            NetworkPolicy.check("Esplora")
+            try {
+                exchange(method, path, body)
+            } catch(e: StaleConnection) {
+                if(method != "GET") throw e.cause as IOException
+                exchange(method, path, body)
+            }
+        }
+    }
+
+    private fun open(): Conn {
         val raw = if(proxy != null) Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress(proxy.host, proxy.port))) else Socket()
-        val release = NetworkPolicy.whileOpen { runCatching { raw.close() } } // air-gapped mode cuts it mid-request too
-        val expired = AtomicBoolean(false)
-        val deadline = DEADLINES.schedule({ expired.set(true); runCatching { raw.close() } }, deadlineMs, TimeUnit.MILLISECONDS)
         try {
             val endpoint = if(proxy != null) InetSocketAddress.createUnresolved(host, port) else InetSocketAddress(host, port)
             raw.connect(endpoint, timeoutMs)
@@ -65,6 +101,28 @@ class HttpEndpoint(
                     s.startHandshake()
                 }
             } else raw
+            return Conn(raw, socket, BufferedInputStream(socket.getInputStream(), 16 * 1024)).also { c ->
+                c.release = NetworkPolicy.whileOpen { // air-gapped mode cuts it, idle or mid-request
+                    runCatching { c.raw.close() }
+                    if(conn === c) conn = null
+                }
+            }
+        } catch(e: Throwable) {
+            runCatching { raw.close() }
+            throw e
+        }
+    }
+
+    private fun exchange(method: String, path: String, body: String?): Response {
+        val started = System.nanoTime()
+        val kept = conn
+        val c = kept ?: open().also { conn = it }
+        val opened = System.nanoTime()
+        val expired = AtomicBoolean(false)
+        val deadline = DEADLINES.schedule({ expired.set(true); runCatching { c.raw.close() } }, deadlineMs, TimeUnit.MILLISECONDS)
+        var answered = false
+        var status = -1
+        try {
             val payload = body?.encodeToByteArray()
             val hostHeader = if((tls && port == 443) || (!tls && port == 80)) host else "$host:$port"
             val head = buildString {
@@ -72,35 +130,48 @@ class HttpEndpoint(
                 append("Host: $hostHeader\r\n")
                 append("User-Agent: sparrow-ltc-mobile\r\n")
                 append("Accept: */*\r\n")
-                append("Connection: close\r\n")
+                append("Connection: keep-alive\r\n")
                 if(payload != null) {
                     append("Content-Type: text/plain\r\n")
                     append("Content-Length: ${payload.size}\r\n")
                 }
                 append("\r\n")
             }
-            socket.getOutputStream().apply {
+            c.socket.getOutputStream().apply {
                 write(head.encodeToByteArray())
                 if(payload != null) write(payload)
                 flush()
             }
-            readResponse(socket.getInputStream())
+            val (response, reusable) = readResponse(c.input) { answered = true }
+            status = response.status
+            if(!reusable) close()
+            return response
         } catch(e: IOException) {
+            close()
             if(expired.get()) throw IOException("Request took too long", e)
+            if(kept != null && !answered) throw StaleConnection(e)
+            throw e
+        } catch(e: Throwable) {
+            close()
             throw e
         } finally {
             deadline.cancel(false)
-            release()
-            runCatching { raw.close() }
+            timingLog?.let { log ->
+                val end = System.nanoTime()
+                log("$method ${route(path)} $status ${if(kept != null) "reused" else "open=${(opened - started) / 1_000_000}"} " +
+                    "response=${(end - opened) / 1_000_000} total=${(end - started) / 1_000_000}")
+            }
         }
     }
 
-    private fun readResponse(input: InputStream): Response {
+    /** The response, and whether the connection can carry another request. */
+    private fun readResponse(input: InputStream, onFirstByte: () -> Unit): Pair<Response, Boolean> {
         val headerBytes = ByteArrayOutputStream()
         var matched = 0
         while(matched < 4) {
             val b = input.read()
             if(b < 0) throw IOException("Connection closed in the response headers")
+            if(headerBytes.size() == 0) onFirstByte()
             headerBytes.write(b)
             if(headerBytes.size() > MAX_HEADERS) throw IOException("Response headers too large")
             matched = if(b == "\r\n\r\n"[matched].code) matched + 1 else if(b == '\r'.code) 1 else 0
@@ -111,6 +182,7 @@ class HttpEndpoint(
             val colon = line.indexOf(':')
             if(colon > 0) line.substring(0, colon).trim().lowercase() to line.substring(colon + 1).trim() else null
         }.toMap()
+        var framed = true
         val body = when {
             headers["transfer-encoding"]?.lowercase()?.contains("chunked") == true -> readChunked(input)
             headers["content-length"] != null -> {
@@ -120,9 +192,10 @@ class HttpEndpoint(
                 if(length > MAX_BODY) throw IOException("Response too large")
                 readExactly(input, length.toInt())
             }
-            else -> readToEnd(input)
+            else -> { framed = false; readToEnd(input) }
         }
-        return Response(status, body.decodeToString(), headers)
+        val keep = framed && headers["connection"]?.lowercase()?.contains("close") != true
+        return Response(status, body.decodeToString(), headers) to keep
     }
 
     private fun readExactly(input: InputStream, length: Int): ByteArray {
@@ -174,6 +247,15 @@ class HttpEndpoint(
     }
 
     companion object {
+        /**
+         * Debug builds set this to time each request; addresses and txids are blanked from the route
+         * so the log names no wallet.
+         */
+        @Volatile var timingLog: ((String) -> Unit)? = null
+
+        private fun route(path: String): String =
+            path.replace(Regex("/(address|scripthash)/[^/]+"), "/$1/*").replace(Regex("/tx/[0-9a-fA-F]{64}"), "/tx/*")
+
         /** Closes sockets whose request outlived its deadline; one daemon thread for all endpoints. */
         private val DEADLINES = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "http-deadline").apply { isDaemon = true } }
 

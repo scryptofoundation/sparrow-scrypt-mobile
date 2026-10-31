@@ -39,6 +39,14 @@ fun externalSigningSupported(coin: Coin, scriptType: String): Boolean =
     coin == Coin.LITECOIN && scriptType == ScriptType.P2WPKH.name
 
 /**
+ * Whether a coin scan taken at [scannedAtMs] can build a send at [nowMs]: the Send screen scans when
+ * it opens, and scanning again for Preview doubled a slow server's wait. A coin spent since then
+ * makes the broadcast fail, as a race with another wallet does today.
+ */
+internal fun reusableScan(scannedAtMs: Long?, nowMs: Long, maxAgeMs: Long = 120_000): Boolean =
+    scannedAtMs != null && nowMs >= scannedAtMs && nowMs - scannedAtMs <= maxAgeMs
+
+/**
  * The spendable inputs of a scan (at least [minConfirmations] deep at [tip]) as the wallet's
  * script type, and the change script at the first unused change index.
  */

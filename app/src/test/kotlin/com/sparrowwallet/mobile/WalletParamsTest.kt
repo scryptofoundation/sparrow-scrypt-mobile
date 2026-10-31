@@ -88,4 +88,16 @@ class WalletParamsTest {
         assertTrue(built.tx.outputs.any { it.script.contentEquals(change) })
         assertTrue(built.tx.serialize()[4] != 0.toByte(), "no segwit marker")
     }
+
+    @Test
+    fun freshScanIsReused() {
+        assertTrue(reusableScan(scannedAtMs = 1_000, nowMs = 61_000))
+    }
+
+    @Test
+    fun staleScanIsNotReused() {
+        assertFalse(reusableScan(scannedAtMs = 1_000, nowMs = 200_000))
+        assertFalse(reusableScan(scannedAtMs = null, nowMs = 5))
+        assertFalse(reusableScan(scannedAtMs = 10_000, nowMs = 5_000)) // a clock that went back
+    }
 }

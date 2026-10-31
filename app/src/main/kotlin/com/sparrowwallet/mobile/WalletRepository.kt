@@ -558,7 +558,18 @@ class WalletRepository(context: Context) {
         for(data in wallets.filterNotNull()) {
             snapshotAt.remove(data)
             mwebSnapshotAt.remove(data)
+            lastScan.remove(data)
         }
+    }
+
+    /** The Send screen's coin scan, reused by the send it builds while fresh (see [reusableScan]). */
+    private class ScanAt(val scan: WalletScanner.UtxoScan, val tip: Long, val atMs: Long)
+    private val lastScan = java.util.concurrent.ConcurrentHashMap<VaultData, ScanAt>()
+
+    private suspend fun scanCoins(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType): Pair<WalletScanner.UtxoScan, Long> {
+        lastScan[data]?.takeIf { reusableScan(it.atMs, System.currentTimeMillis()) }?.let { return it.scan to it.tip }
+        val tip = client.tipHeight()
+        return WalletScanner(client, scriptType).utxos(account) to tip
     }
 
     fun snapshotFresh(data: VaultData, maxAgeMs: Long = 60_000): Boolean =
@@ -609,7 +620,7 @@ class WalletRepository(context: Context) {
         val destScript = Addresses.toScriptPubKey(toAddress, params)
         return withBackend(coin, net) { client ->
             val feeRate = clampFeeRate(coin, client.feeRate(2))
-            val (candidates, changeScript) = collectSpendables(client, account, scriptType(data))
+            val (candidates, changeScript) = collectSpendables(client, data, account, scriptType(data))
             val built = TxBuilder.build(candidates, destScript, amountLitoshis, feeRate, changeScript, sendMax, params)
             SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex())
         }
@@ -626,9 +637,9 @@ class WalletRepository(context: Context) {
         snap.utxos.filter { !it.spent && confirmedEnough(snap.status.blockHeaderHeight.toLong(), it.height) }
             .sumOf { it.value }
 
-    private suspend fun collectSpendables(client: ChainBackend, account: HDKey, scriptType: ScriptType): Pair<List<SpendableInput>, ByteArray> {
-        val tip = client.tipHeight()
-        return spendables(WalletScanner(client, scriptType).utxos(account), tip, account, scriptType, minConfirmations)
+    private suspend fun collectSpendables(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType): Pair<List<SpendableInput>, ByteArray> {
+        val (scan, tip) = scanCoins(client, data, account, scriptType)
+        return spendables(scan, tip, account, scriptType, minConfirmations)
     }
 
     class UnsignedSendPreview(
@@ -663,8 +674,7 @@ class WalletRepository(context: Context) {
         val destScript = Addresses.toScriptPubKey(toAddress, params)
         return withBackend(coin, net) { client ->
             val feeRate = clampFeeRate(coin, client.feeRate(2))
-            val tip = client.tipHeight()
-            val scan = WalletScanner(client, ScriptType.P2WPKH).utxos(account)
+            val (scan, tip) = scanCoins(client, data, account, ScriptType.P2WPKH)
             val accountPath = parsePathChildren(data.derivationPath)
             val pathByKey = HashMap<HDKey, List<Long>>()
             val candidates = scan.utxos
@@ -808,7 +818,9 @@ class WalletRepository(context: Context) {
     suspend fun utxoValues(data: VaultData, account: HDKey): List<Long> =
         withBackend(coin(data), network(data)) { client ->
             val tip = client.tipHeight()
-            WalletScanner(client, scriptType(data)).utxos(account).utxos
+            val scan = WalletScanner(client, scriptType(data)).utxos(account)
+            lastScan[data] = ScanAt(scan, tip, System.currentTimeMillis())
+            scan.utxos
                 .filter { confirmedEnough(tip, it.utxo.height) }
                 .map { it.utxo.value }
         }.sortedDescending()
@@ -997,7 +1009,7 @@ class WalletRepository(context: Context) {
 
         requirePegInWallet(data)
         val feeRate = withBackend(Coin.LITECOIN, net) { clampFeeRate(Coin.LITECOIN, it.feeRate(2)) }
-        val (candidates, changeScript) = withBackend(Coin.LITECOIN, net) { collectSpendables(it, account, ScriptType.P2WPKH) }
+        val (candidates, changeScript) = withBackend(Coin.LITECOIN, net) { collectSpendables(it, data, account, ScriptType.P2WPKH) }
         val service = mwebd(data)
 
         // Relay rules charge fee on the MWEB blob's bytes too (min relay = size × rate),

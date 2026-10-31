@@ -232,7 +232,7 @@ class EsploraBackend(
         }
     }
 
-    override fun close() {}
+    override fun close() = http.close()
 
     private fun blockHeight(o: JsonObject): Int = o["status"]?.jsonObject?.let { statusHeight(it) } ?: 0
 

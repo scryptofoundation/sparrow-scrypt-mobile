@@ -272,7 +272,7 @@ class EsploraBackendTest {
             b.connect()
             assertEquals(77L, b.tipHeight())
         }
-        assertEquals(listOf("esplora-api.invalid:8080", "esplora-api.invalid:8080"), asked) // connect, then tipHeight
+        assertEquals(listOf("esplora-api.invalid:8080"), asked) // connect and tipHeight share the kept connection
     }
 
     /** Serves one fixed raw HTTP response per connection, for framing a well-behaved server would never send. */
