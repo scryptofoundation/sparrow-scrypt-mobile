@@ -99,6 +99,18 @@ class Tx(
 
     fun txid(): String = sha256d(serialize(false)).reversedArray().toHex()
 
+    /**
+     * Original (pre-segwit) SIGHASH_ALL digest: the transaction with every scriptSig emptied
+     * except this input's, which carries the output script being spent; no witness data.
+     */
+    fun legacySighashAll(inputIndex: Int, prevOutputScript: ByteArray): ByteArray {
+        val stripped = inputs.mapIndexed { i, input ->
+            TxInput(input.prevTxid, input.vout, input.sequence, if(i == inputIndex) prevOutputScript else ByteArray(0))
+        }
+        val preimage = Tx(version, stripped, outputs, locktime).serialize(includeWitness = false) + ByteWriter().u32le(1).toByteArray()
+        return sha256d(preimage)
+    }
+
     /** BIP143 SIGHASH_ALL digest for a segwit v0 input. */
     fun bip143SighashAll(inputIndex: Int, scriptCode: ByteArray, amount: Long): ByteArray {
         val prevouts = ByteWriter()
