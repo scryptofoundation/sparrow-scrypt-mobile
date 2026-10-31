@@ -233,7 +233,7 @@ internal fun BalanceHeader(
         Text(eyebrow.uppercase(), fontFamily = MonoFont, fontSize = 9.5.sp, letterSpacing = 1.3.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
-            total?.let { "%.8f".format(it / 1e8) } ?: "—",
+            total?.let { formatUnits(it) } ?: "—",
             fontFamily = MonoFont, fontSize = 27.sp, fontWeight = FontWeight.Bold,
             letterSpacing = (-0.5).sp,
             modifier = Modifier.padding(top = 3.dp)
@@ -266,7 +266,7 @@ internal fun BalanceHeader(
                         Row(verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                             Box(Modifier.size(7.dp).clip(CircleShape).background(dot))
-                            Text("$name %.8f".format(amount / 1e8), fontFamily = MonoFont, fontSize = 10.sp,
+                            Text("$name ${formatUnits(amount)}", fontFamily = MonoFont, fontSize = 10.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         usdNow?.let {

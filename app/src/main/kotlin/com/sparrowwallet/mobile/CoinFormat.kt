@@ -5,12 +5,15 @@ import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
 
+/** The amount with all 8 decimals, exact: high-supply coins pass what a double can hold. */
+internal fun formatUnits(units: Long): String = java.math.BigDecimal.valueOf(units, 8).toPlainString()
+
 /** Amounts in the coin's unit: every supported coin has 8 decimals. */
-internal fun formatAmount(coin: Coin, units: Long): String = "%.8f %s".format(units / 1e8, coin.ticker)
+internal fun formatAmount(coin: Coin, units: Long): String = "${formatUnits(units)} ${coin.ticker}"
 
 /** The amount without trailing-zero noise (0.50000000 → 0.5), sign dropped. */
 internal fun formatUnitsShort(units: Long): String {
-    val s = "%.8f".format(kotlin.math.abs(units) / 1e8).trimEnd('0')
+    val s = formatUnits(units).removePrefix("-").trimEnd('0')
     return if(s.endsWith('.')) s + "0" else s
 }
 

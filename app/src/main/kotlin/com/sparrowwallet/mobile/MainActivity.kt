@@ -1157,12 +1157,13 @@ private fun HomeScreen(
             OutlinedButton(onClick = onSwitch, modifier = Modifier.weight(1f)) { Text("Wallets") }
         }
         if(!gapped) LabelSyncButton(onError = { status = it }, onPairing = onSyncLabels)
-        onSignPsbt?.let {
+        val externalOk = remember(data) { externalSigningSupported(repo.coin(data), data.scriptType) }
+        onSignPsbt?.takeIf { externalOk }?.let {
             OutlinedButton(onClick = it, modifier = Modifier.fillMaxWidth()) {
                 Text("Sign a transaction (PSBT)…")
             }
         }
-        if(gapped) {
+        if(gapped && externalOk) {
             OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
                 Text("Export to desktop (air-gapped)")
             }
@@ -2261,7 +2262,8 @@ private fun SendScreen(
                 modifier = Modifier.fillMaxWidth()
             ) { Text(if(busy) "Broadcasting…" else "Confirm and send") }
             // external signer path: any public-funded send, peg-ins included
-            if(preview is WalletRepository.SendPreview) {
+            if(preview is WalletRepository.SendPreview && publicData != null
+                && externalSigningSupported(sendCoin, publicData.scriptType)) {
                 OutlinedButton(
                     onClick = {
                         busy = true; error = null
@@ -2448,7 +2450,7 @@ private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData,
                 }
             }
         }
-        if(data.scriptType != "MWEB") {
+        if(externalSigningSupported(repo.coin(data), data.scriptType)) {
             OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
                 Text("Export to desktop (air-gapped)")
             }

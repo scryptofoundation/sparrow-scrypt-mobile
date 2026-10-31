@@ -134,4 +134,15 @@ class SparrowImportTest {
         }
         assertEquals("This file does not say which coin it is for. Export it again from desktop Sparrow.", e.message)
     }
+
+    @Test
+    fun legacyFileWithoutCoinOutsideLitecoinPathIsRefused() {
+        for(path in listOf("m/44'/0'/0'", "m/44'/1'/0'", "m/49'/1'/0'")) {
+            assertFailsWith<SparrowImport.ImportException>(path) {
+                SparrowImport.importFile(plainWallet(null, if(path.startsWith("m/49")) "P2SH_P2WPKH" else "P2PKH", path), "")
+            }
+        }
+        assertEquals(Coin.LITECOIN, SparrowImport.importFile(plainWallet(null, "P2PKH", "m/44'/2'/0'"), "").coin)
+        assertEquals(Coin.LITECOIN, SparrowImport.importFile(plainWallet(null, "P2WPKH", "m/84'/0'/0'"), "").coin)
+    }
 }

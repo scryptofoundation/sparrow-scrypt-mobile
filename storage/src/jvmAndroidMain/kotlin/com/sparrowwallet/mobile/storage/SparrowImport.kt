@@ -236,7 +236,8 @@ object SparrowImport {
 
         val keyDerivation = keystore["keyDerivation"]?.jsonObject
         val derivationPath = keyDerivation?.get("derivationPath")?.jsonPrimitive?.contentOrNull
-        val coin = readCoin(wallet["coin"]?.jsonPrimitive?.contentOrNull, derivationPath)
+        val coin = readCoin(wallet["coin"]?.jsonPrimitive?.contentOrNull, derivationPath,
+            wallet["scriptType"]?.jsonPrimitive?.contentOrNull)
         val seedTypeRaw = seed["type"]?.jsonPrimitive?.contentOrNull ?: "BIP39"
         return ImportedWallet(
             name = wallet["name"]?.jsonPrimitive?.contentOrNull,
@@ -259,9 +260,10 @@ object SparrowImport {
      * unless its BIP44-style path names another coin's type: a wallet that followed a
      * desktop build's process coin. That is refused rather than guessed. Coin type 0 stays
      * Litecoin: Litecoin wallets on Bitcoin paths exist, and the coins that use 0 (Luckycoin,
-     * Junkcoin) are legacy-only, which older desktop builds never exported.
+     * Junkcoin) are legacy-only. A Legacy or Nested Segwit file without a coin must be on
+     * Litecoin's own type 2: on 0 it may be Luckycoin or Junkcoin, and every testnet uses 1.
      */
-    private fun readCoin(name: String?, derivationPath: String?): Coin {
+    private fun readCoin(name: String?, derivationPath: String?, scriptType: String?): Coin {
         if(name != null) {
             return try { Coin.fromName(name) } catch(e: IllegalArgumentException) {
                 throw ImportException("This wallet is for a coin mobile does not know ($name)", e)
@@ -272,6 +274,9 @@ object SparrowImport {
         val coinType = levels.getOrNull(1)?.trimEnd('\'', 'h', 'H')
         if(purpose in setOf("44", "49", "84", "86") && coinType != null && coinType !in setOf("0", "1", "2")) {
             throw ImportException("This file does not say which coin it is for. Export it again from desktop Sparrow.")
+        }
+        if(scriptType in setOf("P2PKH", "P2SH_P2WPKH") && coinType != "2") {
+            throw ImportException("This file does not say which coin it is for. Send it from desktop Sparrow with Link instead.")
         }
         return Coin.LITECOIN
     }

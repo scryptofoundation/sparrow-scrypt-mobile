@@ -1,10 +1,21 @@
 package com.sparrowwallet.mobile
 
+import com.sparrowwallet.mobile.crypto.Bip39
+import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.mobile.crypto.Coin
+import com.sparrowwallet.mobile.crypto.HDKey
+import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.ScriptType
+import com.sparrowwallet.mobile.crypto.Scripts
+import com.sparrowwallet.mobile.crypto.TxBuilder
+import com.sparrowwallet.mobile.crypto.toHex
+import com.sparrowwallet.mobile.electrum.Utxo
+import com.sparrowwallet.mobile.electrum.WalletScanner
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class WalletParamsTest {
     @Test
@@ -41,5 +52,40 @@ class WalletParamsTest {
     fun scriptTypeNamesAreRead() {
         assertEquals(ScriptType.P2PKH, walletScriptType("P2PKH"))
         assertFailsWith<IllegalArgumentException> { walletScriptType("MWEB") }
+    }
+
+    @Test
+    fun externalSigningIsNativeSegwitLitecoinOnly() {
+        assertTrue(externalSigningSupported(Coin.LITECOIN, "P2WPKH"))
+        assertFalse(externalSigningSupported(Coin.BELLSCOIN, "P2WPKH"))
+        assertFalse(externalSigningSupported(Coin.LITECOIN, "P2SH_P2WPKH"))
+        assertFalse(externalSigningSupported(Coin.DOGECOIN, "P2PKH"))
+        assertFalse(externalSigningSupported(Coin.LITECOIN, "MWEB"))
+    }
+
+    @Test
+    fun dogeSendAssemblesLegacyChangeAtTheCoinRate() {
+        val master = HDKey.fromSeed(Bip39.seed(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ""))
+        val account = master.derivePath("m/44'/3'/0'")
+        val doge = ChainParams.of(Coin.DOGECOIN, Network.MAINNET)
+        val scan = WalletScanner.UtxoScan(listOf(
+            WalletScanner.ChainUtxo(Utxo("11".repeat(32), 0, 100, 300_000_000), 0, 0),
+            WalletScanner.ChainUtxo(Utxo("22".repeat(32), 1, 100, 300_000_000), 0, 3),
+            WalletScanner.ChainUtxo(Utxo("33".repeat(32), 0, 200, 900_000_000), 0, 4) // 1 confirmation: not spendable
+        ), nextChangeIndex = 2)
+        val (inputs, change) = spendables(scan, tip = 200, account = account, scriptType = ScriptType.P2PKH, minConfirmations = 6)
+        assertEquals(2, inputs.size)
+        assertTrue(inputs.all { it.scriptType == ScriptType.P2PKH })
+        val expectedChange = Scripts.outputScript(account.deriveChild(1).deriveChild(2).pubKey, ScriptType.P2PKH)
+        assertEquals(expectedChange.toHex(), change.toHex())
+        assertTrue(change.toHex().startsWith("76a914"))
+
+        val rate = clampFeeRate(Coin.DOGECOIN, 50_600.0)
+        val dest = Scripts.outputScript(master.derivePath("m/44'/3'/1'/0/0").pubKey, ScriptType.P2PKH)
+        val built = TxBuilder.build(inputs, dest, 400_000_000, rate, change, false, doge)
+        assertTrue(built.fee >= TxBuilder.estimateVsize(List(2) { ScriptType.P2PKH }, listOf(25, 25)) * 50_600)
+        assertTrue(built.tx.outputs.any { it.script.contentEquals(change) })
+        assertTrue(built.tx.serialize()[4] != 0.toByte(), "no segwit marker")
     }
 }

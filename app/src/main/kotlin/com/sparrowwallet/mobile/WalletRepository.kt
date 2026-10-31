@@ -608,17 +608,7 @@ class WalletRepository(context: Context) {
 
     private suspend fun collectSpendables(client: ChainBackend, account: HDKey, scriptType: ScriptType): Pair<List<SpendableInput>, ByteArray> {
         val tip = client.tipHeight()
-        val scan = WalletScanner(client, scriptType).utxos(account)
-        val candidates = scan.utxos
-            .filter { confirmedEnough(tip, it.utxo.height) }
-            .map {
-                SpendableInput(
-                    it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value,
-                    account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong()), scriptType
-                )
-            }
-        val changePub = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong()).pubKey
-        return candidates to Scripts.outputScript(changePub, scriptType)
+        return spendables(WalletScanner(client, scriptType).utxos(account), tip, account, scriptType, minConfirmations)
     }
 
     class UnsignedSendPreview(
@@ -646,10 +636,8 @@ class WalletRepository(context: Context) {
         if(coin == Coin.LITECOIN && isMwebAddress(toAddress, net)) {
             return preparePegInPsbt(data, account, toAddress, amountLitoshis, sendMax)
         }
-        //PSBTs carry witness UTXOs only; legacy and nested inputs need phase 5's full previous transactions
-        require(scriptType(data) == ScriptType.P2WPKH) {
-            if(!coin.segwit) "Signing on another device is not available for ${coin.displayName} wallets yet"
-            else "Signing on another device is only available for Native Segwit wallets so far"
+        require(externalSigningSupported(coin, data.scriptType)) {
+            "Signing on another device is only available for Native Segwit Litecoin wallets so far"
         }
         val params = params(data)
         val destScript = Addresses.toScriptPubKey(toAddress, params)

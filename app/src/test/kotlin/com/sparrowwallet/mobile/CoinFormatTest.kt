@@ -21,4 +21,13 @@ class CoinFormatTest {
         assertNull(parseAmount("-1"))
         assertNull(parseAmount("abc"))
     }
+
+    @Test
+    fun largeAmountsKeepEveryDigit() {
+        assertEquals("1234567890.12345678 DOGE", formatAmount(Coin.DOGECOIN, 123_456_789_012_345_678))
+        assertEquals("1234567890.12345678", formatUnitsShort(123_456_789_012_345_678))
+        assertEquals("0.5", formatUnitsShort(-50_000_000))
+        assertEquals("1.0", formatUnitsShort(100_000_000))
+        assertEquals("0.00000001", formatUnits(1))
+    }
 }
