@@ -38,6 +38,8 @@ object ElectrumProtocol {
         require(exponent != null && mantissa.isNotEmpty() && mantissa.all { it.isDigit() || it == '.' } && mantissa.count { it == '.' } <= 1) {
             "Not a decimal amount: $original"
         }
+        // server input: a real amount needs a small exponent, and a huge one would build a huge string
+        require(exponent in -20..20 && mantissa.length <= 40) { "Not an LTC amount: $original" }
         val dot = mantissa.indexOf('.').let { if(it < 0) mantissa.length else it }
         val digits = mantissa.replace(".", "")
         val point = dot + exponent

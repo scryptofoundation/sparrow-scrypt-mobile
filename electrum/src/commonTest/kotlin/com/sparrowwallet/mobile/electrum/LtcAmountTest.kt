@@ -34,6 +34,10 @@ class LtcAmountTest {
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e-09") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("e5") }
+        // a hostile server must not make the parser build a huge string
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e999999999") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e-999999999") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e2147483647") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("0.123456789") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1.2.3") }
