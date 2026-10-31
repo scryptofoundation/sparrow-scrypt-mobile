@@ -19,6 +19,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
+import com.sparrowwallet.mobile.crypto.AirGappedException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import java.io.IOException
 
 /**
@@ -37,6 +40,26 @@ class EsploraBackend(
     private val http = HttpEndpoint(baseUrl, proxy, timeoutMs)
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private var tip: Long? = null
+    /** Transactions per script from the last balance call, so an unused address costs one request, not two. */
+    private val txCounts = HashMap<String, Long>()
+
+    /**
+     * One request, retried after a 429 as the server's Retry-After asks (capped), since public
+     * Esplora instances rate-limit hard (peppool.space: 15 a minute).
+     */
+    private suspend fun get(path: String): HttpEndpoint.Response = withRateLimit { http.get(path) }
+
+    private suspend fun withRateLimit(call: suspend () -> HttpEndpoint.Response): HttpEndpoint.Response {
+        var r = call()
+        var attempt = 0
+        while(r.status == 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
+            val wait = r.headers["retry-after"]?.trim()?.toLongOrNull()?.coerceIn(1, MAX_RETRY_AFTER_SECONDS) ?: DEFAULT_RETRY_AFTER_SECONDS
+            delay(wait * 1000)
+            attempt++
+            r = call()
+        }
+        return r
+    }
 
     override suspend fun connect() {
         tip = readTip()
@@ -45,7 +68,7 @@ class EsploraBackend(
     override suspend fun tipHeight(): Long = readTip().also { tip = it }
 
     private suspend fun readTip(): Long {
-        val r = http.get("/blocks/tip/height")
+        val r = get("/blocks/tip/height")
         val text = r.body.trim()
         if(r.status != 200 || text.isEmpty() || !text.all { it.isDigit() } || text.length > 12) {
             throw IOException("Not an Esplora server: ${http.url}")
@@ -57,11 +80,11 @@ class EsploraBackend(
     private suspend fun scriptGet(script: ByteArray, route: String): String {
         val address = Addresses.fromScript(script, params)
         if(address != null) {
-            val r = http.get("/address/$address$route")
+            val r = get("/address/$address$route")
             if(r.status == 200) return r.body
             if(r.status != 400) throw IOException(failure(r))
         }
-        val r = http.get("/scripthash/${sha256(script).toHex()}$route")
+        val r = get("/scripthash/${sha256(script).toHex()}$route")
         if(r.status != 200) throw IOException(failure(r))
         return r.body
     }
@@ -71,10 +94,13 @@ class EsploraBackend(
         fun net(stats: String) = o[stats]?.jsonObject?.let {
             it["funded_txo_sum"]!!.jsonPrimitive.long - it["spent_txo_sum"]!!.jsonPrimitive.long
         } ?: 0L
+        val counts = listOf("chain_stats", "mempool_stats").map { o[it]?.jsonObject?.get("tx_count")?.jsonPrimitive?.longOrNull }
+        if(counts.all { it != null }) txCounts[script.toHex()] = counts.sumOf { it!! }
         return Balance(net("chain_stats"), net("mempool_stats"))
     }
 
     override suspend fun history(script: ByteArray): List<HistoryEntry> {
+        if(txCounts[script.toHex()] == 0L) return emptyList()
         val entries = ArrayList<HistoryEntry>()
         var route = "/txs"
         for(page in 0 until MAX_PAGES) {
@@ -83,7 +109,7 @@ class EsploraBackend(
             var lastConfirmed: String? = null
             for(t in txs) {
                 val o = t.jsonObject
-                val txid = o["txid"]!!.jsonPrimitive.content
+                val txid = requireTxid(o["txid"]!!.jsonPrimitive.content)
                 val height = blockHeight(o)
                 entries += HistoryEntry(txid, height)
                 if(height > 0) {
@@ -100,11 +126,11 @@ class EsploraBackend(
     override suspend fun unspent(script: ByteArray): List<Utxo> =
         json.parseToJsonElement(scriptGet(script, "/utxo")).jsonArray.map {
             val o = it.jsonObject
-            Utxo(o["txid"]!!.jsonPrimitive.content, o["vout"]!!.jsonPrimitive.int, blockHeight(o), o["value"]!!.jsonPrimitive.long)
+            Utxo(requireTxid(o["txid"]!!.jsonPrimitive.content), o["vout"]!!.jsonPrimitive.int, blockHeight(o), o["value"]!!.jsonPrimitive.long)
         }
 
     override suspend fun transaction(txid: String): TxDetail {
-        val r = http.get("/tx/$txid")
+        val r = get("/tx/${requireTxid(txid)}")
         if(r.status != 200) throw IOException(failure(r))
         val o = json.parseToJsonElement(r.body).jsonObject
         val height = blockHeight(o)
@@ -133,7 +159,7 @@ class EsploraBackend(
     }
 
     override suspend fun broadcast(txHex: String): String {
-        val r = http.post("/tx", txHex)
+        val r = withRateLimit { http.post("/tx", txHex) }
         if(r.status == 404 || r.status == 405) {
             throw IOException("The server at ${http.url} does not accept transaction broadcasts.")
         }
@@ -148,10 +174,14 @@ class EsploraBackend(
         return r.body.trim().trim('"')
     }
 
+    /**
+     * The estimate for the nearest target at or below [targetBlocks] (desktop's choice), never
+     * below the coin's own rate: peppool advertises about 1 sat/vB on a chain that mines near 1,000.
+     */
     override suspend fun feeRate(targetBlocks: Int): Double? {
         val estimates = sortedMapOf<Int, Double>()
-        runCatching {
-            val r = http.get("/fee-estimates")
+        optional {
+            val r = get("/fee-estimates")
             if(r.status == 200) {
                 for((k, v) in json.parseToJsonElement(r.body).jsonObject) {
                     val target = k.toIntOrNull() ?: continue
@@ -161,8 +191,8 @@ class EsploraBackend(
         }
         if(estimates.isEmpty()) {
             for(path in listOf("/v1/fees/recommended", "/fees/recommended")) {
-                runCatching {
-                    val r = http.get(path)
+                optional {
+                    val r = get(path)
                     if(r.status == 200) {
                         val o = json.parseToJsonElement(r.body).jsonObject
                         for((name, target) in MEMPOOL_TARGETS) {
@@ -174,7 +204,21 @@ class EsploraBackend(
             }
         }
         if(estimates.isEmpty()) return null
-        return estimates.entries.firstOrNull { it.key >= targetBlocks }?.value ?: estimates[estimates.lastKey()]
+        val estimate = estimates.entries.lastOrNull { it.key <= targetBlocks }?.value ?: estimates[estimates.firstKey()]!!
+        return maxOf(estimate, params.coin.recommendedFeeRate)
+    }
+
+    /** Runs a best-effort read; air-gapped mode and cancellation still stop the caller. */
+    private suspend fun optional(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch(e: AirGappedException) {
+            throw e
+        } catch(e: CancellationException) {
+            throw e
+        } catch(e: Exception) {
+            // the next dialect, or no estimate
+        }
     }
 
     override fun close() {}
@@ -185,6 +229,14 @@ class EsploraBackend(
         return status["block_height"]?.jsonPrimitive?.intOrNull ?: 0
     }
 
+    /** A txid goes into a request path, so it must be exactly 64 hex characters. */
+    private fun requireTxid(txid: String): String {
+        if(txid.length != 64 || !txid.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
+            throw IOException("Not a txid: ${txid.take(80)}")
+        }
+        return txid
+    }
+
     private fun failure(r: HttpEndpoint.Response) = "${http.url} answered HTTP ${r.status}: ${r.body.take(200)}"
 
     companion object {
@@ -193,5 +245,8 @@ class EsploraBackend(
         private const val MAX_PAGES = 40
         private val ALREADY = listOf("already known", "already-known", "already in", "already exists", "txn-already")
         private val MEMPOOL_TARGETS = listOf("fastestFee" to 1, "halfHourFee" to 3, "hourFee" to 6, "economyFee" to 25)
+        private const val MAX_RATE_LIMIT_RETRIES = 3
+        private const val MAX_RETRY_AFTER_SECONDS = 60L
+        private const val DEFAULT_RETRY_AFTER_SECONDS = 5L
     }
 }

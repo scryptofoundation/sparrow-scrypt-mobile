@@ -36,6 +36,8 @@ class EsploraBackendTest {
     private val address = "/address/" + com.sparrowwallet.mobile.crypto.Addresses.forKey(key.pubKey, com.sparrowwallet.mobile.crypto.ScriptType.P2PKH, params)
     private val scripthash = "/scripthash/" + sha256(script).toHex()
 
+    private val T1 = "01".repeat(32)
+    private val T2 = "02".repeat(32)
     private val requests = CopyOnWriteArrayList<String>()
     private var routes: (method: String, path: String, body: String) -> Pair<Int, String> = { _, _, _ -> 404 to "not found" }
     private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
@@ -44,6 +46,7 @@ class EsploraBackendTest {
             requests += "${ex.requestMethod} ${ex.requestURI.path}"
             val (status, out) = routes(ex.requestMethod, ex.requestURI.path, body)
             val bytes = out.encodeToByteArray()
+            if(status == 429) ex.responseHeaders.add("Retry-After", "1")
             ex.sendResponseHeaders(status, if(bytes.isEmpty()) -1 else bytes.size.toLong())
             ex.responseBody.use { it.write(bytes) }
         }
@@ -69,9 +72,9 @@ class EsploraBackendTest {
             when(path) {
                 "/blocks/tip/height" -> 200 to "110"
                 address -> 200 to """{"chain_stats":{"funded_txo_sum":5000,"spent_txo_sum":1000},"mempool_stats":{"funded_txo_sum":300,"spent_txo_sum":0}}"""
-                "$address/txs" -> 200 to "[${tx("t2", null, s, 300)},${tx("t1", 101, s, 5000)}]"
-                "$address/utxo" -> 200 to """[{"txid":"t1","vout":0,"value":4000,"status":{"confirmed":true,"block_height":101}}]"""
-                "/tx/t1" -> 200 to tx("t1", 101, s, 5000, prevScript = "0014" + "cc".repeat(20), prevValue = 9000)
+                "$address/txs" -> 200 to "[${tx(T2, null, s, 300)},${tx(T1, 101, s, 5000)}]"
+                "$address/utxo" -> 200 to """[{"txid":"$T1","vout":0,"value":4000,"status":{"confirmed":true,"block_height":101}}]"""
+                "/tx/$T1" -> 200 to tx(T1, 101, s, 5000, prevScript = "0014" + "cc".repeat(20), prevValue = 9000)
                 else -> 404 to "not found"
             }
         }
@@ -79,9 +82,9 @@ class EsploraBackendTest {
         b.connect()
         assertEquals(110L, b.tipHeight())
         assertEquals(Balance(4000, 300), b.balance(script))
-        assertEquals(listOf(HistoryEntry("t2", 0), HistoryEntry("t1", 101)), b.history(script))
-        assertEquals(listOf(Utxo("t1", 0, 101, 4000)), b.unspent(script))
-        val t1 = b.transaction("t1")
+        assertEquals(listOf(HistoryEntry(T2, 0), HistoryEntry(T1, 101)), b.history(script))
+        assertEquals(listOf(Utxo(T1, 0, 101, 4000)), b.unspent(script))
+        val t1 = b.transaction(T1)
         assertEquals(listOf(TxOut(s, 5000)), t1.outputs)
         assertEquals(TxOut("0014" + "cc".repeat(20), 9000), t1.inputs[0].prevOut)
         assertEquals(101, t1.height)
@@ -94,12 +97,12 @@ class EsploraBackendTest {
             when(path) {
                 "/blocks/tip/height" -> 200 to "5"
                 "$address/txs" -> 400 to "Address on invalid network"
-                "$scripthash/txs" -> 200 to "[${tx("t1", 3, script.toHex(), 1)}]"
+                "$scripthash/txs" -> 200 to "[${tx(T1, 3, script.toHex(), 1)}]"
                 else -> 404 to "not found"
             }
         }
         val b = EsploraBackend(base, params).also { it.connect() }
-        assertEquals(listOf(HistoryEntry("t1", 3)), b.history(script))
+        assertEquals(listOf(HistoryEntry(T1, 3)), b.history(script))
     }
 
     @Test fun historyStopsAtThePageLimit(): Unit = runBlocking {
@@ -107,7 +110,7 @@ class EsploraBackendTest {
         routes = { _, path, _ ->
             when {
                 path == "/blocks/tip/height" -> 200 to "1000"
-                path.startsWith("$address/txs") -> 200 to (0 until 25).joinToString(",", "[", "]") { tx("p${n++}", 900, "51", 1) }
+                path.startsWith("$address/txs") -> 200 to (0 until 25).joinToString(",", "[", "]") { tx((n++).toString(16).padStart(64, '0'), 900, "51", 1) }
                 else -> 404 to "not found"
             }
         }
@@ -145,26 +148,105 @@ class EsploraBackendTest {
             }
         }
         val b = EsploraBackend(base, params).also { it.connect() }
-        assertEquals(1100.0, b.feeRate(2))
+        assertEquals(1200.0, b.feeRate(2))
     }
 
-    @Test fun feeEstimatesPickTheNearestTargetAtOrAbove(): Unit = runBlocking {
+    @Test fun feeEstimatesPickTheNearestTargetAtOrBelow(): Unit = runBlocking {
         routes = { _, path, _ ->
             when(path) {
                 "/blocks/tip/height" -> 200 to "5"
-                "/fee-estimates" -> 200 to """{"1":30.5,"3":20.0,"6":10.0}"""
+                "/fee-estimates" -> 200 to """{"1":3000.5,"3":2000.0,"6":1500.0}"""
                 else -> 404 to "not found"
             }
         }
         val b = EsploraBackend(base, params).also { it.connect() }
-        assertEquals(20.0, b.feeRate(2))
-        assertEquals(10.0, b.feeRate(25))
+        assertEquals(3000.5, b.feeRate(2))
+        assertEquals(1500.0, b.feeRate(25))
+    }
+
+    /** peppool advertises about 1 sat/vB on a chain that mines near 1000: desktop floors at the coin's rate. */
+    @Test fun feeEstimateIsFlooredAtTheCoinsRate(): Unit = runBlocking {
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "5"
+                "/fee-estimates" -> 200 to """{"1":1.0,"6":1.0}"""
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(1000.0, b.feeRate(2))
+    }
+
+    @Test fun rateLimitedRequestIsRetriedAfterRetryAfter(): Unit = runBlocking {
+        var tries = 0
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "5"
+                "$address/txs" -> if(tries++ == 0) 429 to "Too Many Requests" else 200 to "[]"
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(emptyList(), b.history(script))
+        assertEquals(2, tries)
+    }
+
+    @Test fun unusedAddressSkipsTheHistoryRequest(): Unit = runBlocking {
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "5"
+                address -> 200 to """{"chain_stats":{"funded_txo_sum":0,"spent_txo_sum":0,"tx_count":0},"mempool_stats":{"funded_txo_sum":0,"spent_txo_sum":0,"tx_count":0}}"""
+                else -> 500 to "should not be asked"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(Balance(0, 0), b.balance(script))
+        assertEquals(emptyList(), b.history(script))
+        assertEquals(0, requests.count { it.contains("/txs") })
+    }
+
+    @Test fun serverTxidThatIsNotHexIsRefused(): Unit = runBlocking {
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "5"
+                "$address/txs" -> 200 to "[" + tx("t1\r\nHost: other.example", 3, "51", 1) + "]"
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertFailsWith<IOException> { b.history(script) }
+        assertFailsWith<IOException> { b.transaction("aa bb") }
+    }
+
+    /** Headers, then one byte at a time just under the read timeout: the request deadline must end it. */
+    @Test fun slowTrickleHitsTheRequestDeadline() {
+        ServerSocket(0).use { s ->
+            thread(isDaemon = true) {
+                while(!s.isClosed) {
+                    val c = runCatching { s.accept() }.getOrNull() ?: break
+                    thread(isDaemon = true) {
+                        runCatching {
+                            c.use {
+                                it.getInputStream().read(ByteArray(4096))
+                                val out = it.getOutputStream()
+                                out.write("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n".encodeToByteArray())
+                                repeat(1000) { _ -> out.write('1'.code); out.flush(); Thread.sleep(100) }
+                            }
+                        }
+                    }
+                }
+            }
+            val started = System.currentTimeMillis()
+            val e = assertFailsWith<IOException> { runBlocking { EsploraBackend("http://127.0.0.1:${s.localPort}", params, timeoutMs = 300).connect() } }
+            assertEquals("Request took too long", e.message)
+            assertTrue(System.currentTimeMillis() - started < 5_000)
+        }
     }
 
     @Test fun oversizedBodyIsRefused(): Unit = runBlocking {
         routes = { _, path, _ -> if(path == "/blocks/tip/height") 200 to "5" else 200 to "x".repeat(5 * 1024 * 1024) }
         val b = EsploraBackend(base, params).also { it.connect() }
-        val e = assertFailsWith<IOException> { b.transaction("big") }
+        val e = assertFailsWith<IOException> { b.transaction("0b".repeat(32)) }
         assertEquals("Response too large", e.message)
     }
 

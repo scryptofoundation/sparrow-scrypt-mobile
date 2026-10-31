@@ -46,4 +46,14 @@ class LiveBackendsTest {
         val dingo = ChainParams.of(Coin.DINGOCOIN, Network.MAINNET)
         check("DINGO mainnet Electrum", dingo) { ElectrumBackend(ElectrumClient("seed1.dingocoin.com", 3342, true)) }
     }
+
+    /** The phone's default Litecoin list must pass the CA and hostname checks. */
+    @Test fun litecoinDefaultServersPassHostnameChecks() {
+        if(!enabled) return
+        val ltc = ChainParams.of(Coin.LITECOIN, Network.MAINNET)
+        for((host, port) in listOf("electrum1.cipig.net" to 20063, "fallacy.fiatfaucet.com" to 50002, "electrum.jhoenicke.de" to 50091,
+                                   "electrum.petrkr.net" to 60002, "electrum.jochen-hoenicke.de" to 50091)) {
+            check("LTC $host Electrum", ltc) { ElectrumBackend(ElectrumClient(host, port, true)) }
+        }
+    }
 }

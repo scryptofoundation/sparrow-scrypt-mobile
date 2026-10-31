@@ -10,6 +10,9 @@ import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
 import java.net.URI
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 
@@ -20,8 +23,15 @@ import javax.net.ssl.SSLSocketFactory
  * checks the certificate and the hostname. One request per connection; bodies are capped,
  * since the server is untrusted.
  */
-class HttpEndpoint(baseUrl: String, private val proxy: SocksProxy? = null, private val timeoutMs: Int = 30_000) {
-    class Response(val status: Int, val body: String)
+class HttpEndpoint(
+    baseUrl: String,
+    private val proxy: SocksProxy? = null,
+    private val timeoutMs: Int = 30_000,
+    /** The whole request, however slowly the server trickles its answer. */
+    private val deadlineMs: Long = timeoutMs * 2L
+) {
+    /** [headers] are keyed by lowercase name. */
+    class Response(val status: Int, val body: String, val headers: Map<String, String> = emptyMap())
 
     private val uri = URI(baseUrl.trimEnd('/'))
     private val tls = when(uri.scheme) {
@@ -43,6 +53,8 @@ class HttpEndpoint(baseUrl: String, private val proxy: SocksProxy? = null, priva
         NetworkPolicy.check("Esplora")
         val raw = if(proxy != null) Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress(proxy.host, proxy.port))) else Socket()
         val release = NetworkPolicy.whileOpen { runCatching { raw.close() } } // air-gapped mode cuts it mid-request too
+        val expired = AtomicBoolean(false)
+        val deadline = DEADLINES.schedule({ expired.set(true); runCatching { raw.close() } }, deadlineMs, TimeUnit.MILLISECONDS)
         try {
             val endpoint = if(proxy != null) InetSocketAddress.createUnresolved(host, port) else InetSocketAddress(host, port)
             raw.connect(endpoint, timeoutMs)
@@ -73,7 +85,11 @@ class HttpEndpoint(baseUrl: String, private val proxy: SocksProxy? = null, priva
                 flush()
             }
             readResponse(socket.getInputStream())
+        } catch(e: IOException) {
+            if(expired.get()) throw IOException("Request took too long", e)
+            throw e
         } finally {
+            deadline.cancel(false)
             release()
             runCatching { raw.close() }
         }
@@ -106,7 +122,7 @@ class HttpEndpoint(baseUrl: String, private val proxy: SocksProxy? = null, priva
             }
             else -> readToEnd(input)
         }
-        return Response(status, body.decodeToString())
+        return Response(status, body.decodeToString(), headers)
     }
 
     private fun readExactly(input: InputStream, length: Int): ByteArray {
@@ -158,6 +174,9 @@ class HttpEndpoint(baseUrl: String, private val proxy: SocksProxy? = null, priva
     }
 
     companion object {
+        /** Closes sockets whose request outlived its deadline; one daemon thread for all endpoints. */
+        private val DEADLINES = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "http-deadline").apply { isDaemon = true } }
+
         const val MAX_BODY = 4 * 1024 * 1024
         private const val MAX_HEADERS = 64 * 1024
     }
