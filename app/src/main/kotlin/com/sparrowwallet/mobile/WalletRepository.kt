@@ -377,13 +377,16 @@ class WalletRepository(context: Context) {
         val proxyPort: Int
     )
 
-    private fun defaultServer(network: Network) = when(network) {
-        Network.MAINNET -> ServerSettings("ltc.rentonisk.com", 50002, true, false, false, "127.0.0.1", 9050)
-        Network.TESTNET -> ServerSettings("electrum.ltc.xurious.com", 51002, true, true, false, "127.0.0.1", 9050)
-    }
+    /** Whether the user saved their own server; otherwise the public list is used with fallback. */
+    fun hasCustomServer(network: Network): Boolean = prefs.contains("server.${network.id}.host")
+
+    private fun lastPublicKey(network: Network) = "server.${network.id}.lastPublic"
+
+    private fun publicServers(network: Network) =
+        PublicServers.ordered(network, prefs.getString(lastPublicKey(network), null))
 
     fun serverSettings(network: Network): ServerSettings {
-        val d = defaultServer(network)
+        val d = publicServers(network).first()
         val p = "server.${network.id}"
         return ServerSettings(
             prefs.getString("$p.host", d.host)!!,
@@ -423,12 +426,28 @@ class WalletRepository(context: Context) {
         }
     }
 
+    /**
+     * Connects to the user's server, or to the first public server that answers (the last one that
+     * worked first). Only connecting falls back: once [block] starts, its errors are final, so a
+     * broadcast is never sent twice.
+     */
     private suspend fun <T> withServer(network: Network, block: suspend (ElectrumClient) -> T): T =
         withContext(Dispatchers.IO) {
-            val client = newClient(serverSettings(network))
+            val custom = hasCustomServer(network)
+            val candidates = if(custom) listOf(serverSettings(network)) else publicServers(network)
+            val (used, client) = ServerFallback.firstWorking(candidates) { s ->
+                val c = newClient(s)
+                try {
+                    c.connect()
+                    c.serverVersion()
+                    c
+                } catch(e: Exception) {
+                    c.close()
+                    throw e
+                }
+            }
+            if(!custom) prefs.edit().putString(lastPublicKey(network), used.host).apply()
             try {
-                client.connect()
-                client.serverVersion()
                 block(client)
             } finally {
                 client.close()
