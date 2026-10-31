@@ -30,4 +30,20 @@ class CoinFormatTest {
         assertEquals("1.0", formatUnitsShort(100_000_000))
         assertEquals("0.00000001", formatUnits(1))
     }
+
+    @Test
+    fun usdPriceKeepsSubCentDigits() {
+        assertEquals("$0.000123", formatUsdPrice(0.0001234))
+        assertEquals("$0.0798", formatUsdPrice(0.0798))
+        assertEquals("$84.50", formatUsdPrice(84.5))
+        assertEquals("$1,234.50", formatUsdPrice(1234.5))
+    }
+
+    @Test
+    fun usdValueBelowACentSaysSo() {
+        assertEquals("< $0.01", formatUsd(1_000, 0.0001))
+        assertEquals("$0.00", formatUsd(0, 1.0))
+        assertEquals("$126.75", formatUsd(150_000_000, 84.5))
+        assertEquals("—", formatUsd(1, null))
+    }
 }

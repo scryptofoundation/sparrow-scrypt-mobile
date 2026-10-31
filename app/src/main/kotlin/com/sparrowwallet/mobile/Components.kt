@@ -38,8 +38,10 @@ import java.util.Locale
 
 // ---- formatting (shared by all screens) ----
 
-internal fun formatUsd(litoshis: Long, price: Double?): String =
-    price?.let { "$%,.2f".format(kotlin.math.abs(litoshis) / 1e8 * it) } ?: "—"
+internal fun formatUsd(litoshis: Long, price: Double?): String = price?.let {
+    val usd = kotlin.math.abs(litoshis) / 1e8 * it
+    if(usd > 0 && usd < 0.005) "< $0.01" else "$%,.2f".format(usd)
+} ?: "—"
 
 internal fun formatDate(unixSeconds: Long?): String =
     unixSeconds?.let { SimpleDateFormat("MMM d, yyyy HH:mm", Locale.US).format(Date(it * 1000)) } ?: "pending"
@@ -241,7 +243,7 @@ internal fun BalanceHeader(
         Text(
             listOfNotNull(
                 total?.let { "≈ ${formatUsd(it, usdNow)}" },
-                usdNow?.let { "$%,.2f / %s".format(it, coin.ticker) },
+                usdNow?.let { "${formatUsdPrice(it)} / ${coin.ticker}" },
                 fiatNote
             ).joinToString(" · ").ifEmpty { " " },
             fontFamily = MonoFont, fontSize = 11.sp,

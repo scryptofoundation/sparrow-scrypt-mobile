@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import com.sparrowwallet.mobile.crypto.BackendKind
 import androidx.compose.runtime.mutableStateMapOf
@@ -78,7 +79,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private sealed interface Screen {
+internal sealed interface Screen {
     data object WalletList : Screen
     data class Create(val mnemonic: String) : Screen
     data object Restore : Screen
@@ -109,10 +110,28 @@ private sealed interface Screen {
     data class ExportToDesktop(val home: Home) : Screen
 }
 
+/** Where the system Back gesture goes: a wallet's screens return to its Home, the rest to the list. */
+internal fun backTarget(screen: Screen): Screen? = when(screen) {
+    is Screen.WalletList -> null
+    is Screen.Home -> Screen.WalletList
+    is Screen.Send -> screen.home
+    is Screen.Receive -> screen.home
+    is Screen.Server -> screen.home
+    is Screen.Details -> screen.home
+    is Screen.TxDetail -> screen.home
+    is Screen.LabelSync -> screen.home
+    is Screen.PsbtSign -> screen.home
+    is Screen.SignPsbt -> screen.home
+    is Screen.ExportToDesktop -> screen.home
+    is Screen.Create, is Screen.Restore, is Screen.ImportSparrow, is Screen.LinkReceive,
+    is Screen.LinkSend, is Screen.Unlock -> Screen.WalletList
+}
+
 @Composable
 private fun App(repo: WalletRepository) {
     var screen by remember { mutableStateOf<Screen>(Screen.WalletList) }
     var airGapped by remember { mutableStateOf(NetworkPolicy.blocked) }
+    BackHandler(enabled = backTarget(screen) != null) { backTarget(screen)?.let { screen = it } }
 
     // one password opens a linked pair: silently unlock the counterpart with the same
     // password so switching between public and private needs no re-entry
@@ -346,7 +365,7 @@ private fun WalletListScreen(
     ScreenColumn {
         Text("Sparrow LTC", style = MaterialTheme.typography.headlineMedium)
         if(wallets.isEmpty()) {
-            Text("A Litecoin wallet in sync with your desktop.", style = MaterialTheme.typography.bodyMedium)
+            Text("Litecoin, Dogecoin and five more coins, in sync with your desktop.", style = MaterialTheme.typography.bodyMedium)
         } else {
             // one section per coin; a linked pair is one wallet with two layers, shown as one card
             val groups = remember(wallets) { groupByCoin(wallets) }
@@ -355,13 +374,17 @@ private fun WalletListScreen(
                 if(airGapped) return@LaunchedEffect
                 for((coin, _) in groups) PriceService.currentUsd(coin)?.let { prices[coin] = it }
             }
+            val totals = remember(wallets) { repo.sessionTotals() }
             for((coin, coinWallets) in groups) {
-                val total = coinTotal(coinWallets) { repo.sessionBalance(it) }
+                val balanceOf = { name: String -> coinWallets.firstOrNull { it.name == name }?.let { walletBalance(it, wallets, totals) } }
+                val total = coinTotal(coinWallets, Network.MAINNET, balanceOf)
+                val testTotal = coinTotal(coinWallets, Network.TESTNET, balanceOf)
                 Text(
                     listOfNotNull(
                         coin.displayName,
                         total?.let { formatAmountShort(coin, it) },
-                        total?.let { t -> prices[coin]?.let { formatUsd(t, it) } }
+                        total?.let { t -> prices[coin]?.let { formatUsd(t, it) } },
+                        testTotal?.let { "testnet ${formatAmountShort(coin, it)}" }
                     ).joinToString(" · "),
                     style = MaterialTheme.typography.titleMedium
                 )
@@ -543,7 +566,7 @@ private fun AirGapSetting(
                     busy = true; error = null
                     scope.launch {
                         val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                            AirGapMode.leave(settings, walletNames, passwords.toMap()) { n, p -> repo.unlock(n, p) }
+                            AirGapMode.leave(settings, walletNames, passwords.toMap()) { n, p -> repo.unlock(n, p, session = false) }
                         }
                         busy = false
                         when(result) {
@@ -638,7 +661,7 @@ private fun LinkSendScreen(repo: WalletRepository, pairing: SparrowLink.Pairing,
                 scope.launch {
                     try {
                         val name = selected ?: throw IllegalArgumentException("Pick a wallet")
-                        val data = try { repo.unlock(name, password) }
+                        val data = try { repo.unlock(name, password, session = false) }
                                    catch(t: Throwable) { throw IllegalArgumentException("Wrong password") }
                         val fileBytes = repo.exportSparrowWallet(name, data, password)
                         repo.linkSendWallet(pairing, name, fileBytes)
@@ -970,7 +993,7 @@ private fun TxDetailScreen(tx: TxInfo, coin: Coin, network: Network, onSaveLabel
                 kv("Date", formatDate(tx.timestamp?.takeIf { it > 0 }))
                 kv(if(tx.mweb && tx.txid.length != 64) "Output id" else "Txid",
                     tx.txid.take(10) + "…" + tx.txid.takeLast(8))
-                usdThen?.let { kv("Value then", "$%,.2f / %s".format(it, coin.ticker)) }
+                usdThen?.let { kv("Value then", "${formatUsdPrice(it)} / ${coin.ticker}") }
             }
         }
         Button(
@@ -2410,7 +2433,7 @@ private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData,
             error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             Button(
                 onClick = {
-                    error = try { revealed = repo.unlock(name, password); null }
+                    error = try { revealed = repo.unlock(name, password, session = false); null }
                             catch(t: Throwable) { "Wrong password" }
                 },
                 modifier = Modifier.fillMaxWidth()
@@ -2433,6 +2456,7 @@ private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData,
                     Text(repo.accountXpub(shown), style = MaterialTheme.typography.bodySmall)
                 }
             }
+            if(repo.coin(shown).mweb) {
             val mweb = remember(shown) { repo.mwebInfo(shown) }
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2448,6 +2472,7 @@ private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData,
                         "aren't on mobile yet (needs the mwebd scanner); funds sent here are visible on desktop.",
                         style = MaterialTheme.typography.bodySmall)
                 }
+            }
             }
         }
         if(externalSigningSupported(repo.coin(data), data.scriptType)) {

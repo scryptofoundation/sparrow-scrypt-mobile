@@ -14,6 +14,11 @@ object WalletSetup {
     fun derivation(coin: Coin, network: Network, scriptType: ScriptType): String =
         ChainParams.of(coin, network).derivationPath(scriptType)
 
+    /** The account path for an imported file that carries none: MWEB's m/1000', else the script type's. */
+    fun importDerivation(coin: Coin, network: Network, scriptType: String?): String =
+        if(scriptType == "MWEB") "m/1000'"
+        else derivation(coin, network, scriptType?.let { walletScriptType(it) } ?: ChainParams.of(coin, network).defaultScriptType)
+
     /** Electrum seeds exist only in Electrum-LTC; no other coin's wallet makes them. */
     fun electrumSeedAllowed(coin: Coin): Boolean = coin == Coin.LITECOIN
 

@@ -19,6 +19,13 @@ internal fun formatUnitsShort(units: Long): String {
 
 internal fun formatAmountShort(coin: Coin, units: Long): String = "${formatUnitsShort(units)} ${coin.ticker}"
 
+/** A USD price: cents from a dollar up, else three significant digits so sub-cent coins don't read $0.00. */
+internal fun formatUsdPrice(price: Double): String {
+    if(price >= 1) return "$%,.2f".format(price)
+    val rounded = java.math.BigDecimal(price).round(java.math.MathContext(3)).stripTrailingZeros()
+    return "$" + rounded.setScale(maxOf(rounded.scale(), 2)).toPlainString()
+}
+
 /** Parses a positive decimal amount into the smallest unit exactly, or null. */
 internal fun parseAmount(text: String): Long? =
     try {

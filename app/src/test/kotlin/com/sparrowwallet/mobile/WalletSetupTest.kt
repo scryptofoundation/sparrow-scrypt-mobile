@@ -29,4 +29,11 @@ class WalletSetupTest {
         assertFalse(WalletSetup.electrumSeedAllowed(Coin.DOGECOIN))
         assertFalse(WalletSetup.electrumSeedAllowed(Coin.BELLSCOIN))
     }
+
+    @Test
+    fun importDerivationCoversEveryScriptType() {
+        assertEquals("m/1000'", WalletSetup.importDerivation(Coin.LITECOIN, Network.MAINNET, "MWEB"))
+        assertEquals("m/44'/3'/0'", WalletSetup.importDerivation(Coin.DOGECOIN, Network.MAINNET, "P2PKH"))
+        assertEquals("m/84'/2'/0'", WalletSetup.importDerivation(Coin.LITECOIN, Network.MAINNET, null))
+    }
 }

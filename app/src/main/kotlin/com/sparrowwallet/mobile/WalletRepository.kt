@@ -104,6 +104,8 @@ class WalletRepository(context: Context) {
     fun deleteWallet(name: String) {
         vaultFile(name).delete()
         metaFile(name).delete()
+        sessionTotals.remove(safeName(name))
+        sessionNames.values.removeAll { it == safeName(name) }
     }
 
     /**
@@ -229,33 +231,32 @@ class WalletRepository(context: Context) {
         val scriptType = imported.scriptType ?: "P2WPKH"
         val derivation = imported.derivationPath
             ?: if(imported.seedType == "ELECTRUM") ElectrumSeed.defaultDerivation(imported.mnemonic)
-               else WalletSetup.derivation(imported.coin, network, walletScriptType(scriptType))
+               else WalletSetup.importDerivation(imported.coin, network, scriptType)
         saveWallet(name, imported.mnemonic, "", devicePassword, network, derivation,
             scriptType, imported.seedType, imported.mwebHistory, imported.txLabels, imported.coin)
             ?.let { throw SparrowImport.ImportException(it) }
         return safeName(name)
     }
 
-    /** Opens a wallet's vault; throws VaultException on wrong password. */
-    fun unlock(name: String, password: String): VaultData =
-        WalletVault.open(vaultFile(name).readBytes(), password)
-            .also { unlockedByName[safeName(name)] = it; runCatching { cacheSyncCredentials(name, it) } }
-
-    /** Wallets opened since the app started, for the wallet list's in-memory balances. */
-    private val unlockedByName = java.util.concurrent.ConcurrentHashMap<String, VaultData>()
-
     /**
-     * A wallet's last synced balance this session (a public wallet includes its linked MWEB
-     * wallet), or null when it has not been opened and synced: balances are never stored.
+     * Opens a wallet's vault; throws VaultException on wrong password. A [session] unlock (the
+     * wallet being opened to use) lets its syncs record the wallet list's in-memory balance;
+     * a password check (Reveal, export, leaving air-gapped mode) does not keep the vault.
      */
-    fun sessionBalance(name: String): Long? {
-        val data = unlockedByName[safeName(name)] ?: return null
-        val own = if(data.scriptType == "MWEB") cachedMwebSnapshot(data)?.let { it.confirmed + it.unconfirmed }
-                  else cachedSnapshot(data)?.balance?.total
-        val linked = walletInfo(name)?.linkedWallet?.let { unlockedByName[it] }
-            ?.takeIf { it.scriptType == "MWEB" && data.scriptType != "MWEB" }
-            ?.let { cachedMwebSnapshot(it) }?.let { it.confirmed + it.unconfirmed }
-        return if(own == null && linked == null) null else (own ?: 0) + (linked ?: 0)
+    fun unlock(name: String, password: String, session: Boolean = true): VaultData =
+        WalletVault.open(vaultFile(name).readBytes(), password)
+            .also { if(session) sessionNames[it] = safeName(name); runCatching { cacheSyncCredentials(name, it) } }
+
+    /** Wallets opened to use this session, so a sync can record its total under the wallet's name. */
+    private val sessionNames = java.util.concurrent.ConcurrentHashMap<VaultData, String>()
+
+    /** Last synced balance per wallet name this session; never written to disk. */
+    private val sessionTotals = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun sessionTotals(): Map<String, Long> = HashMap(sessionTotals)
+
+    private fun recordTotal(data: VaultData, total: Long) {
+        sessionNames[data]?.let { sessionTotals[it] = total }
     }
 
     val syncStore by lazy { SyncStore(appContext) }
@@ -310,6 +311,7 @@ class WalletRepository(context: Context) {
         val history = data.mwebHistory.map { if(it.txid == txid) it.copy(label = clean) else it }
         val updated = data.copy(txLabels = labels, mwebHistory = history)
         vaultFile(name).writeBytes(WalletVault.seal(updated, password))
+        sessionNames.remove(data)?.let { sessionNames[updated] = it }
         return updated
     }
 
@@ -321,6 +323,7 @@ class WalletRepository(context: Context) {
         val history = data.mwebHistory.map { e -> labels[e.txid]?.let { e.copy(label = it.trim()) } ?: e }
         val updated = data.copy(txLabels = merged, mwebHistory = history)
         vaultFile(name).writeBytes(WalletVault.seal(updated, password))
+        sessionNames.remove(data)?.let { sessionNames[updated] = it }
         return updated
     }
 
@@ -551,7 +554,7 @@ class WalletRepository(context: Context) {
 
     suspend fun syncWallet(data: VaultData, account: HDKey, onProgress: (checked: Int) -> Unit = {}): WalletSnapshot =
         withBackend(coin(data), network(data)) { WalletScanner(it, scriptType(data)).sync(account, onProgress = onProgress) }
-            .also { snapshotCache[data] = it; snapshotAt[data] = System.currentTimeMillis() }
+            .also { snapshotCache[data] = it; snapshotAt[data] = System.currentTimeMillis(); recordTotal(data, it.balance.total) }
 
     // ---- Sending ----
 
@@ -849,7 +852,10 @@ class WalletRepository(context: Context) {
     suspend fun mwebSync(data: VaultData): MwebdService.MwebSnapshot {
         val scanSecret = masterKey(data).derivePath("${mwebAccountPath(data)}/0'").privKey
         return mwebd(data).snapshot(scanSecret, mwebBirthHeight(data))
-            .also { mwebSnapshotCache[data] = it; mwebSnapshotAt[data] = System.currentTimeMillis() }
+            .also {
+                mwebSnapshotCache[data] = it; mwebSnapshotAt[data] = System.currentTimeMillis()
+                recordTotal(data, it.confirmed + it.unconfirmed)
+            }
     }
 
     fun isMwebAddress(address: String, network: Network): Boolean =
