@@ -106,10 +106,15 @@ class WalletRepository(context: Context) {
         metaFile(name).delete()
     }
 
-    /** Detects BIP39 vs Electrum seed and returns the type + default derivation, or null if invalid. */
-    fun classifySeed(mnemonic: String, network: Network): Pair<String, String>? = when {
-        Bip39.isValid(mnemonic) -> "BIP39" to network.defaultDerivationPath
-        ElectrumSeed.isValid(mnemonic) -> "ELECTRUM" to ElectrumSeed.defaultDerivation(mnemonic)
+    /**
+     * Detects BIP39 vs Electrum seed and returns the type + default derivation for the coin and
+     * script type, or null if invalid. Electrum seeds are Litecoin only.
+     */
+    fun classifySeed(mnemonic: String, coin: Coin, network: Network,
+                     scriptType: ScriptType = ChainParams.of(coin, network).defaultScriptType): Pair<String, String>? = when {
+        Bip39.isValid(mnemonic) -> "BIP39" to WalletSetup.derivation(coin, network, scriptType)
+        ElectrumSeed.isValid(mnemonic) && WalletSetup.electrumSeedAllowed(coin) ->
+            "ELECTRUM" to ElectrumSeed.defaultDerivation(mnemonic)
         else -> null
     }
 
@@ -126,16 +131,25 @@ class WalletRepository(context: Context) {
                    derivationOverride: String? = null, scriptType: String = "P2WPKH",
                    seedTypeOverride: String? = null,
                    mwebHistory: List<MwebHistoryEntry> = emptyList(),
-                   txLabels: Map<String, String> = emptyMap()): String? {
+                   txLabels: Map<String, String> = emptyMap(),
+                   coin: Coin = Coin.LITECOIN): String? {
         val clean = safeName(name)
         if(clean.isEmpty()) return "Give the wallet a name"
         if(vaultFile(clean).exists()) return "A wallet named \"$clean\" already exists"
-        val classified = classifySeed(mnemonic.trim(), network)
-        val type = seedTypeOverride ?: classified?.first ?: return "Not a valid BIP39 or Electrum seed"
-        val derivation = derivationOverride ?: classified?.second ?: return "Not a valid BIP39 or Electrum seed"
-        val data = VaultData(mnemonic.trim(), passphrase, type, derivation, network.id, scriptType, mwebHistory, txLabels)
+        val publicType = ScriptType.entries.firstOrNull { it.name == scriptType }
+        if(publicType == null && !(scriptType == "MWEB" && coin.mweb)) return "${coin.displayName} has no $scriptType wallets"
+        if(publicType != null && !coin.supports(publicType)) return "${coin.displayName} has no $scriptType wallets"
+        val classified = classifySeed(mnemonic.trim(), coin, network, publicType ?: ScriptType.P2WPKH)
+        val invalid = if(ElectrumSeed.isValid(mnemonic.trim()) && !WalletSetup.electrumSeedAllowed(coin))
+            "Electrum seeds are Litecoin only" else "Not a valid BIP39 or Electrum seed"
+        val type = seedTypeOverride ?: classified?.first ?: return invalid
+        if(seedTypeOverride == null && type == "ELECTRUM" && publicType != ScriptType.P2WPKH) {
+            return "Electrum seeds restore as Native Segwit"
+        }
+        val derivation = derivationOverride ?: classified?.second ?: return invalid
+        val data = VaultData(mnemonic.trim(), passphrase, type, derivation, network.id, scriptType, mwebHistory, txLabels, coin.id)
         vaultFile(clean).writeBytes(WalletVault.seal(data, password))
-        writeMeta(clean, network, scriptType)
+        writeMeta(clean, network, scriptType, coin = coin)
         return null
     }
 

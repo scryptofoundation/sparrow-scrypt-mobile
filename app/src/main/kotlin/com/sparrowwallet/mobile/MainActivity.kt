@@ -48,6 +48,8 @@ import androidx.compose.ui.unit.dp
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import com.sparrowwallet.mobile.crypto.Coin
+import com.sparrowwallet.mobile.crypto.ElectrumSeed
+import com.sparrowwallet.mobile.crypto.ScriptType
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.NetworkPolicy
@@ -727,6 +729,28 @@ private fun NetworkPicker(selected: Network, onSelect: (Network) -> Unit) {
 }
 
 @Composable
+private fun CoinPicker(selected: Coin, onSelect: (Coin) -> Unit) {
+    Column {
+        for(coin in Coin.entries) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = selected == coin, onClick = { onSelect(coin) })
+                Text("${coin.displayName} (${coin.ticker})", style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScriptTypePicker(options: List<ScriptType>, selected: ScriptType, onSelect: (ScriptType) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for(type in options) {
+            RadioButton(selected = selected == type, onClick = { onSelect(type) })
+            Text(WalletSetup.scriptTypeLabel(type), style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
 private fun SaveWalletScreen(
     title: String,
     mnemonic: String,
@@ -736,7 +760,9 @@ private fun SaveWalletScreen(
     onBack: () -> Unit
 ) {
     var name by remember { mutableStateOf("") }
+    var coin by remember { mutableStateOf(Coin.LITECOIN) }
     var network by remember { mutableStateOf(Network.MAINNET) }
+    var scriptType by remember { mutableStateOf(ScriptType.P2WPKH) }
     var phrase by remember { mutableStateOf(mnemonic) }
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
@@ -748,7 +774,11 @@ private fun SaveWalletScreen(
             label = { Text("Wallet name") },
             modifier = Modifier.fillMaxWidth()
         )
+        CoinPicker(coin) { coin = it; scriptType = WalletSetup.scriptTypes(it).first() }
         NetworkPicker(network) { network = it }
+        if(WalletSetup.scriptTypes(coin).size > 1) {
+            ScriptTypePicker(WalletSetup.scriptTypes(coin), scriptType) { scriptType = it }
+        }
         if(mnemonicEditable) {
             OutlinedTextField(
                 value = phrase, onValueChange = { phrase = it },
@@ -756,9 +786,11 @@ private fun SaveWalletScreen(
                 modifier = Modifier.fillMaxWidth()
             )
             phrase.trim().takeIf { it.isNotEmpty() }?.let { p ->
-                val kind = repo.classifySeed(p, network)?.first
+                val kind = repo.classifySeed(p, coin, network, scriptType)?.first
                 Text(
-                    kind?.let { "Detected: $it seed" } ?: "Not a recognized seed yet",
+                    kind?.let { "Detected: $it seed" }
+                        ?: if(!WalletSetup.electrumSeedAllowed(coin) && ElectrumSeed.isValid(p)) "Electrum seeds are Litecoin only"
+                        else "Not a recognized seed yet",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -779,7 +811,7 @@ private fun SaveWalletScreen(
         Button(
             onClick = {
                 error = if(password.isEmpty()) "Choose a password"
-                        else repo.saveWallet(name, phrase, "", password, network)
+                        else repo.saveWallet(name, phrase, "", password, network, scriptType = scriptType.name, coin = coin)
                             ?: run { onSaved(name.trim(), repo.unlock(name, password), password); null }
             },
             modifier = Modifier.fillMaxWidth()
