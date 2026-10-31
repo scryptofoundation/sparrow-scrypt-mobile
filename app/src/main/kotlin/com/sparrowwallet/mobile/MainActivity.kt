@@ -73,6 +73,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AirGapMode.load(getSharedPreferences("settings", MODE_PRIVATE))
+        if(applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            com.sparrowwallet.mobile.electrum.HttpEndpoint.timingLog = { android.util.Log.d("SparrowHttp", it) }
+        }
         val repo = WalletRepository(applicationContext)
         SyncWorker.schedule(applicationContext, repo.syncStore.intervalMinutes)
         setContent { App(repo) }
@@ -83,6 +86,7 @@ internal sealed interface Screen {
     data object WalletList : Screen
     data class Create(val mnemonic: String) : Screen
     data object Restore : Screen
+    data object RestoreFromApp : Screen
     data class ImportSparrow(val payload: SparrowLink.ReceivedPayload) : Screen
     data class LinkReceive(val pairing: SparrowLink.Pairing) : Screen
     data class LinkSend(val pairing: SparrowLink.Pairing) : Screen
@@ -123,7 +127,7 @@ internal fun backTarget(screen: Screen): Screen? = when(screen) {
     is Screen.PsbtSign -> screen.home
     is Screen.SignPsbt -> screen.home
     is Screen.ExportToDesktop -> screen.home
-    is Screen.Create, is Screen.Restore, is Screen.ImportSparrow, is Screen.LinkReceive,
+    is Screen.Create, is Screen.Restore, is Screen.RestoreFromApp, is Screen.ImportSparrow, is Screen.LinkReceive,
     is Screen.LinkSend, is Screen.Unlock -> Screen.WalletList
 }
 
@@ -182,6 +186,7 @@ private fun App(repo: WalletRepository) {
                 onOpen = { screen = Screen.Unlock(it) },
                 onCreate = { screen = Screen.Create(repo.createNewMnemonic()) },
                 onRestore = { screen = Screen.Restore },
+                onRestoreFromApp = { screen = Screen.RestoreFromApp },
                 onImportFile = { bytes ->
                     screen = Screen.ImportSparrow(
                         SparrowLink.ReceivedPayload(SparrowLink.ReceivedWallet("", bytes), null)
@@ -222,6 +227,11 @@ private fun App(repo: WalletRepository) {
                 mnemonicEditable = true,
                 repo = repo,
                 onSaved = { name, data, password -> screen = Screen.Home(name, data, password = password) },
+                onBack = { screen = Screen.WalletList }
+            )
+            is Screen.RestoreFromApp -> OtherWalletRestoreScreen(
+                repo = repo,
+                onRestored = { name, data, password -> screen = homeFor(name, data, password) },
                 onBack = { screen = Screen.WalletList }
             )
             is Screen.Unlock -> UnlockScreen(
@@ -313,7 +323,7 @@ private fun App(repo: WalletRepository) {
 }
 
 @Composable
-private fun ScreenColumn(content: @Composable () -> Unit) {
+internal fun ScreenColumn(content: @Composable () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -339,6 +349,7 @@ private fun WalletListScreen(
     onOpen: (String) -> Unit,
     onCreate: () -> Unit,
     onRestore: () -> Unit,
+    onRestoreFromApp: () -> Unit,
     onImportFile: (ByteArray) -> Unit,
     onLink: (SparrowLink.Pairing) -> Unit
 ) {
@@ -421,6 +432,9 @@ private fun WalletListScreen(
             ) {
                 OutlinedButton(onClick = onRestore, modifier = Modifier.fillMaxWidth()) {
                     Text("Restore from seed")
+                }
+                OutlinedButton(onClick = onRestoreFromApp, modifier = Modifier.fillMaxWidth()) {
+                    Text("Restore from another wallet app")
                 }
                 OutlinedButton(
                     onClick = {
@@ -769,7 +783,7 @@ private fun NetworkPicker(selected: Network, onSelect: (Network) -> Unit) {
 
 /** A vertical radio list whose whole row selects, so the label is a target too. */
 @Composable
-private fun <T> RadioList(options: List<T>, selected: T, label: (T) -> String, onSelect: (T) -> Unit) {
+internal fun <T> RadioList(options: List<T>, selected: T, label: (T) -> String, onSelect: (T) -> Unit) {
     Column {
         for(option in options) {
             Row(

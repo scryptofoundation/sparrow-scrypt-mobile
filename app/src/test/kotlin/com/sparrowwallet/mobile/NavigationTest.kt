@@ -21,6 +21,7 @@ class NavigationTest {
         assertEquals(Screen.WalletList, backTarget(home))
         assertEquals(Screen.WalletList, backTarget(Screen.Unlock("w")))
         assertEquals(Screen.WalletList, backTarget(Screen.Restore))
+        assertEquals(Screen.WalletList, backTarget(Screen.RestoreFromApp))
     }
 
     @Test

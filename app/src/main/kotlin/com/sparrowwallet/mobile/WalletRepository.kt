@@ -247,6 +247,23 @@ class WalletRepository(context: Context) {
         WalletVault.open(vaultFile(name).readBytes(), password)
             .also { if(session) sessionNames[it] = safeName(name); runCatching { cacheSyncCredentials(name, it) } }
 
+    /**
+     * Seals the vaults of a restore from another wallet app and links a second one (Cake's MWEB
+     * wallet) to the first; returns the first wallet's name. If the second fails, the first is kept.
+     */
+    fun restoreFromApp(vaults: List<OtherWallets.RestoreVault>, password: String): String {
+        fun save(v: OtherWallets.RestoreVault): String? = with(v.data) {
+            saveWallet(v.name, mnemonic, passphrase, password, Network.fromId(network), derivationPath, scriptType,
+                seedType, coin = Coin.fromId(coin))
+        }
+        val first = vaults.first()
+        save(first)?.let { throw IllegalArgumentException(it) }
+        val second = vaults.getOrNull(1) ?: return safeName(first.name)
+        save(second)?.let { throw IllegalArgumentException("\"${safeName(first.name)}\" was restored, but its private wallet failed: $it") }
+        linkWallets(first.name, second.name)
+        return safeName(first.name)
+    }
+
     /** Wallets opened to use this session, so a sync can record its total under the wallet's name. */
     private val sessionNames = java.util.concurrent.ConcurrentHashMap<VaultData, String>()
 
