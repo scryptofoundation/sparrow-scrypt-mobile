@@ -90,4 +90,11 @@ class WalletScannerTest {
         assertEquals("incoming", snap.history.first().txid)
         assertEquals(Balance(20_000, 8_000), snap.balance)
     }
+
+    @Test fun syncReportsProgressPerAddress(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val progress = ArrayList<Int>()
+        WalletScanner(FakeBackend()).sync(account, onProgress = { progress += it })
+        assertEquals((1..40).toList(), progress)
+    }
 }

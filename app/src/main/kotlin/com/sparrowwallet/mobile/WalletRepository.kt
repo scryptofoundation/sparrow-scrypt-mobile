@@ -517,8 +517,8 @@ class WalletRepository(context: Context) {
         mwebSnapshotCache[data] != null &&
             mwebSnapshotAt[data]?.let { System.currentTimeMillis() - it < maxAgeMs } == true
 
-    suspend fun syncWallet(data: VaultData, account: HDKey): WalletSnapshot =
-        withBackend(coin(data), network(data)) { WalletScanner(it, scriptType(data)).sync(account) }
+    suspend fun syncWallet(data: VaultData, account: HDKey, onProgress: (checked: Int) -> Unit = {}): WalletSnapshot =
+        withBackend(coin(data), network(data)) { WalletScanner(it, scriptType(data)).sync(account, onProgress = onProgress) }
             .also { snapshotCache[data] = it; snapshotAt[data] = System.currentTimeMillis() }
 
     // ---- Sending ----

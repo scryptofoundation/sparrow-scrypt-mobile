@@ -58,13 +58,16 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
      * first unused receive index. Outputs paying our scripts count in, inputs spending our
      * previous outputs count out. A spent output comes with the input when the server
      * includes it (Esplora), else from the previous transaction, fetched once per sync.
+     * [onProgress] gets the running count of addresses checked; rate-limited servers make
+     * a first sync take minutes.
      */
-    suspend fun sync(accountKey: Bip32Pub, addressesPerChain: Int = 20): WalletSnapshot {
+    suspend fun sync(accountKey: Bip32Pub, addressesPerChain: Int = 20, onProgress: (checked: Int) -> Unit = {}): WalletSnapshot {
         val ourScripts = HashSet<String>()
         var confirmed = 0L
         var unconfirmed = 0L
         var firstUnusedReceive = addressesPerChain
         val heights = LinkedHashMap<String, Int>() // txid → height
+        var checked = 0
         for(chain in 0..1) {
             for(i in 0 until addressesPerChain) {
                 val script = script(accountKey, chain, i)
@@ -72,6 +75,7 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
                 val bal = backend.balance(script)
                 confirmed += bal.confirmed
                 unconfirmed += bal.unconfirmed
+                onProgress(++checked)
                 val history = backend.history(script)
                 if(chain == 0 && i < firstUnusedReceive && history.isEmpty()) {
                     firstUnusedReceive = i

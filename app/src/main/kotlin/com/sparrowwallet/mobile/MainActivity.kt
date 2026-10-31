@@ -988,7 +988,10 @@ private fun HomeScreen(
             try {
                 val privateJob = if(linkedData != null && linkedData.scriptType == "MWEB")
                     async { runCatching { repo.mwebSync(linkedData) } } else null
-                val publicResult = runCatching { repo.syncWallet(data, account) }
+                val publicResult = runCatching {
+                    // a direct state write (Compose state is thread-safe) keeps it ordered before the final status
+                    repo.syncWallet(data, account) { n -> status = "Syncing… $n addresses checked" }
+                }
                 publicResult.onSuccess { snapshot = it }
                 val privateResult = privateJob?.await()
                 privateResult?.onSuccess { privateSnap = it }
