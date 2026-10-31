@@ -42,6 +42,8 @@ internal fun parseAmount(text: String): Long? =
 internal fun sendWarning(coin: Coin, network: Network, address: String): String? {
     val others = Addresses.coinsSharingEncoding(address, ChainParams.of(coin, network))
     if(others.isEmpty()) return null
-    return "This address is also valid on ${others.joinToString(" and ") { it.displayName }}. " +
+    val names = others.map { it.displayName }
+    val listed = if(names.size == 1) names[0] else names.dropLast(1).joinToString(", ") + " and " + names.last()
+    return "This address is also valid on $listed. " +
         "Check that the recipient expects ${coin.displayName}."
 }

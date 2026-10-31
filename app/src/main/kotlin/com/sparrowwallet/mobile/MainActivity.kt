@@ -2174,7 +2174,7 @@ private fun SendScreen(
             verticalAlignment = Alignment.CenterVertically) {
             SectionLabel("Paying from")
             if(fundingPrivate == null) {
-                Text("not enough funds in either layer", fontFamily = MonoFont,
+                Text(if(utxos == null) "checking coins…" else "not enough funds in either layer", fontFamily = MonoFont,
                     style = MaterialTheme.typography.bodySmall, maxLines = 1,
                     color = MaterialTheme.colorScheme.error)
             } else {
@@ -2221,6 +2221,7 @@ private fun SendScreen(
                     estimatedFee != null && fundingCovers ->
                         "≈ ${formatAmountShort(sendCoin, estimatedFee)} · ${formatUsd(estimatedFee, usdRate)}"
                     !amountEntered -> "…"
+                    utxos == null && fundingPrivate != true -> "checking coins…"
                     fundingPrivate == false -> "public coins can't cover this"
                     fundingPrivate == true -> "private coins can't cover this"
                     else -> "not enough funds in either layer"

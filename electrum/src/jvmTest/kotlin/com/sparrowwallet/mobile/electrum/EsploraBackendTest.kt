@@ -325,4 +325,18 @@ class EsploraBackendTest {
             }
         }
     }
+
+    @Test fun utxoWithATopLevelConfirmedFlagGetsItsHeightFromTheTx(): Unit = runBlocking {
+        //pepe-testnet-api.nintondo.io lists {"confirmed":true} on each utxo, with no status block or height
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "100"
+                "$address/utxo" -> 200 to """[{"txid":"$T1","vout":1,"confirmed":true,"value":5000},{"txid":"$T2","vout":0,"confirmed":false,"value":7000}]"""
+                "/tx/$T1/status" -> 200 to """{"confirmed":true,"block_height":42,"block_hash":"00","block_time":1}"""
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(listOf(Utxo(T1, 1, 42, 5000), Utxo(T2, 0, 0, 7000)), b.unspent(script))
+    }
 }

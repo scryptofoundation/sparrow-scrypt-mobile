@@ -30,4 +30,12 @@ class SendWarningTest {
         val address = Addresses.forKey(master.derivePath("m/84'/2'/0'/0/0").pubKey, ScriptType.P2WPKH, ltc)
         assertNull(sendWarning(Coin.LITECOIN, Network.MAINNET, address))
     }
+
+    @Test
+    fun severalCoinsAreListedOnce() {
+        val pepTest = ChainParams.of(Coin.PEPECOIN, Network.TESTNET)
+        val address = Addresses.forKey(master.derivePath("m/44'/1'/0'/0/0").pubKey, ScriptType.P2PKH, pepTest)
+        val warning = sendWarning(Coin.PEPECOIN, Network.TESTNET, address)!!
+        assertTrue(warning.startsWith("This address is also valid on Dogecoin, Luckycoin and Dingocoin."), warning)
+    }
 }

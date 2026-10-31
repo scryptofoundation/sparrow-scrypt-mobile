@@ -126,8 +126,19 @@ class EsploraBackend(
     override suspend fun unspent(script: ByteArray): List<Utxo> =
         json.parseToJsonElement(scriptGet(script, "/utxo")).jsonArray.map {
             val o = it.jsonObject
-            Utxo(requireTxid(o["txid"]!!.jsonPrimitive.content), o["vout"]!!.jsonPrimitive.int, blockHeight(o), o["value"]!!.jsonPrimitive.long)
+            val txid = requireTxid(o["txid"]!!.jsonPrimitive.content)
+            //Some servers (pepe-testnet-api.nintondo.io) flag a confirmed utxo at the top level with no height
+            val height = if(o["status"] == null && o["confirmed"]?.jsonPrimitive?.booleanOrNull == true) confirmedHeight(txid)
+                         else blockHeight(o)
+            Utxo(txid, o["vout"]!!.jsonPrimitive.int, height, o["value"]!!.jsonPrimitive.long)
         }
+
+    /** The block height of a confirmed transaction, from its status. */
+    private suspend fun confirmedHeight(txid: String): Int {
+        val r = get("/tx/$txid/status")
+        if(r.status != 200) throw IOException(failure(r))
+        return statusHeight(json.parseToJsonElement(r.body).jsonObject)
+    }
 
     override suspend fun transaction(txid: String): TxDetail {
         val r = get("/tx/${requireTxid(txid)}")
@@ -223,8 +234,9 @@ class EsploraBackend(
 
     override fun close() {}
 
-    private fun blockHeight(o: JsonObject): Int {
-        val status = o["status"]?.jsonObject ?: return 0
+    private fun blockHeight(o: JsonObject): Int = o["status"]?.jsonObject?.let { statusHeight(it) } ?: 0
+
+    private fun statusHeight(status: JsonObject): Int {
         if(status["confirmed"]?.jsonPrimitive?.boolean != true) return 0
         return status["block_height"]?.jsonPrimitive?.intOrNull ?: 0
     }
