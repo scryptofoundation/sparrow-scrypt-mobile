@@ -1,7 +1,11 @@
 package com.sparrowwallet.mobile
 
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -12,12 +16,16 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 
 /** What could still reach the outside world while air-gapped. [bluetooth] is null when unreadable. */
 data class Radios(val airplaneMode: Boolean, val transports: Set<String>, val bluetooth: Boolean?)
+
+/** Broadcasts for radio switches the network callback does not see (Bluetooth, airplane mode with no network). */
+val RADIO_CHANGE_ACTIONS = listOf(BluetoothAdapter.ACTION_STATE_CHANGED, Intent.ACTION_AIRPLANE_MODE_CHANGED)
 
 private val TRANSPORT_ORDER = listOf("WiFi", "Mobile data", "Ethernet", "VPN", "Network")
 
@@ -55,7 +63,7 @@ fun readRadios(context: Context): Radios {
     return Radios(airplane, transports, bluetooth)
 }
 
-/** Radio state, re-read on resume and whenever the active network changes. */
+/** Radio state, re-read on resume, when the active network changes, and on Bluetooth or airplane mode switches. */
 @Composable
 fun rememberRadios(): State<Radios> {
     val context = LocalContext.current
@@ -75,9 +83,17 @@ fun rememberRadios(): State<Radios> {
             }
         }
         val registered = runCatching { cm.registerDefaultNetworkCallback(callback) }.isSuccess
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) { state.value = readRadios(context) }
+        }
+        val filter = IntentFilter().apply { RADIO_CHANGE_ACTIONS.forEach { addAction(it) } }
+        val receiving = runCatching {
+            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        }.isSuccess
         onDispose {
             lifecycle.removeObserver(observer)
             if(registered) runCatching { cm.unregisterNetworkCallback(callback) }
+            if(receiving) runCatching { context.unregisterReceiver(receiver) }
         }
     }
     return state

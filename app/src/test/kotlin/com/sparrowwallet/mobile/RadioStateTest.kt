@@ -15,3 +15,9 @@ class RadioStateTest {
     @Test fun transportsInFixedOrder() = assertEquals("Radios on: WiFi, Mobile data, Ethernet, VPN, Network",
         radioWarning(Radios(true, setOf("Network", "VPN", "Mobile data", "Ethernet", "WiFi"), false)))
 }
+
+class RadioChangeActionsTest {
+    @Test fun watchesBluetoothAndAirplaneMode() = assertEquals(
+        setOf("android.bluetooth.adapter.action.STATE_CHANGED", "android.intent.action.AIRPLANE_MODE"),
+        RADIO_CHANGE_ACTIONS.toSet())
+}
