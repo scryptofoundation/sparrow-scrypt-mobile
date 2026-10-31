@@ -2,7 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <!-- debug builds only: feeds QR frames to the on-screen scanner over adb (see DebugUrReceiver) -->
-        <receiver android:name=".DebugUrReceiver" android:exported="true">
+        <!-- DUMP: held by the adb shell, not grantable to other apps -->
+        <receiver android:name=".DebugUrReceiver" android:exported="true"
+            android:permission="android.permission.DUMP">
             <intent-filter>
                 <action android:name="com.sparrowwallet.mobile.DEBUG_UR" />
             </intent-filter>
