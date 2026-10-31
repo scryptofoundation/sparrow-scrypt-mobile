@@ -47,7 +47,9 @@ class ElectrumClient(
     private val useTls: Boolean = true,
     private val proxy: SocksProxy? = null,
     private val allowSelfSigned: Boolean = false,
-    private val timeoutMs: Int = 30_000
+    private val timeoutMs: Int = 30_000,
+    /** TLS socket factory for CA-checked connections; null means the platform default. For tests. */
+    private val tlsFactory: SSLSocketFactory? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private var socket: Socket? = null
@@ -71,8 +73,14 @@ class ElectrumClient(
         raw.soTimeout = timeoutMs
         val transport = if(useTls) {
             val factory = if(allowSelfSigned) trustAllContext().socketFactory
-                          else SSLSocketFactory.getDefault() as SSLSocketFactory
-            (factory.createSocket(raw, host, port, true) as SSLSocket).also { it.startHandshake() }
+                          else tlsFactory ?: SSLSocketFactory.getDefault() as SSLSocketFactory
+            (factory.createSocket(raw, host, port, true) as SSLSocket).also { s ->
+                if(!allowSelfSigned) {
+                    // a CA-valid certificate must also name this host, or any site's certificate would do
+                    s.sslParameters = s.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
+                }
+                s.startHandshake()
+            }
         } else {
             raw
         }
