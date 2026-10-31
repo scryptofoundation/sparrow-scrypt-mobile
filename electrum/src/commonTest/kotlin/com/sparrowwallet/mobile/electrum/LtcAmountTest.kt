@@ -18,9 +18,22 @@ class LtcAmountTest {
         assertEquals(50_000_000L, ElectrumProtocol.ltcToLitoshis(".5"))
     }
 
+    /** ElectrumX on Python writes small floats in exponent form (seen from electrum1.cipig.net, 2026-10-31). */
+    @Test
+    fun parsesExponentFormExactly() {
+        assertEquals(7_166L, ElectrumProtocol.ltcToLitoshis("7.166e-05"))
+        assertEquals(1_000L, ElectrumProtocol.ltcToLitoshis("1e-05"))
+        assertEquals(1L, ElectrumProtocol.ltcToLitoshis("1E-8"))
+        assertEquals(15_000_000_000L, ElectrumProtocol.ltcToLitoshis("1.5e2"))
+        assertEquals(-7_166L, ElectrumProtocol.ltcToLitoshis("-7.166e-05"))
+        assertEquals(100_000_000L, ElectrumProtocol.ltcToLitoshis("1e+0"))
+    }
+
     @Test
     fun rejectsMalformedValues() {
-        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e-05") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e-09") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("e5") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("0.123456789") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1.2.3") }
