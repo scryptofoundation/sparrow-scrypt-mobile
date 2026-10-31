@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile.storage
 
+import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Bip39
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.toHex
@@ -91,5 +92,46 @@ class SparrowImportTest {
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
             imported.mnemonic
         )
+    }
+
+    private val abandon = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+    /** A no-password desktop export (plain JSON), as Link sends for a wallet without a password. */
+    private fun plainWallet(coin: String?, scriptType: String, path: String): ByteArray {
+        val coinField = coin?.let { "\"coin\":\"$it\"," } ?: ""
+        val words = abandon.split(" ").joinToString(",") { "\"$it\"" }
+        return ("{\"name\":\"Plain\",\"network\":\"MAINNET\",$coinField\"scriptType\":\"$scriptType\"," +
+            "\"keystores\":[{\"keyDerivation\":{\"masterFingerprint\":\"73c5da0a\",\"derivationPath\":\"$path\"}," +
+            "\"extendedPublicKey\":\"xpub\",\"seed\":{\"type\":\"BIP39\",\"mnemonicCode\":[$words]}}]}").encodeToByteArray()
+    }
+
+    @Test
+    fun importReadsCoinFromWalletJson() {
+        val vector = File("../vectors/desktop-link-vector-wallet").readBytes()
+        assertEquals(Coin.LITECOIN, SparrowImport.importFile(vector, "pass", SparrowImport.TEST_PARAMS).coin)
+        val doge = SparrowImport.importFile(plainWallet("DOGECOIN", "P2PKH", "m/44'/3'/0'"), "")
+        assertEquals(Coin.DOGECOIN, doge.coin)
+        assertEquals("P2PKH", doge.scriptType)
+    }
+
+    @Test
+    fun importWithoutCoinIsLitecoin() {
+        assertEquals(Coin.LITECOIN, SparrowImport.importFile(plainWallet(null, "P2WPKH", "m/84'/2'/0'"), "").coin)
+        assertEquals(Coin.LITECOIN, SparrowImport.importFile(plainWallet(null, "MWEB", "m/1000'"), "").coin)
+    }
+
+    @Test
+    fun importWithUnknownCoinFails() {
+        assertFailsWith<SparrowImport.ImportException> {
+            SparrowImport.importFile(plainWallet("BITCOIN", "P2WPKH", "m/84'/0'/0'"), "")
+        }
+    }
+
+    @Test
+    fun fileWithoutCoinButNonLitecoinPathIsRefused() {
+        val e = assertFailsWith<SparrowImport.ImportException> {
+            SparrowImport.importFile(plainWallet(null, "P2PKH", "m/44'/3'/0'"), "")
+        }
+        assertEquals("This file does not say which coin it is for. Export it again from desktop Sparrow.", e.message)
     }
 }

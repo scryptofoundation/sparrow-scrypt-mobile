@@ -166,7 +166,7 @@ class WalletRepository(context: Context) {
         devicePassword: String
     ): String = withContext(Dispatchers.Default) {
         val imported = SparrowImport.importFile(fileBytes, filePassword)
-        val network = validateImported(imported)
+        val network = validateImported(imported, linkedMweb = false)
         saveImported(imported, network, preferredName, devicePassword)
     }
 
@@ -187,7 +187,7 @@ class WalletRepository(context: Context) {
 
         val importedPublic = SparrowImport.importFile(payload.wallet.file, filePassword)
         val publicNetwork = try {
-            validateImported(importedPublic)
+            validateImported(importedPublic, linkedMweb = true)
         } catch(e: SparrowImport.ImportException) {
             throw SparrowImport.ImportException("\"${payload.wallet.name}\": ${e.message}", e)
         }
@@ -197,7 +197,7 @@ class WalletRepository(context: Context) {
             throw SparrowImport.ImportException("Linked private wallet \"${linked.name}\": ${e.message}", e)
         }
         val mwebNetwork = try {
-            validateImported(importedMweb)
+            validateImported(importedMweb, linkedMweb = false)
         } catch(e: SparrowImport.ImportException) {
             throw SparrowImport.ImportException("Linked private wallet \"${linked.name}\": ${e.message}", e)
         }
@@ -213,26 +213,25 @@ class WalletRepository(context: Context) {
         publicName
     }
 
-    private fun validateImported(imported: SparrowImport.ImportedWallet): Network {
+    private fun validateImported(imported: SparrowImport.ImportedWallet, linkedMweb: Boolean): Network {
         val network = when(imported.network) {
             "mainnet" -> Network.MAINNET
             "testnet" -> Network.TESTNET
             else -> throw SparrowImport.ImportException("Unsupported network in wallet file: ${imported.network}")
         }
-        if(imported.scriptType != null && imported.scriptType != "P2WPKH" && imported.scriptType != "MWEB") {
-            throw SparrowImport.ImportException("Mobile currently supports Native Segwit (P2WPKH) and MWEB wallets — this one is ${imported.scriptType}")
-        }
+        ImportRules.problem(imported.coin, imported.scriptType, linkedMweb)?.let { throw SparrowImport.ImportException(it) }
         SparrowImport.seedProblem(imported)?.let { throw SparrowImport.ImportException(it) }
         return network
     }
 
     private fun saveImported(imported: SparrowImport.ImportedWallet, network: Network, preferredName: String?, devicePassword: String): String {
         val name = preferredName?.takeIf { it.isNotBlank() } ?: imported.name ?: "Imported wallet"
+        val scriptType = imported.scriptType ?: "P2WPKH"
         val derivation = imported.derivationPath
             ?: if(imported.seedType == "ELECTRUM") ElectrumSeed.defaultDerivation(imported.mnemonic)
-               else network.defaultDerivationPath
+               else WalletSetup.derivation(imported.coin, network, walletScriptType(scriptType))
         saveWallet(name, imported.mnemonic, "", devicePassword, network, derivation,
-            imported.scriptType ?: "P2WPKH", imported.seedType, imported.mwebHistory, imported.txLabels)
+            scriptType, imported.seedType, imported.mwebHistory, imported.txLabels, imported.coin)
             ?.let { throw SparrowImport.ImportException(it) }
         return safeName(name)
     }
@@ -805,7 +804,10 @@ class WalletRepository(context: Context) {
                 derivationPath = data.derivationPath,
                 masterFingerprint = masterKey(data).fingerprint.toHex(),
                 xpub = accountXpub(data),
-                password = password
+                password = password,
+                coin = coin(data),
+                //MWEB wallets keep today's export unchanged; sending them to desktop is a separate question
+                scriptType = data.scriptType.takeIf { it != "MWEB" } ?: "P2WPKH"
             )
         }
 

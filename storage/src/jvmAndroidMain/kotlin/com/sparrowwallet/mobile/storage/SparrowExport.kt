@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile.storage
 
+import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.secpPublicKeyCreate
 import com.sparrowwallet.mobile.crypto.secpPubKeyTweakMul
 import com.sparrowwallet.mobile.crypto.toHex
@@ -39,6 +40,8 @@ object SparrowExport {
         masterFingerprint: String,
         xpub: String,
         password: String,
+        coin: Coin = Coin.LITECOIN,
+        scriptType: String = "P2WPKH",
         params: SparrowImport.ArgonParams = SparrowImport.SPRW1_PARAMS
     ): ByteArray {
         require(password.isNotEmpty()) { "Export requires the wallet password" }
@@ -54,11 +57,12 @@ object SparrowExport {
         val json = buildJsonObject {
             put("name", name)
             put("network", network.uppercase())
+            put("coin", coin.name)
             put("policyType", "SINGLE")
-            put("scriptType", "P2WPKH")
+            put("scriptType", scriptType)
             putJsonObject("defaultPolicy") {
                 put("name", "Default")
-                putJsonObject("miniscript") { put("script", "wpkh(${label.replace(" ", "")})") }
+                putJsonObject("miniscript") { put("script", miniscript(scriptType, label.replace(" ", ""))) }
             }
             putJsonArray("keystores") {
                 add(buildJsonObject {
@@ -95,6 +99,13 @@ object SparrowExport {
         val header = Base64.getEncoder().encode("SPRW1".encodeToByteArray() + headerSalt)
         check(header.size == 28) { "Header must encode to 28 bytes" }
         return header + blob
+    }
+
+    /** Desktop's single-key policy script for the wallet's script type. */
+    private fun miniscript(scriptType: String, key: String): String = when(scriptType) {
+        "P2PKH" -> "pkh($key)"
+        "P2SH_P2WPKH" -> "sh(wpkh($key))"
+        else -> "wpkh($key)"
     }
 
     private fun argon2id(password: ByteArray, salt: ByteArray, p: SparrowImport.ArgonParams): ByteArray {

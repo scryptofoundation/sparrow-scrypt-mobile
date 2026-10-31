@@ -1,5 +1,8 @@
 package com.sparrowwallet.mobile.storage
 
+import com.sparrowwallet.mobile.crypto.Network
+import com.sparrowwallet.mobile.crypto.Coin
+import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.mobile.crypto.Bip39
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.toHex
@@ -51,5 +54,21 @@ class SparrowExportTest {
     fun regeneratesDesktopTestVector() {
         // TEST_PARAMS deliberately: desktop unit tests always derive with TEST_PARAMS
         File("../vectors/mobile-export-vector-wallet").writeBytes(export(SparrowImport.TEST_PARAMS))
+    }
+
+    @Test
+    fun exportWritesCoinAndItsXpubHeader() {
+        val doge = ChainParams.of(Coin.DOGECOIN, Network.MAINNET)
+        val dogeAccount = master.derivePath("m/44'/3'/0'")
+        val file = SparrowExport.exportFile(
+            name = "Doge Export", network = "mainnet", seedType = "BIP39", mnemonic = mnemonic,
+            derivationPath = "m/44'/3'/0'", masterFingerprint = master.fingerprint.toHex(),
+            xpub = dogeAccount.xpub(doge.xpubHeader), password = "pass",
+            coin = Coin.DOGECOIN, scriptType = "P2PKH", params = SparrowImport.TEST_PARAMS
+        )
+        val imported = SparrowImport.importFile(file, "pass", SparrowImport.TEST_PARAMS)
+        assertEquals(Coin.DOGECOIN, imported.coin)
+        assertEquals("P2PKH", imported.scriptType)
+        assertTrue(imported.xpub!!.startsWith("dgub"), imported.xpub)
     }
 }

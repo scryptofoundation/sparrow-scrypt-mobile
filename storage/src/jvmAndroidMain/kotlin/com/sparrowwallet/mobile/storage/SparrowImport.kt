@@ -1,6 +1,7 @@
 package com.sparrowwallet.mobile.storage
 
 import com.sparrowwallet.mobile.crypto.Bip39
+import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.ElectrumSeed
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.hexToBytes
@@ -59,7 +60,9 @@ object SparrowImport {
         /** Desktop-recorded MWEB history, when the file carries it (Sparrow Link pushes). */
         val mwebHistory: List<MwebHistoryEntry> = emptyList(),
         /** Desktop-recorded transaction labels (txid → label), when the file carries them. */
-        val txLabels: Map<String, String> = emptyMap()
+        val txLabels: Map<String, String> = emptyMap(),
+        /** The wallet's coin; files from before desktop wrote it are Litecoin. */
+        val coin: Coin = Coin.LITECOIN
     )
 
     private const val HEADER_LENGTH = 28
@@ -232,19 +235,44 @@ object SparrowImport {
         }?.toMap() ?: emptyMap()
 
         val keyDerivation = keystore["keyDerivation"]?.jsonObject
+        val derivationPath = keyDerivation?.get("derivationPath")?.jsonPrimitive?.contentOrNull
+        val coin = readCoin(wallet["coin"]?.jsonPrimitive?.contentOrNull, derivationPath)
         val seedTypeRaw = seed["type"]?.jsonPrimitive?.contentOrNull ?: "BIP39"
         return ImportedWallet(
             name = wallet["name"]?.jsonPrimitive?.contentOrNull,
             network = (wallet["network"]?.jsonPrimitive?.contentOrNull ?: "mainnet").lowercase(),
             scriptType = wallet["scriptType"]?.jsonPrimitive?.contentOrNull,
-            derivationPath = keyDerivation?.get("derivationPath")?.jsonPrimitive?.contentOrNull,
+            derivationPath = derivationPath,
             masterFingerprint = keyDerivation?.get("masterFingerprint")?.jsonPrimitive?.contentOrNull,
             xpub = keystore["extendedPublicKey"]?.jsonPrimitive?.contentOrNull,
             seedType = if(seedTypeRaw.uppercase().contains("ELECTRUM")) "ELECTRUM" else "BIP39",
             mnemonic = mnemonic.trim(),
             needsPassphrase = seed["needsPassphrase"]?.jsonPrimitive?.booleanOrNull ?: false,
             mwebHistory = mwebHistory,
-            txLabels = txLabels
+            txLabels = txLabels,
+            coin = coin
         )
+    }
+
+    /**
+     * The coin the file names. A file without one is Litecoin (desktop wrote no coin before),
+     * unless its BIP44-style path names another coin's type: a wallet that followed a
+     * desktop build's process coin. That is refused rather than guessed. Coin type 0 stays
+     * Litecoin: Litecoin wallets on Bitcoin paths exist, and the coins that use 0 (Luckycoin,
+     * Junkcoin) are legacy-only, which older desktop builds never exported.
+     */
+    private fun readCoin(name: String?, derivationPath: String?): Coin {
+        if(name != null) {
+            return try { Coin.fromName(name) } catch(e: IllegalArgumentException) {
+                throw ImportException("This wallet is for a coin mobile does not know ($name)", e)
+            }
+        }
+        val levels = derivationPath?.trim()?.split("/")?.drop(1).orEmpty()
+        val purpose = levels.getOrNull(0)?.trimEnd('\'', 'h', 'H')
+        val coinType = levels.getOrNull(1)?.trimEnd('\'', 'h', 'H')
+        if(purpose in setOf("44", "49", "84", "86") && coinType != null && coinType !in setOf("0", "1", "2")) {
+            throw ImportException("This file does not say which coin it is for. Export it again from desktop Sparrow.")
+        }
+        return Coin.LITECOIN
     }
 }
