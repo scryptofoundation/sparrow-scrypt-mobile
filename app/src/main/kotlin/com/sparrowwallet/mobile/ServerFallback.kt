@@ -1,17 +1,23 @@
 package com.sparrowwallet.mobile
 
 import com.sparrowwallet.mobile.crypto.AirGappedException
+import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
 import kotlinx.coroutines.CancellationException
 
 /**
- * Public Electrum-LTC servers used when the user has not set one. Mainnet holds only servers whose
- * TLS certificates verify against the system CAs (checked 2026-10-31); ltc.rentonisk.com, the old
- * default, stopped answering then and stays last in case it returns.
+ * Public servers used when the user has not set one, per coin and network, from desktop's
+ * PublicElectrumServer list (checked 2026-10-31). Electrum entries hold servers whose TLS
+ * certificates verify against the system CAs; a coin's self-signed one goes last.
+ * ltc.rentonisk.com, the old Litecoin default, stopped answering then and stays last in case it
+ * returns. Esplora entries carry the API URL.
  */
 object PublicServers {
     private fun tls(host: String, port: Int, selfSigned: Boolean = false) =
         WalletRepository.ServerSettings(host, port, true, selfSigned, false, "127.0.0.1", 9050)
+
+    private fun esplora(url: String) =
+        WalletRepository.ServerSettings(java.net.URI(url).host, 443, true, false, false, "127.0.0.1", 9050, esploraUrl = url)
 
     private val mainnet = listOf(
         tls("electrum1.cipig.net", 20063),
@@ -27,17 +33,43 @@ object PublicServers {
         tls("electrum-ltc.bysh.me", 51002, selfSigned = true)
     )
 
-    fun forNetwork(network: Network): List<WalletRepository.ServerSettings> = when(network) {
-        Network.MAINNET -> mainnet
-        Network.TESTNET -> testnet
+    fun forCoin(coin: Coin, network: Network): List<WalletRepository.ServerSettings> = when(network) {
+        Network.MAINNET -> when(coin) {
+            Coin.LITECOIN -> mainnet
+            Coin.DOGECOIN -> listOf(
+                tls("doge.electrum1.cipig.net", 20060),
+                tls("doge.electrum2.cipig.net", 20060),
+                tls("dogecoin.stackwallet.com", 50022),
+                tls("doge.aftrek.org", 50002, selfSigned = true)
+            )
+            Coin.DINGOCOIN -> listOf(
+                tls("seed1.dingocoin.com", 3342),
+                tls("seed3.dingocoin.com", 3342),
+                tls("elecx2.kmsoftware.org", 3342)
+            )
+            Coin.BELLSCOIN -> listOf(esplora("https://api.nintondo.io"))
+            Coin.PEPECOIN -> listOf(esplora("https://peppool.space/api"))
+            Coin.LUCKYCOIN -> listOf(esplora("https://luckyscan.org/api"))
+            Coin.JUNKCOIN -> listOf(esplora("https://explorer.junk-coin.com/api")) // reads only, no broadcast
+        }
+        Network.TESTNET -> when(coin) {
+            Coin.LITECOIN -> testnet
+            Coin.PEPECOIN -> listOf(esplora("https://pepe-testnet-api.nintondo.io"))
+            Coin.JUNKCOIN -> listOf(esplora("https://jkc-testnet-api.s3na.xyz"))
+            Coin.DOGECOIN, Coin.LUCKYCOIN, Coin.DINGOCOIN, Coin.BELLSCOIN -> emptyList() // your own node only
+        }
     }
 
+    fun forNetwork(network: Network): List<WalletRepository.ServerSettings> = forCoin(Coin.LITECOIN, network)
+
     /** The list with the last server that worked moved to the front. */
-    fun ordered(network: Network, lastGoodHost: String?): List<WalletRepository.ServerSettings> {
-        val all = forNetwork(network)
+    fun ordered(coin: Coin, network: Network, lastGoodHost: String?): List<WalletRepository.ServerSettings> {
+        val all = forCoin(coin, network)
         val last = all.firstOrNull { it.host == lastGoodHost } ?: return all
         return listOf(last) + (all - last)
     }
+
+    fun ordered(network: Network, lastGoodHost: String?) = ordered(Coin.LITECOIN, network, lastGoodHost)
 }
 
 object ServerFallback {

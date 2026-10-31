@@ -6,6 +6,7 @@ import com.sparrowwallet.mobile.crypto.Bech32
 import com.sparrowwallet.mobile.crypto.Bip39
 import com.sparrowwallet.mobile.crypto.ElectrumSeed
 import com.sparrowwallet.mobile.crypto.HDKey
+import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.Psbt
 import com.sparrowwallet.mobile.crypto.PsbtReview
@@ -366,8 +367,9 @@ class WalletRepository(context: Context) {
         return MwebInfo(first, scanSecret.toHex(), spendPubKey.toHex())
     }
 
-    // ---- Electrum server settings (per network) ----
+    // ---- Server settings (per coin and network) ----
 
+    /** An Electrum server (host/port) or, with [esploraUrl], an Esplora REST API. */
     data class ServerSettings(
         val host: String,
         val port: Int,
@@ -375,20 +377,39 @@ class WalletRepository(context: Context) {
         val allowSelfSigned: Boolean,
         val useProxy: Boolean,
         val proxyHost: String,
-        val proxyPort: Int
+        val proxyPort: Int,
+        val esploraUrl: String? = null
     )
 
+    /**
+     * The preference prefix holding [coin]'s settings: its own, else Litecoin's pre-coin-axis
+     * keys when only those exist, so a server saved before the coin axis keeps working.
+     */
+    private fun settingsPrefix(coin: Coin, network: Network): String {
+        val prefix = ServerKeys.prefix(coin, network)
+        val legacy = ServerKeys.legacyPrefix(coin, network)
+        return if(!prefs.contains("$prefix.host") && legacy != null && prefs.contains("$legacy.host")) legacy else prefix
+    }
+
     /** Whether the user saved their own server; otherwise the public list is used with fallback. */
-    fun hasCustomServer(network: Network): Boolean = prefs.contains("server.${network.id}.host")
+    fun hasCustomServer(coin: Coin, network: Network): Boolean = prefs.contains("${settingsPrefix(coin, network)}.host")
 
-    private fun lastPublicKey(network: Network) = "server.${network.id}.lastPublic"
+    fun hasCustomServer(network: Network): Boolean = hasCustomServer(Coin.LITECOIN, network)
 
-    private fun publicServers(network: Network) =
-        PublicServers.ordered(network, prefs.getString(lastPublicKey(network), null))
+    private fun lastPublicKey(coin: Coin, network: Network) = "${ServerKeys.prefix(coin, network)}.lastPublic"
 
-    fun serverSettings(network: Network): ServerSettings {
-        val d = publicServers(network).first()
-        val p = "server.${network.id}"
+    private fun lastPublicHost(coin: Coin, network: Network): String? =
+        prefs.getString(lastPublicKey(coin, network), null)
+            ?: ServerKeys.legacyPrefix(coin, network)?.let { prefs.getString("$it.lastPublic", null) }
+
+    private fun publicServers(coin: Coin, network: Network) =
+        PublicServers.ordered(coin, network, lastPublicHost(coin, network))
+
+    fun serverSettings(coin: Coin, network: Network): ServerSettings {
+        val p = settingsPrefix(coin, network)
+        val d = publicServers(coin, network).firstOrNull()
+            ?: if(prefs.contains("$p.host")) ServerSettings("", 50002, true, false, false, "127.0.0.1", 9050)
+               else throw IllegalStateException("${coin.displayName} ${network.displayName} needs your own server")
         return ServerSettings(
             prefs.getString("$p.host", d.host)!!,
             prefs.getInt("$p.port", d.port),
@@ -396,19 +417,25 @@ class WalletRepository(context: Context) {
             prefs.getBoolean("$p.selfSigned", d.allowSelfSigned),
             prefs.getBoolean("$p.useProxy", d.useProxy),
             prefs.getString("$p.proxyHost", d.proxyHost)!!,
-            prefs.getInt("$p.proxyPort", d.proxyPort)
+            prefs.getInt("$p.proxyPort", d.proxyPort),
+            if(prefs.contains("$p.host")) prefs.getString("$p.esploraUrl", null) else d.esploraUrl
         )
     }
 
-    fun saveServerSettings(network: Network, s: ServerSettings) {
-        val p = "server.${network.id}"
+    fun serverSettings(network: Network): ServerSettings = serverSettings(Coin.LITECOIN, network)
+
+    fun saveServerSettings(coin: Coin, network: Network, s: ServerSettings) {
+        val p = ServerKeys.prefix(coin, network)
         prefs.edit()
             .putString("$p.host", s.host).putInt("$p.port", s.port)
             .putBoolean("$p.tls", s.useTls).putBoolean("$p.selfSigned", s.allowSelfSigned)
             .putBoolean("$p.useProxy", s.useProxy)
             .putString("$p.proxyHost", s.proxyHost).putInt("$p.proxyPort", s.proxyPort)
+            .putString("$p.esploraUrl", s.esploraUrl)
             .apply()
     }
+
+    fun saveServerSettings(network: Network, s: ServerSettings) = saveServerSettings(Coin.LITECOIN, network, s)
 
     private fun newClient(s: ServerSettings) = ElectrumClient(
         s.host, s.port, s.useTls,
@@ -435,7 +462,7 @@ class WalletRepository(context: Context) {
     private suspend fun <T> withServer(network: Network, block: suspend (ElectrumClient) -> T): T =
         withContext(Dispatchers.IO) {
             val custom = hasCustomServer(network)
-            val candidates = if(custom) listOf(serverSettings(network)) else publicServers(network)
+            val candidates = if(custom) listOf(serverSettings(network)) else publicServers(Coin.LITECOIN, network)
             val (used, client) = ServerFallback.firstWorking(candidates) { s ->
                 val c = newClient(s)
                 try {
@@ -447,7 +474,7 @@ class WalletRepository(context: Context) {
                     throw e
                 }
             }
-            if(!custom) prefs.edit().putString(lastPublicKey(network), used.host).apply()
+            if(!custom) prefs.edit().putString(lastPublicKey(Coin.LITECOIN, network), used.host).apply()
             try {
                 block(client)
             } finally {
