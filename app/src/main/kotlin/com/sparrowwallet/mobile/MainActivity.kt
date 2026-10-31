@@ -1462,7 +1462,7 @@ private fun PsbtSignScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("✓ Sent", style = MaterialTheme.typography.titleMedium, color = kindColor(TxKind.RECEIVED))
-                    Text("Signed transaction broadcast to the Litecoin network.", style = MaterialTheme.typography.bodySmall)
+                    Text("Signed transaction broadcast to the ${repo.coin(home.data).displayName} network.", style = MaterialTheme.typography.bodySmall)
                     Text(shortAddress(txid), fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -1517,7 +1517,7 @@ private fun PsbtSignScreen(
             modifier = Modifier.fillMaxWidth()
         )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { scanner.launch(paymentScanOptions()) }, enabled = !busy,
+            OutlinedButton(onClick = { scanner.launch(paymentScanOptions(repo.coin(home.data))) }, enabled = !busy,
                 modifier = Modifier.weight(1f)) { Text("Scan QR") }
             OutlinedButton(
                 onClick = {
@@ -1808,9 +1808,9 @@ private fun usdToLitoshis(text: String, rate: Double): Long? =
         null
     }
 
-private fun paymentScanOptions() = ScanOptions().apply {
+private fun paymentScanOptions(coin: Coin) = ScanOptions().apply {
     setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-    setPrompt("Scan a Litecoin address or payment QR")
+    setPrompt("Scan a ${coin.displayName} address or payment QR")
     setBeepEnabled(false)
     setOrientationLocked(true)
 }
@@ -2097,7 +2097,7 @@ private fun SendScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("✓ Sent", style = MaterialTheme.typography.titleMedium, color = kindColor(TxKind.RECEIVED))
-                    Text("Transaction broadcast to the Litecoin network.", style = MaterialTheme.typography.bodySmall)
+                    Text("Transaction broadcast to the ${sendCoin.displayName} network.", style = MaterialTheme.typography.bodySmall)
                     Text(shortAddress(txid), fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -2116,7 +2116,7 @@ private fun SendScreen(
         )
         addressError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { scanner.launch(paymentScanOptions()) }, enabled = !busy,
+            OutlinedButton(onClick = { scanner.launch(paymentScanOptions(sendCoin)) }, enabled = !busy,
                 modifier = Modifier.weight(1f)) { Text("Scan QR") }
             OutlinedButton(
                 onClick = {
@@ -2150,7 +2150,8 @@ private fun SendScreen(
         }
         if(sharedWarning != null) {
             Text(sharedWarning, style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { sharedConfirmed = !sharedConfirmed; preview = null }) {
                 Checkbox(checked = sharedConfirmed, onCheckedChange = { sharedConfirmed = it; preview = null })
                 Text("The recipient expects ${sendCoin.displayName}", style = MaterialTheme.typography.bodySmall)
             }
