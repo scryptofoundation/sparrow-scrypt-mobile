@@ -114,6 +114,10 @@ internal sealed interface Screen {
     data class ExportToDesktop(val home: Home) : Screen
 }
 
+/** A wallet's pending PSBT is kept under its public side's name: a peg-in starts from the private side. */
+internal fun pendingPsbtKey(home: Screen.Home): String =
+    if(home.data.scriptType == "MWEB") home.linkedName ?: home.name else home.name
+
 /** Where the system Back gesture goes: a wallet's screens return to its Home, the rest to the list. */
 internal fun backTarget(screen: Screen): Screen? = when(screen) {
     is Screen.WalletList -> null
@@ -277,13 +281,17 @@ private fun App(repo: WalletRepository) {
                     onTx = { tx -> screen = Screen.TxDetail(s, tx) },
                     onSyncLabels = { pairing -> screen = Screen.LabelSync(s, pairing) },
                     onSignPsbt = { screen = Screen.SignPsbt(s) },
-                    onExport = { screen = Screen.ExportToDesktop(s) }
+                    onExport = { screen = Screen.ExportToDesktop(s) },
+                    onResumePsbt = repo.pendingPsbts[pendingPsbtKey(s)]?.let { unsigned -> { screen = Screen.PsbtSign(s, unsigned) } }
                 )
             }
             is Screen.Receive -> ReceiveScreen(repo, s.home, s.startIndex, onBack = { screen = s.home })
             is Screen.Send -> SendScreen(
                 repo, s.home,
-                onSignExternally = { unsigned -> screen = Screen.PsbtSign(s.home, unsigned) },
+                onSignExternally = { unsigned ->
+                    repo.pendingPsbts.keep(pendingPsbtKey(s.home), unsigned)
+                    screen = Screen.PsbtSign(s.home, unsigned)
+                },
                 onBack = { screen = s.home }
             )
             is Screen.PsbtSign -> PsbtSignScreen(repo, s.home, s.unsigned, onBack = { screen = s.home })
@@ -1049,7 +1057,8 @@ private fun HomeScreen(
     onTx: (TxInfo) -> Unit = {},
     onSyncLabels: (SparrowLink.Pairing) -> Unit = {},
     onSignPsbt: (() -> Unit)? = null,
-    onExport: () -> Unit = {}
+    onExport: () -> Unit = {},
+    onResumePsbt: (() -> Unit)? = null
 ) {
     val scope = rememberCoroutineScope()
     val network = remember(data) { repo.network(data) }
@@ -1154,6 +1163,11 @@ private fun HomeScreen(
             }
             OutlinedButton(onClick = { refresh() }, enabled = !syncing && !gapped, modifier = Modifier.weight(1f)) {
                 Text(if(syncing) "…" else "Refresh")
+            }
+        }
+        onResumePsbt?.let {
+            OutlinedButton(onClick = it, enabled = !gapped, modifier = Modifier.fillMaxWidth()) {
+                Text("Continue external signing…")
             }
         }
         if(gapped) {
@@ -1443,7 +1457,9 @@ private fun MwebHomeScreen(
  * External signing: shows the unsigned PSBT (QR / copy / share) for a desktop or
  * hardware signer, then takes the signed PSBT back (scan / paste), finalizes it,
  * and broadcasts. A txid is shown only when it is final (Native Segwit), and the PSBT as
- * animated frames, since previous transactions can make it too big for one QR.
+ * animated frames, since previous transactions can make it too big for one QR. Back keeps
+ * the PSBT ([WalletRepository.pendingPsbts]) for the wallet's Home to reopen; broadcasting
+ * or Discard drops it.
  */
 @Composable
 private fun PsbtSignScreen(
@@ -1549,7 +1565,10 @@ private fun PsbtSignScreen(
                 scope.launch {
                     try {
                         sentTxid = repo.finalizeAndBroadcast(repo.coin(home.data), network, signedText, unsigned.mwebBlob)
-                        if(sentTxid != null) repo.invalidateSnapshots(home.data, home.linkedData)
+                        if(sentTxid != null) {
+                            repo.pendingPsbts.drop(pendingPsbtKey(home))
+                            repo.invalidateSnapshots(home.data, home.linkedData)
+                        }
                     } catch(t: Throwable) {
                         error = t.message ?: "Could not finalize the PSBT"
                     } finally {
@@ -1560,6 +1579,10 @@ private fun PsbtSignScreen(
             enabled = !busy && signedText.isNotBlank(),
             modifier = Modifier.fillMaxWidth()
         ) { Text(if(busy) "Broadcasting…" else "Finalize and broadcast") }
+        OutlinedButton(
+            onClick = { repo.pendingPsbts.drop(pendingPsbtKey(home)); onBack() },
+            enabled = !busy, modifier = Modifier.fillMaxWidth()
+        ) { Text("Discard this PSBT") }
         BackButton(enabled = !busy, onClick = onBack)
     }
 }

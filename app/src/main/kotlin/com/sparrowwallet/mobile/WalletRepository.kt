@@ -100,11 +100,15 @@ class WalletRepository(context: Context) {
 
     fun hasWallets(): Boolean = listWallets().isNotEmpty()
 
+    /** Unsigned PSBTs out for external signing, by wallet name. */
+    val pendingPsbts = PendingPsbts()
+
     fun deleteWallet(name: String) {
         vaultFile(name).delete()
         metaFile(name).delete()
         sessionTotals.remove(safeName(name))
         sessionNames.values.removeAll { it == safeName(name) }
+        pendingPsbts.drop(name)
     }
 
     /**
