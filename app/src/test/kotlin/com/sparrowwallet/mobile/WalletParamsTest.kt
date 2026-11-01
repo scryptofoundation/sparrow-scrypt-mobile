@@ -140,4 +140,12 @@ class WalletParamsTest {
             }
         }
     }
+
+    @Test
+    fun coinsUnderTheConfirmationRuleCountAsMaturing() {
+        // value to height; 0 and below are unconfirmed
+        val coins = SendCoins.split(listOf(100L to 40, 200L to 45, 300L to 0, 400L to -1, 50L to 38), tip = 45, minConfirmations = 6)
+        assertEquals(listOf(100L, 50L), coins.spendable)
+        assertEquals(900L, coins.maturing)
+    }
 }

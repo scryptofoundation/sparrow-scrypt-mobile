@@ -44,6 +44,21 @@ fun externalSigningSupported(coin: Coin, scriptType: String): Boolean =
  */
 fun txidKnownBeforeSigning(scriptType: String): Boolean = scriptType == ScriptType.P2WPKH.name
 
+/**
+ * The wallet's coins as Send sees them: [spendable] values (at least the confirmation rule deep)
+ * and the total still [maturing] (newer or unconfirmed), which Send names so a fresh receive is not
+ * read as "not enough funds".
+ */
+data class SendCoins(val spendable: List<Long>, val maturing: Long) {
+    companion object {
+        /** [coins] are value to height, 0 or below meaning unconfirmed. */
+        fun split(coins: List<Pair<Long, Int>>, tip: Long, minConfirmations: Int): SendCoins {
+            val (deep, young) = coins.partition { (_, height) -> height in 1..(tip - (minConfirmations - 1)) }
+            return SendCoins(deep.map { it.first }, young.sumOf { it.first })
+        }
+    }
+}
+
 /** The Send screen's words for the public side; the private (MWEB) side has its own. */
 data class SendCopy(
     val subtitle: String,

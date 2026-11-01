@@ -832,15 +832,13 @@ class WalletRepository(context: Context) {
         withBackend(coin, network) { clampFeeRate(coin, it.feeRate(2)) }
 
     /** Spendable utxo values (confirmation rule applied), largest first — for live estimates. */
-    suspend fun utxoValues(data: VaultData, account: HDKey): List<Long> =
+    suspend fun sendCoins(data: VaultData, account: HDKey): SendCoins =
         withBackend(coin(data), network(data)) { client ->
             val tip = client.tipHeight()
             val scan = WalletScanner(client, scriptType(data)).utxos(account)
             lastScan.put(data, scan, tip, System.currentTimeMillis())
-            scan.utxos
-                .filter { confirmedEnough(tip, it.utxo.height) }
-                .map { it.utxo.value }
-        }.sortedDescending()
+            SendCoins.split(scan.utxos.map { it.utxo.value to it.utxo.height }, tip, minConfirmations)
+        }.let { it.copy(spendable = it.spendable.sortedDescending()) }
 
     // ---- Sparrow Link (desktop ↔ mobile transfer) ----
 

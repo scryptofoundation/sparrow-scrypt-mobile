@@ -1989,13 +1989,14 @@ private fun SendScreen(
     var amountIsUsd by remember { mutableStateOf(false) }
     var feeRate by remember { mutableStateOf<Long?>(null) }
     var utxos by remember { mutableStateOf<List<Long>?>(null) }
+    var maturing by remember { mutableStateOf(0L) }
     LaunchedEffect(Unit) {
         if(NetworkPolicy.blocked) return@LaunchedEffect
         usdRate = PriceService.currentUsd(sendCoin)
         feeRate = runCatching { repo.currentFeeRate(sendCoin, network) }.getOrNull()
-        utxos = publicData?.let { d ->
-            runCatching { repo.utxoValues(d, publicAccount!!) }.getOrNull()
-        } ?: emptyList()
+        val coins = publicData?.let { d -> runCatching { repo.sendCoins(d, publicAccount!!) }.getOrNull() }
+        utxos = coins?.spendable ?: emptyList()
+        maturing = coins?.maturing ?: 0L
     }
     val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         result.contents?.let { text ->
@@ -2243,6 +2244,11 @@ private fun SendScreen(
                     fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall, maxLines = 1,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+        if(maturing > 0) {
+            Text("${formatAmountShort(sendCoin, maturing)} more is waiting for ${repo.minConfirmations} confirmations " +
+                "before it can be sent.", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         privateAvail?.let { avail ->
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
