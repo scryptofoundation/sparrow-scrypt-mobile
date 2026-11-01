@@ -56,12 +56,13 @@ class WalletParamsTest {
     }
 
     @Test
-    fun externalSigningIsNativeSegwitLitecoinOnly() {
+    fun externalSigningCoversEveryPublicWallet() {
         assertTrue(externalSigningSupported(Coin.LITECOIN, "P2WPKH"))
-        assertFalse(externalSigningSupported(Coin.BELLSCOIN, "P2WPKH"))
-        assertFalse(externalSigningSupported(Coin.LITECOIN, "P2SH_P2WPKH"))
-        assertFalse(externalSigningSupported(Coin.DOGECOIN, "P2PKH"))
+        assertTrue(externalSigningSupported(Coin.BELLSCOIN, "P2WPKH"))
+        assertTrue(externalSigningSupported(Coin.LITECOIN, "P2SH_P2WPKH"))
+        assertTrue(externalSigningSupported(Coin.DOGECOIN, "P2PKH"))
         assertFalse(externalSigningSupported(Coin.LITECOIN, "MWEB"))
+        assertFalse(externalSigningSupported(Coin.DOGECOIN, "P2WPKH")) // not a script type the coin has
     }
 
     @Test

@@ -672,7 +672,7 @@ class WalletRepository(context: Context) {
             return preparePegInPsbt(data, account, toAddress, amountLitoshis, sendMax)
         }
         require(externalSigningSupported(coin, data.scriptType)) {
-            "Signing on another device is only available for Native Segwit Litecoin wallets so far"
+            "Signing on another device is not available for this wallet"
         }
         val params = params(data)
         val scriptType = scriptType(data)

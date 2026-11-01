@@ -1628,7 +1628,7 @@ private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: ()
                 ) { Text("Paste") }
             }
         }
-        review?.onSuccess { if(signed == null) PsbtReviewCard(it) }
+        review?.onSuccess { if(signed == null) PsbtReviewCard(it, repo.coin(walletData)) }
         (error ?: review?.exceptionOrNull()?.let { it.message ?: "Not a valid PSBT" } ?: review?.getOrNull()?.refusal)?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
         }

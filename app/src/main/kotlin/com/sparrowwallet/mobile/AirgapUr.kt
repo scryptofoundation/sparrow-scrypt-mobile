@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import com.sparrowwallet.mobile.crypto.ScriptType
 import com.sparrowwallet.hummingbird.ResultType
 import com.sparrowwallet.hummingbird.UR
 import com.sparrowwallet.hummingbird.URDecoder
@@ -29,15 +30,21 @@ object AirgapUr {
     private val PSBT_MAGIC = byteArrayOf(0x70, 0x73, 0x62, 0x74, 0xFF.toByte())
 
     /**
-     * The account as `ur:crypto-account`: master fingerprint plus one wpkh output whose
-     * key carries chain code, full origin and parent fingerprint, which is everything
-     * desktop's QR import reads to rebuild the xpub. No coin info: desktop ignores it.
+     * The account as `ur:crypto-account`: master fingerprint plus one output in the wallet's
+     * script type (pkh, sh(wpkh) or wpkh) whose key carries chain code, full origin and parent
+     * fingerprint, which is everything desktop's QR import reads to rebuild the xpub. No coin
+     * info: desktop takes the coin from the wallet being created.
      */
-    fun accountExport(master: HDKey, account: HDKey, path: List<Long>): UR {
+    fun accountExport(master: HDKey, account: HDKey, path: List<Long>, scriptType: ScriptType = ScriptType.P2WPKH): UR {
         val components = path.map { IndexPathComponent((it and 0x7FFFFFFFL).toInt(), it >= 0x80000000L) }
         val key = CryptoHDKey(false, account.pubKey, account.chainCode, null,
             CryptoKeypath(components, master.fingerprint), null, account.parentFingerprint)
-        val output = CryptoOutput(listOf(ScriptExpression.WITNESS_PUBLIC_KEY_HASH), key)
+        val expressions = when(scriptType) {
+            ScriptType.P2PKH -> listOf(ScriptExpression.PUBLIC_KEY_HASH)
+            ScriptType.P2SH_P2WPKH -> listOf(ScriptExpression.SCRIPT_HASH, ScriptExpression.WITNESS_PUBLIC_KEY_HASH)
+            ScriptType.P2WPKH -> listOf(ScriptExpression.WITNESS_PUBLIC_KEY_HASH)
+        }
+        val output = CryptoOutput(expressions, key)
         return CryptoAccount(master.fingerprint, listOf(output)).toUR()
     }
 

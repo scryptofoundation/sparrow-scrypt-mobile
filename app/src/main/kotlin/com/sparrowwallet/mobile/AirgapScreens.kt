@@ -147,7 +147,7 @@ fun UrScanner(onFrame: (String) -> AirgapUr.Progress, onDone: (ByteArray) -> Uni
 
 /** What the PSBT does, shown before signing: every output, how many inputs are ours, the fee. */
 @Composable
-fun PsbtReviewCard(review: PsbtReview) {
+fun PsbtReviewCard(review: PsbtReview, coin: Coin) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             for(out in review.outputs) {
@@ -159,7 +159,7 @@ fun PsbtReviewCard(review: PsbtReview) {
                         Text("change", fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Text(formatAmount(Coin.LITECOIN, out.value), fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall)
+                    Text(formatAmount(coin, out.value), fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall)
                 }
             }
             val signedHere = review.inputs.count { it.ours }
@@ -167,7 +167,7 @@ fun PsbtReviewCard(review: PsbtReview) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 review.fee?.let { fee ->
-                    "Fee ${formatAmount(Coin.LITECOIN, fee)}" + (review.feeRatePerVb?.let { " (%.2f lit/vB)".format(it) } ?: "")
+                    "Fee ${formatAmount(coin, fee)}" + (review.feeRatePerVb?.let { " (%.2f %s)".format(it, feeUnit(coin)) } ?: "")
                 } ?: "Fee unknown",
                 style = MaterialTheme.typography.bodyMedium
             )
@@ -182,8 +182,10 @@ fun PsbtReviewCard(review: PsbtReview) {
 @Composable
 fun ExportToDesktopScreen(repo: WalletRepository, data: VaultData, onBack: () -> Unit) {
     val encoder = remember(data) {
-        AirgapUr.encoder(AirgapUr.accountExport(repo.masterKey(data), repo.accountKey(data), repo.accountPath(data)))
+        AirgapUr.encoder(AirgapUr.accountExport(repo.masterKey(data), repo.accountKey(data), repo.accountPath(data), repo.scriptType(data)))
     }
+    val coin = remember(data) { repo.coin(data) }
+    val typeLabel = remember(data) { WalletSetup.scriptTypeLabel(repo.scriptType(data)) }
     Column(
         modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -193,7 +195,7 @@ fun ExportToDesktopScreen(repo: WalletRepository, data: VaultData, onBack: () ->
             Text("AIR-GAPPED · WATCH-ONLY", fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Text("On the PC, with the Litecoin coin selected: New Wallet, Native Segwit, Airgapped Hardware " +
+        Text("On the PC, make a new ${coin.displayName} wallet with $typeLabel, then Airgapped Hardware " +
             "Wallet, Sparrow Mobile, Scan. Point the webcam at this code.",
             style = MaterialTheme.typography.bodyMedium)
         AnimatedUrQr(encoder)

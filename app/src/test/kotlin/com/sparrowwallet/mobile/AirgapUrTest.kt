@@ -1,5 +1,8 @@
 package com.sparrowwallet.mobile
 
+import com.sparrowwallet.mobile.crypto.ScriptType
+import com.sparrowwallet.mobile.crypto.Coin
+import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.hummingbird.registry.CryptoAccount
 import com.sparrowwallet.hummingbird.registry.ScriptExpression
 import com.sparrowwallet.hummingbird.registry.URPSBT
@@ -111,5 +114,23 @@ class AirgapUrTest {
         val psbt = fakePsbt(50, 5)
         val next = com.sparrowwallet.hummingbird.UREncoder.encode(URPSBT(psbt).toUR())
         assertContentEquals(psbt, assertIs<AirgapUr.Progress.Done>(col.receive(next)).psbt)
+    }
+
+    @Test fun accountExportFollowsTheScriptType() {
+        fun export(coin: Coin, type: ScriptType): Pair<List<ScriptExpression>, Pair<String, String>> {
+            val params = ChainParams.of(coin, Network.MAINNET)
+            val path = listOf(type.purpose.toLong() + hardened, coin.coinType.toLong() + hardened, hardened)
+            var acct = master
+            for(child in path) acct = acct.deriveChild(child)
+            val ur = AirgapUr.accountExport(master, acct, path, type)
+            val expressions = (ur.decodeFromRegistry() as CryptoAccount).outputDescriptors.single().scriptExpressions
+            assertEquals(master.fingerprint.toHex() to acct.xpub(params.xpubHeader), AirgapUr.desktopXpub(ur, params.xpubHeader))
+            return expressions to AirgapUr.desktopXpub(ur, params.xpubHeader)
+        }
+        assertEquals(listOf(ScriptExpression.PUBLIC_KEY_HASH), export(Coin.DOGECOIN, ScriptType.P2PKH).first)
+        assertEquals(listOf(ScriptExpression.SCRIPT_HASH, ScriptExpression.WITNESS_PUBLIC_KEY_HASH),
+            export(Coin.LITECOIN, ScriptType.P2SH_P2WPKH).first)
+        assertEquals(listOf(ScriptExpression.WITNESS_PUBLIC_KEY_HASH), export(Coin.LITECOIN, ScriptType.P2WPKH).first)
+        assertTrue(export(Coin.DOGECOIN, ScriptType.P2PKH).second.second.startsWith("dgub"))
     }
 }

@@ -32,11 +32,11 @@ fun clampFeeRate(coin: Coin, satPerVb: Double?): Long {
 fun feeUnit(coin: Coin): String = if(coin == Coin.LITECOIN) "lit/vB" else "sat/vB"
 
 /**
- * Whether the PSBT, external-signer and air-gapped paths support the wallet. They write witness
- * UTXOs and decode Litecoin addresses only, so other coins and script types wait for phase 5.
+ * Whether the PSBT, external-signer and air-gapped paths support the wallet: every public script
+ * type the coin has. MWEB wallets sign through mwebd and stay out.
  */
 fun externalSigningSupported(coin: Coin, scriptType: String): Boolean =
-    coin == Coin.LITECOIN && scriptType == ScriptType.P2WPKH.name
+    ScriptType.entries.firstOrNull { it.name == scriptType }?.let { coin.supports(it) } == true
 
 /**
  * Whether a coin scan taken at [scannedAtMs] can build a send at [nowMs]: the Send screen scans when
