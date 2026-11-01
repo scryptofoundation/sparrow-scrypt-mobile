@@ -171,6 +171,9 @@ fun PsbtReviewCard(review: PsbtReview, coin: Coin) {
                 } ?: "Fee unknown",
                 style = MaterialTheme.typography.bodyMedium
             )
+            review.warning?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
         }
     }
 }

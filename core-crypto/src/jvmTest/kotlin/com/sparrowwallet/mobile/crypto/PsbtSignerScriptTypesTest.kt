@@ -97,4 +97,13 @@ class PsbtSignerScriptTypesTest {
         }
         assertTrue("does not match" in e.message!!, e.message)
     }
+
+    @Test
+    fun reviewWarnsWhenTheWalletSignsOnBitcoinsKeyPath() {
+        val lky = wallet(Coin.LUCKYCOIN, ScriptType.P2PKH)
+        val warning = PsbtSigner.review(Psbt.parse(psbt(lky)), master, lky.params, lky.accountPath, lky.type).warning
+        assertTrue(warning != null && "Bitcoin" in warning, warning)
+        val doge = wallet(Coin.DOGECOIN, ScriptType.P2PKH)
+        assertEquals(null, PsbtSigner.review(Psbt.parse(psbt(doge)), master, doge.params, doge.accountPath, doge.type).warning)
+    }
 }

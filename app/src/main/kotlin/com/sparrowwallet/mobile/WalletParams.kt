@@ -39,6 +39,12 @@ fun externalSigningSupported(coin: Coin, scriptType: String): Boolean =
     ScriptType.entries.firstOrNull { it.name == scriptType }?.let { coin.supports(it) } == true
 
 /**
+ * Whether an unsigned transaction's txid is the one it will have: only when no input carries a
+ * scriptSig, so Native Segwit. Legacy and Nested Segwit inputs get theirs when finalized.
+ */
+fun txidKnownBeforeSigning(scriptType: String): Boolean = scriptType == ScriptType.P2WPKH.name
+
+/**
  * Whether a coin scan taken at [scannedAtMs] can build a send at [nowMs]: the Send screen scans when
  * it opens, and scanning again for Preview doubled a slow server's wait. A coin spent since then
  * makes the broadcast fail, as a race with another wallet does today.

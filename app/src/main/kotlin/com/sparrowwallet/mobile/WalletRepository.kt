@@ -651,7 +651,7 @@ class WalletRepository(context: Context) {
         val amount: Long,
         val fee: Long,
         val feeRatePerVb: Long,
-        val txid: String, // P2WPKH txid excludes witnesses — final txid matches
+        val txid: String?, // null when signing will change it (see txidKnownBeforeSigning)
         val psbtBase64: String,
         /** Peg-ins: the MWEB extension blob stays here and is re-attached on finalize. */
         val mwebBlob: ByteArray? = null
@@ -710,7 +710,7 @@ class WalletRepository(context: Context) {
                 changePath = accountPath + listOf(1L, scan.nextChangeIndex.toLong())
             )
             UnsignedSendPreview(toAddress, unsigned.amount, unsigned.fee, feeRate,
-                unsigned.tx.txid(), Psbt.toBase64(psbt))
+                unsigned.tx.txid().takeIf { txidKnownBeforeSigning(data.scriptType) }, Psbt.toBase64(psbt))
         }
     }
 

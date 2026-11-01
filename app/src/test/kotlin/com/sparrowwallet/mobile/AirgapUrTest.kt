@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import kotlin.test.assertFailsWith
 import com.sparrowwallet.mobile.crypto.ScriptType
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.ChainParams
@@ -132,5 +133,17 @@ class AirgapUrTest {
             export(Coin.LITECOIN, ScriptType.P2SH_P2WPKH).first)
         assertEquals(listOf(ScriptExpression.WITNESS_PUBLIC_KEY_HASH), export(Coin.LITECOIN, ScriptType.P2WPKH).first)
         assertTrue(export(Coin.DOGECOIN, ScriptType.P2PKH).second.second.startsWith("dgub"))
+    }
+
+    @Test fun unsignedPsbtTooBigForOneQrIsShownAsFrames() {
+        // a Legacy PSBT carries each input's previous transaction: a few of them pass one QR's limit
+        val psbt = ByteArray(6000) { (it * 31 + 7).toByte() }
+        val writer = com.google.zxing.qrcode.QRCodeWriter()
+        assertFailsWith<com.google.zxing.WriterException> {
+            writer.encode(java.util.Base64.getEncoder().encodeToString(psbt), com.google.zxing.BarcodeFormat.QR_CODE, 512, 512)
+        }
+        val encoder = AirgapUr.psbtEncoder(psbt)
+        assertTrue(encoder.seqLen > 1)
+        repeat(encoder.seqLen) { writer.encode(encoder.nextPart().uppercase(), com.google.zxing.BarcodeFormat.QR_CODE, 512, 512) }
     }
 }

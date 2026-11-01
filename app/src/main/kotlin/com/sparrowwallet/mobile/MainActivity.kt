@@ -1442,7 +1442,8 @@ private fun MwebHomeScreen(
 /**
  * External signing: shows the unsigned PSBT (QR / copy / share) for a desktop or
  * hardware signer, then takes the signed PSBT back (scan / paste), finalizes it,
- * and broadcasts. The txid shown is final — P2WPKH txids don't change on signing.
+ * and broadcasts. A txid is shown only when it is final (Native Segwit), and the PSBT as
+ * animated frames, since previous transactions can make it too big for one QR.
  */
 @Composable
 private fun PsbtSignScreen(
@@ -1488,14 +1489,13 @@ private fun PsbtSignScreen(
         ReviewCard(listOf(
             "To" to shortAddress(unsigned.toAddress),
             "Amount" to formatAmount(repo.coin(home.data), unsigned.amount),
-            "Fee" to "${formatAmount(repo.coin(home.data), unsigned.fee)} (${unsigned.feeRatePerVb} ${feeUnit(repo.coin(home.data))})",
-            "Txid" to shortAddress(unsigned.txid)
-        ))
+            "Fee" to "${formatAmount(repo.coin(home.data), unsigned.fee)} (${unsigned.feeRatePerVb} ${feeUnit(repo.coin(home.data))})"
+        ) + listOfNotNull(unsigned.txid?.let { "Txid" to shortAddress(it) }))
 
         SectionLabel("Give this to the signer")
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
-                QrImage(unsigned.psbtBase64)
+                AnimatedUrQr(remember(unsigned) { AirgapUr.psbtEncoder(java.util.Base64.getDecoder().decode(unsigned.psbtBase64)) })
             }
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

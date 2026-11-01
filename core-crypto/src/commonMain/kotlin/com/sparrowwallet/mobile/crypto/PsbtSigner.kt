@@ -24,7 +24,9 @@ data class PsbtReview(
     /** In the coin's smallest unit per vbyte (lits for Litecoin, sats for the others). */
     val feeRatePerVb: Double?,
     /** Why [PsbtSigner.sign] will refuse this PSBT, or null when it can be signed. */
-    val refusal: String? = null
+    val refusal: String? = null,
+    /** Something to know before signing, or null. */
+    val warning: String? = null
 )
 
 /**
@@ -61,6 +63,8 @@ object PsbtSigner {
      * is change, an input there is signed. Anything else is foreign even with our master
      * fingerprint, so a PSBT cannot hide a payment to a key the wallet never scans, nor get
      * a signature for another coin's path (Bitcoin shares BIP143) under a Litecoin review.
+     * Coins on coin type 0 (Luckycoin, Junkcoin) share Bitcoin's own path, which no check can
+     * tell apart: the review warns instead.
      */
     fun review(parsed: Psbt.Parsed, master: HDKey, params: ChainParams, accountPath: List<Long>, scriptType: ScriptType): PsbtReview {
         val inputs = parsed.inputs.mapIndexed { i, input ->
@@ -85,7 +89,11 @@ object PsbtSigner {
         }
         val vsize = parsed.unsignedTxBytes.size + scriptSigBytes + ceil(witnessBytes / 4.0)
         val rate = fee?.let { round(it / vsize * 100) / 100 }
-        return PsbtReview(inputs, outputs, totalIn, totalOut, fee, rate, refusal(parsed, master, accountPath, scriptType))
+        val warning = if(accountPath.getOrNull(1)?.let { it and 0x7FFFFFFFL } == 0L) {
+            "This wallet's keys are on Bitcoin's path (coin type 0), so a Bitcoin transaction would " +
+                "sign the same way. Sign only PSBTs you made yourself."
+        } else null
+        return PsbtReview(inputs, outputs, totalIn, totalOut, fee, rate, refusal(parsed, master, accountPath, scriptType), warning)
     }
 
     fun sign(parsed: Psbt.Parsed, master: HDKey, params: ChainParams, accountPath: List<Long>, scriptType: ScriptType): ByteArray {

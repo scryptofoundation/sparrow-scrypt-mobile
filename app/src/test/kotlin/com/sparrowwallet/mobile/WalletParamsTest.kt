@@ -114,4 +114,11 @@ class WalletParamsTest {
         cache.clear("w")
         assertNull(cache.fresh("w", 2_000))
     }
+
+    @Test
+    fun finalTxidIsKnownBeforeSigningOnlyForNativeSegwit() {
+        assertTrue(txidKnownBeforeSigning("P2WPKH"))
+        assertFalse(txidKnownBeforeSigning("P2SH_P2WPKH"))
+        assertFalse(txidKnownBeforeSigning("P2PKH"))
+    }
 }
