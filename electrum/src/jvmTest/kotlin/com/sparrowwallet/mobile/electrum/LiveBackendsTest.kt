@@ -59,4 +59,55 @@ class LiveBackendsTest {
             check("LTC $host Electrum", ltc) { ElectrumBackend(ElectrumClient(host, port, true)) }
         }
     }
+
+    /**
+     * A PSBT's previous transactions come from these servers: each must give the raw bytes of a
+     * coinbase (from its tip block, where it has block routes) and of a recent mempool transaction.
+     */
+    @Test fun everyPublicEsploraServerReturnsRawTransactions() {
+        if(!enabled) return
+        val servers = listOf(
+            Triple(Coin.BELLSCOIN, Network.MAINNET, "https://api.nintondo.io"),
+            Triple(Coin.PEPECOIN, Network.MAINNET, "https://peppool.space/api"),
+            Triple(Coin.LUCKYCOIN, Network.MAINNET, "https://luckyscan.org/api"),
+            Triple(Coin.JUNKCOIN, Network.MAINNET, "https://explorer.junk-coin.com/api"),
+            Triple(Coin.PEPECOIN, Network.TESTNET, "https://pepe-testnet-api.nintondo.io"),
+            Triple(Coin.JUNKCOIN, Network.TESTNET, "https://jkc-testnet-api.s3na.xyz"))
+        val failures = ArrayList<String>()
+        for((coin, network, url) in servers) {
+            val label = "${coin.name} ${network.name} $url"
+            val txids = sampleTxids(url)
+            val backend = EsploraBackend(url, ChainParams.of(coin, network))
+            runBlocking {
+                try {
+                    backend.connect()
+                    for((kind, txid) in txids) {
+                        runCatching { backend.rawTransaction(txid).size }
+                            .onSuccess { println("$label: $kind ${txid.take(12)} $it bytes") }
+                            .onFailure { failures += "$label: $kind $txid: ${it.message}" }
+                    }
+                } finally {
+                    backend.close()
+                }
+            }
+        }
+        failures.forEach { println("FAILED $it") }
+        assertTrue(failures.isEmpty(), failures.joinToString("\n"))
+    }
+
+    /** The tip block's coinbase (when the server has block routes) and a recent mempool transaction. */
+    private fun sampleTxids(url: String): List<Pair<String, String>> {
+        fun get(path: String): String? = runCatching {
+            (java.net.URI("$url$path").toURL().openConnection() as java.net.HttpURLConnection).run {
+                connectTimeout = 20_000; readTimeout = 20_000
+                setRequestProperty("User-Agent", "sparrow-ltc-mobile-test")
+                if(responseCode == 200) inputStream.bufferedReader().readText() else null
+            }
+        }.getOrNull()
+        val txid = Regex("[0-9a-f]{64}")
+        val tip = get("/blocks/tip/hash")?.trim()?.removeSurrounding("\"")
+        val coinbase = tip?.let { get("/block/$it/txids") }?.let { txid.find(it)?.value }
+        val mempool = get("/mempool/recent")?.let { Regex("\"txid\"\\s*:\\s*\"([0-9a-f]{64})\"").find(it)?.groupValues?.get(1) }
+        return listOfNotNull(coinbase?.let { "coinbase" to it }, mempool?.let { "mempool" to it })
+    }
 }

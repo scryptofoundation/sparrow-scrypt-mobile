@@ -40,12 +40,14 @@ class EsploraBackendTest {
     private val T2 = "02".repeat(32)
     private val requests = CopyOnWriteArrayList<String>()
     private var routes: (method: String, path: String, body: String) -> Pair<Int, String> = { _, _, _ -> 404 to "not found" }
+    /** Binary answers by path, served before [routes]. */
+    private var binary: Map<String, ByteArray> = emptyMap()
     private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
         createContext("/") { ex ->
             val body = ex.requestBody.readBytes().decodeToString()
             requests += "${ex.requestMethod} ${ex.requestURI.path}"
-            val (status, out) = routes(ex.requestMethod, ex.requestURI.path, body)
-            val bytes = out.encodeToByteArray()
+            val (status, bytes) = binary[ex.requestURI.path]?.let { 200 to it }
+                ?: routes(ex.requestMethod, ex.requestURI.path, body).let { (st, out) -> st to out.encodeToByteArray() }
             if(status == 429) ex.responseHeaders.add("Retry-After", "1")
             ex.sendResponseHeaders(status, if(bytes.isEmpty()) -1 else bytes.size.toLong())
             ex.responseBody.use { it.write(bytes) }
@@ -364,5 +366,40 @@ class EsploraBackendTest {
         assertFailsWith<IOException> { verifiedRawTransaction(txid, rawA.dropLast(1)) }
         assertFailsWith<IOException> { verifiedRawTransaction(txid, "") }
         assertEquals(rawA, verifiedRawTransaction(txid, "  " + rawA.uppercase() + "\n").toHex())
+    }
+
+    @Test fun rawTransactionAnsweredAsAJsonStringIsRead(): Unit = runBlocking {
+        // explorer.junk-coin.com quotes the hex
+        val txid = com.sparrowwallet.mobile.crypto.RawTx.parse(rawA.hexToBytes()).txid
+        routes = { _, path, _ -> if(path == "/blocks/tip/height") 200 to "5" else if(path == "/tx/$txid/hex") 200 to "\"$rawA\"" else 404 to "" }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(rawA, b.rawTransaction(txid).toHex())
+    }
+
+    @Test fun rawTransactionTheHexRouteRefusesIsReadAsBytes(): Unit = runBlocking {
+        // nintondo and luckyscan answer 400 for a coinbase's hex but serve /raw
+        val txid = com.sparrowwallet.mobile.crypto.RawTx.parse(rawA.hexToBytes()).txid
+        routes = { _, path, _ -> if(path == "/blocks/tip/height") 200 to "5" else if(path == "/tx/$txid/hex") 400 to "Invalid hex string" else 404 to "" }
+        binary = mapOf("/tx/$txid/raw" to rawA.hexToBytes())
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(rawA, b.rawTransaction(txid).toHex())
+        binary = mapOf("/tx/$txid/raw" to rawB.hexToBytes())
+        assertFailsWith<IOException> { b.rawTransaction(txid) }
+    }
+
+    @Test fun rawTransactionFailureNamesTheHexRouteWhenRawIsNotBytes(): Unit = runBlocking {
+        // explorer.junk-coin.com: /hex throttled upstream, /raw answers the bytes escaped as a JSON string
+        val txid = com.sparrowwallet.mobile.crypto.RawTx.parse(rawA.hexToBytes()).txid
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "5"
+                "/tx/$txid/hex" -> 500 to "{\"error\":\"Request failed with status code 429\"}"
+                "/tx/$txid/raw" -> 200 to "\"\\u0002\\u0000\\u0000\\u0000\""
+                else -> 404 to ""
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        val e = assertFailsWith<IOException> { b.rawTransaction(txid) }
+        assertTrue("HTTP 500" in e.message!! && "429" in e.message!!, e.message)
     }
 }

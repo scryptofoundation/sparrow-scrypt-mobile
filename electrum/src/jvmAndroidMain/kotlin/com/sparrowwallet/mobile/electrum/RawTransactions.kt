@@ -9,11 +9,17 @@ import java.io.IOException
  * a previous transaction goes into a PSBT, and a signer trusts what it proves about the spent output.
  */
 fun verifiedRawTransaction(txid: String, hex: String): ByteArray {
-    val clean = hex.trim().lowercase()
+    //some servers answer the hex as a JSON string
+    val clean = hex.trim().removeSurrounding("\"").lowercase()
     if(clean.isEmpty() || clean.length % 2 != 0 || clean.length > HttpEndpoint.MAX_BODY || !clean.all { it in '0'..'9' || it in 'a'..'f' }) {
         throw IOException("The server's transaction $txid is not valid hex")
     }
-    val bytes = clean.hexToBytes()
+    return verifiedRawTransaction(txid, clean.hexToBytes())
+}
+
+/** As the hex form, for a transaction a server sent as bytes. */
+fun verifiedRawTransaction(txid: String, bytes: ByteArray): ByteArray {
+    if(bytes.isEmpty()) throw IOException("The server sent an empty transaction for $txid")
     val parsed = try {
         RawTx.parse(bytes)
     } catch(e: Exception) {

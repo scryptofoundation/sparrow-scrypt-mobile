@@ -38,8 +38,12 @@ class HttpEndpoint(
     /** The whole request, however slowly the server trickles its answer. */
     private val deadlineMs: Long = timeoutMs * 2L
 ) {
-    /** [headers] are keyed by lowercase name. */
-    class Response(val status: Int, val body: String, val headers: Map<String, String> = emptyMap())
+    /** [headers] are keyed by lowercase name; [bytes] is the body as sent, [body] as text. */
+    class Response(val status: Int, val bytes: ByteArray, val headers: Map<String, String> = emptyMap()) {
+        constructor(status: Int, body: String, headers: Map<String, String> = emptyMap()) : this(status, body.encodeToByteArray(), headers)
+
+        val body: String by lazy { bytes.decodeToString() }
+    }
 
     private val uri = URI(baseUrl.trimEnd('/'))
     private val tls = when(uri.scheme) {
@@ -233,7 +237,7 @@ class HttpEndpoint(
         //an HTTP/1.0 answer closes unless it says otherwise
         val connection = headers["connection"]?.lowercase() ?: ""
         val keep = framed && !connection.contains("close") && (!lines[0].startsWith("HTTP/1.0") || connection.contains("keep-alive"))
-        return Response(status, body.decodeToString(), headers) to keep
+        return Response(status, body, headers) to keep
     }
 
     private fun readExactly(input: InputStream, length: Int): ByteArray {

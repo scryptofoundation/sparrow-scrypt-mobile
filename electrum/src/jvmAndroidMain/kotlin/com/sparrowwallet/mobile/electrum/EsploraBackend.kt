@@ -170,9 +170,14 @@ class EsploraBackend(
     }
 
     override suspend fun rawTransaction(txid: String): ByteArray {
-        val r = get("/tx/${requireTxid(txid)}/hex")
-        if(r.status != 200) throw IOException(failure(r))
-        return verifiedRawTransaction(txid, r.body)
+        val id = requireTxid(txid)
+        val r = get("/tx/$id/hex")
+        if(r.status == 200) return verifiedRawTransaction(txid, r.body)
+        //nintondo's and luckyscan's APIs refuse a coinbase's hex but serve its bytes; where /raw is
+        //not the transaction (junk-coin.com escapes it as a JSON string), the hex route's answer says why
+        val raw = get("/tx/$id/raw")
+        if(raw.status == 200) runCatching { verifiedRawTransaction(txid, raw.bytes) }.onSuccess { return it }
+        throw IOException(failure(r))
     }
 
     override suspend fun broadcast(txHex: String): String {
