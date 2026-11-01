@@ -17,6 +17,7 @@ import com.sparrowwallet.mobile.crypto.Scripts
 import com.sparrowwallet.mobile.crypto.SpendableInput
 import com.sparrowwallet.mobile.crypto.TxBuilder
 import com.sparrowwallet.mobile.crypto.UnknownCoinException
+import com.sparrowwallet.mobile.crypto.UnsignedBuild
 import com.sparrowwallet.mobile.crypto.XpubKey
 import com.sparrowwallet.mobile.crypto.hexToBytes
 import com.sparrowwallet.mobile.crypto.toHex
@@ -674,10 +675,11 @@ class WalletRepository(context: Context) {
             "Signing on another device is only available for Native Segwit Litecoin wallets so far"
         }
         val params = params(data)
+        val scriptType = scriptType(data)
         val destScript = Addresses.toScriptPubKey(toAddress, params)
         return withBackend(coin, net) { client ->
             val feeRate = clampFeeRate(coin, client.feeRate(2))
-            val (scan, tip) = scanCoins(client, data, account, ScriptType.P2WPKH)
+            val (scan, tip) = scanCoins(client, data, account, scriptType)
             val accountPath = parsePathChildren(data.derivationPath)
             val pathByKey = HashMap<HDKey, List<Long>>()
             val candidates = scan.utxos
@@ -685,13 +687,21 @@ class WalletRepository(context: Context) {
                 .map {
                     val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                     pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
-                    SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key, ScriptType.P2WPKH)
+                    SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key, scriptType)
                 }
             val changeKey = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong())
-            val unsigned = TxBuilder.buildUnsigned(
+            val selected = TxBuilder.buildUnsigned(
                 candidates, destScript, amountLitoshis, feeRate,
-                Scripts.p2wpkhOutput(changeKey.pubKey), sendMax, params
+                Scripts.outputScript(changeKey.pubKey, scriptType), sendMax, params
             )
+            //every chosen coin carries the transaction that made it: Legacy signers need it, and a
+            //signer checks a multi-input fee against it (rawTransaction verifies each one's txid)
+            val prevTxs = HashMap<String, ByteArray>()
+            val withPrevTxs = selected.inputs.map {
+                SpendableInput(it.txid, it.vout, it.value, it.key, it.scriptType,
+                    prevTxs.getOrPut(it.txid) { client.rawTransaction(it.txid) })
+            }
+            val unsigned = UnsignedBuild(selected.tx, withPrevTxs, selected.amount, selected.fee, selected.change)
             val psbt = Psbt.create(
                 unsigned, masterKey(data).fingerprint,
                 pathFor = { pathByKey.getValue(it.key) },
@@ -785,13 +795,13 @@ class WalletRepository(context: Context) {
      * for a coordinator like desktop Sparrow or a watch-only wallet.
      */
     fun signPsbt(data: VaultData, psbt: ByteArray): SignedPsbt {
-        val signed = PsbtSigner.sign(Psbt.parse(psbt), masterKey(data), network(data), accountPath(data))
+        val signed = PsbtSigner.sign(Psbt.parse(psbt), masterKey(data), params(data), accountPath(data), scriptType(data))
         return SignedPsbt(signed, Psbt.toBase64(signed))
     }
 
     /** What a PSBT does, for the user to check before [signPsbt]. */
     fun reviewPsbt(data: VaultData, psbt: ByteArray): PsbtReview =
-        PsbtSigner.review(Psbt.parse(psbt), masterKey(data), network(data), accountPath(data))
+        PsbtSigner.review(Psbt.parse(psbt), masterKey(data), params(data), accountPath(data), scriptType(data))
 
     class SignedPsbt(val bytes: ByteArray, val base64: String)
 
