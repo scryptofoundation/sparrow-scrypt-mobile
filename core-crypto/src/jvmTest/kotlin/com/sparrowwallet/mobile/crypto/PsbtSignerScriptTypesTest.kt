@@ -106,4 +106,35 @@ class PsbtSignerScriptTypesTest {
         val doge = wallet(Coin.DOGECOIN, ScriptType.P2PKH)
         assertEquals(null, PsbtSigner.review(Psbt.parse(psbt(doge)), master, doge.params, doge.accountPath, doge.type).warning)
     }
+
+    @Test
+    fun reviewRefusesOurInputWhoseScriptIsNotTheWallets() {
+        val nested = wallet(Coin.LITECOIN, ScriptType.P2SH_P2WPKH)
+        val r = PsbtSigner.review(Psbt.parse(psbt(nested)), master, nested.params, nested.accountPath, ScriptType.P2WPKH)
+        val refusal = assertNotNull(r.refusal)
+        assertTrue("does not match this wallet's key" in refusal, refusal)
+    }
+
+    @Test
+    fun feeRateFollowsTheScriptsTheInputsSpend() {
+        val nested = wallet(Coin.LITECOIN, ScriptType.P2SH_P2WPKH)
+        val parsed = Psbt.parse(psbt(nested))
+        val asNested = PsbtSigner.review(parsed, master, nested.params, nested.accountPath, ScriptType.P2SH_P2WPKH).feeRatePerVb
+        val asNative = PsbtSigner.review(parsed, master, nested.params, nested.accountPath, ScriptType.P2WPKH).feeRatePerVb
+        assertEquals(asNested, asNative)
+    }
+
+    @Test
+    fun finalizeUsesTheSignatureOfTheKeyThatOwnsTheCoin() {
+        val w = wallet(Coin.DOGECOIN, ScriptType.P2PKH)
+        val direct = TxBuilder.build(inputs(w), dest(w), 4_000_000_000, rate, change(w), params = w.params).tx.serialize()
+        val signed = PsbtSigner.sign(Psbt.parse(psbt(w)), master, w.params, w.accountPath, w.type)
+        //signatures by other keys alongside ours: whatever order they come back in, ours is the one placed
+        val strays = (2L..40L).map { index ->
+            val stray = w.account.deriveChild(0).deriveChild(index)
+            (byteArrayOf(0x02) + stray.pubKey) to Ecdsa.signForInput(ByteArray(32) { 7 }, stray.privKey)
+        }
+        val withStrays = PsbtFixtures.edit(signed) { maps -> maps[1].addAll(0, strays); maps[2].addAll(0, strays) }
+        assertContentEquals(direct, Psbt.finalize(Psbt.parse(withStrays)).serialize())
+    }
 }

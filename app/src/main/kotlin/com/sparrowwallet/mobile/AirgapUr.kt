@@ -35,7 +35,7 @@ object AirgapUr {
      * fingerprint, which is everything desktop's QR import reads to rebuild the xpub. No coin
      * info: desktop takes the coin from the wallet being created.
      */
-    fun accountExport(master: HDKey, account: HDKey, path: List<Long>, scriptType: ScriptType = ScriptType.P2WPKH): UR {
+    fun accountExport(master: HDKey, account: HDKey, path: List<Long>, scriptType: ScriptType): UR {
         val components = path.map { IndexPathComponent((it and 0x7FFFFFFFL).toInt(), it >= 0x80000000L) }
         val key = CryptoHDKey(false, account.pubKey, account.chainCode, null,
             CryptoKeypath(components, master.fingerprint), null, account.parentFingerprint)

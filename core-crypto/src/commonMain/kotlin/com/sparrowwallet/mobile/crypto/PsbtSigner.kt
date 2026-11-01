@@ -81,12 +81,21 @@ object PsbtSigner {
         val totalIn = if(inputs.all { it.value != null }) inputs.sumOf { it.value!! } else null
         val totalOut = outputs.sumOf { it.value }
         val fee = totalIn?.let { it - totalOut }
-        val n = inputs.size
-        val (scriptSigBytes, witnessBytes) = when(scriptType) {
-            ScriptType.P2PKH -> P2PKH_SCRIPTSIG_BYTES * n to 0
-            ScriptType.P2SH_P2WPKH -> NESTED_SCRIPTSIG_BYTES * n to 2 + WITNESS_BYTES * n
-            ScriptType.P2WPKH -> 0 to 2 + WITNESS_BYTES * n
+        //each input sized by the output it spends; the wallet's type only when that is unknown
+        val types = parsed.inputs.mapIndexed { i, input ->
+            val txIn = parsed.tx.inputs[i]
+            input.spentOutput(txIn.prevTxid, txIn.vout)?.script?.let { spentType(it) } ?: scriptType
         }
+        val scriptSigBytes = types.sumOf {
+            when(it) {
+                ScriptType.P2PKH -> P2PKH_SCRIPTSIG_BYTES
+                ScriptType.P2SH_P2WPKH -> NESTED_SCRIPTSIG_BYTES
+                ScriptType.P2WPKH -> 0
+            }
+        }
+        val segwit = types.count { it != ScriptType.P2PKH }
+        //marker and flag, a witness per segwit input, and an empty one per Legacy input beside them
+        val witnessBytes = if(segwit == 0) 0 else 2 + WITNESS_BYTES * segwit + (types.size - segwit)
         val vsize = parsed.unsignedTxBytes.size + scriptSigBytes + ceil(witnessBytes / 4.0)
         val rate = fee?.let { round(it / vsize * 100) / 100 }
         val warning = if(accountPath.getOrNull(1)?.let { it and 0x7FFFFFFFL } == 0L) {
@@ -101,18 +110,10 @@ object PsbtSigner {
         val sigs = parsed.inputs.mapIndexed { i, input ->
             val (pubHex, path) = ourDerivation(input.derivations, master, accountPath) ?: return@mapIndexed emptyMap()
             ours++
+            inputProblem(parsed, i, master, accountPath, scriptType)?.let { throw IllegalArgumentException(it) }
             val txIn = parsed.tx.inputs[i]
             val key = derive(master, path)
-            //a Legacy signature covers the spent output's script, which only the previous transaction proves
-            //(parsing has checked it against any witness UTXO, so either source gives the same output)
-            if(scriptType == ScriptType.P2PKH) {
-                require(input.nonWitnessUtxo != null) { "Input ${i + 1} is a Legacy coin without its previous transaction" }
-            }
-            val spent = input.spentOutput(txIn.prevTxid, txIn.vout)
-            require(spent != null) { "Input ${i + 1} has no witness UTXO or previous transaction" }
-            require(key.pubKey.toHex() == pubHex.lowercase() && Scripts.outputScript(key.pubKey, scriptType).contentEquals(spent.script)) {
-                "Input ${i + 1}: ${if(scriptType == ScriptType.P2PKH) "previous output" else "witness UTXO"} does not match this wallet's key"
-            }
+            val spent = input.spentOutput(txIn.prevTxid, txIn.vout)!!
             val sighash = when(scriptType) {
                 ScriptType.P2PKH -> parsed.tx.legacySighashAll(i, spent.script)
                 ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH -> parsed.tx.bip143SighashAll(i, Scripts.p2pkhScriptCode(key.pubKey), spent.value)
@@ -122,6 +123,35 @@ object PsbtSigner {
         require(ours > 0) { "This PSBT has no inputs belonging to this wallet" }
         refusal(parsed, master, accountPath, scriptType)?.let { throw IllegalArgumentException(it) }
         return Psbt.serialize(parsed, sigs)
+    }
+
+    /**
+     * Why [sign] would refuse an input that names this wallet's account, or null. A Legacy signature
+     * covers the spent output's script, which only the previous transaction proves (parsing has
+     * checked it against any witness UTXO, so either source gives the same output); and the key
+     * derived from the path must own that output in the wallet's script type.
+     */
+    private fun inputProblem(parsed: Psbt.Parsed, i: Int, master: HDKey, accountPath: List<Long>, scriptType: ScriptType): String? {
+        val input = parsed.inputs[i]
+        val (pubHex, path) = ourDerivation(input.derivations, master, accountPath) ?: return null
+        if(scriptType == ScriptType.P2PKH && input.nonWitnessUtxo == null) {
+            return "Input ${i + 1} is a Legacy coin without its previous transaction"
+        }
+        val txIn = parsed.tx.inputs[i]
+        val spent = input.spentOutput(txIn.prevTxid, txIn.vout) ?: return "Input ${i + 1} has no witness UTXO or previous transaction"
+        val key = derive(master, path)
+        if(key.pubKey.toHex() != pubHex.lowercase() || !Scripts.outputScript(key.pubKey, scriptType).contentEquals(spent.script)) {
+            return "Input ${i + 1}: ${if(scriptType == ScriptType.P2PKH) "previous output" else "witness UTXO"} does not match this wallet's key"
+        }
+        return null
+    }
+
+    /** The single-key type an output script is spent as; P2SH is taken as nested segwit, the only kind made here. */
+    private fun spentType(script: ByteArray): ScriptType? = when {
+        script.size == 25 && script[0] == 0x76.toByte() && script[1] == 0xa9.toByte() && script[2] == 0x14.toByte() -> ScriptType.P2PKH
+        script.size == 23 && script[0] == 0xa9.toByte() && script[1] == 0x14.toByte() && script[22] == 0x87.toByte() -> ScriptType.P2SH_P2WPKH
+        script.size == 22 && script[0] == 0x00.toByte() && script[1] == 0x14.toByte() -> ScriptType.P2WPKH
+        else -> null
     }
 
     private fun refusal(parsed: Psbt.Parsed, master: HDKey, accountPath: List<Long>, scriptType: ScriptType): String? {
@@ -135,6 +165,7 @@ object PsbtSigner {
                     "On the PC, import this wallet with the Sparrow Mobile option."
             }
         }
+        parsed.inputs.indices.firstNotNullOfOrNull { inputProblem(parsed, it, master, accountPath, scriptType) }?.let { return it }
         return prevTxRefusal(parsed)
     }
 

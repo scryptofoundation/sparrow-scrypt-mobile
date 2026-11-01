@@ -226,9 +226,10 @@ object Psbt {
 
     /**
      * Finalizes a signed PSBT into the broadcastable transaction. An input another signer
-     * finalized keeps its final scriptSig and witness; otherwise its one partial signature is
-     * placed by the type of the output it spends: P2PKH a scriptSig of signature and key,
-     * P2SH-P2WPKH a scriptSig pushing the redeem script and a witness, P2WPKH a witness.
+     * finalized keeps its final scriptSig and witness; otherwise the partial signature whose key
+     * owns the spent output (others' signatures are ignored) is placed by that output's type:
+     * P2PKH a scriptSig of signature and key, P2SH-P2WPKH a scriptSig pushing the redeem script
+     * and a witness, P2WPKH a witness.
      */
     fun finalize(parsed: Parsed): Tx {
         for((i, input) in parsed.inputs.withIndex()) {
@@ -238,11 +239,12 @@ object Psbt {
                 txIn.witness = input.finalWitness ?: emptyList()
                 continue
             }
-            val (pubHex, sig) = input.partialSigs.entries.firstOrNull()?.let { it.key to it.value }
-                ?: throw IllegalArgumentException("Input ${i + 1} has no signature — sign the PSBT first")
-            val pub = pubHex.hexToBytes()
+            if(input.partialSigs.isEmpty()) throw IllegalArgumentException("Input ${i + 1} has no signature — sign the PSBT first")
             val spent = input.spentOutput(txIn.prevTxid, txIn.vout)?.script
                 ?: throw IllegalArgumentException("Input ${i + 1} has no witness utxo or previous transaction")
+            val (pub, sig) = input.partialSigs.entries.map { it.key.hexToBytes() to it.value }
+                .firstOrNull { (pub, _) -> ScriptType.entries.any { Scripts.outputScript(pub, it).contentEquals(spent) } }
+                ?: throw IllegalArgumentException("Input ${i + 1}: the signature's key does not own the coin")
             when {
                 spent.contentEquals(Scripts.p2pkhOutput(pub)) -> {
                     txIn.scriptSig = push(sig) + push(pub)
@@ -262,8 +264,11 @@ object Psbt {
     /** Direct push; signatures, keys and redeem scripts are all under 76 bytes. */
     private fun push(data: ByteArray): ByteArray = byteArrayOf(data.size.toByte()) + data
 
-    /** Signs every input this [keyFor] can serve (by pubkey from the derivation entries). */
-    fun sign(parsed: Parsed, keyFor: (String) -> HDKey?): ByteArray {
+    /**
+     * Test helper: signs every input this [keyFor] can serve as Native Segwit, without the
+     * ownership checks [PsbtSigner] makes. The app signs through [PsbtSigner] only.
+     */
+    internal fun sign(parsed: Parsed, keyFor: (String) -> HDKey?): ByteArray {
         val sigsPerInput = parsed.inputs.mapIndexed { i, input ->
             val pubHex = input.derivations.keys.firstOrNull()
                 ?: input.partialSigs.keys.firstOrNull()

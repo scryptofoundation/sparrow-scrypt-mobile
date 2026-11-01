@@ -31,14 +31,14 @@ class AirgapUrTest {
     private fun fakePsbt(size: Int, seed: Int) = magic + Random(seed).nextBytes(size)
 
     @Test fun accountExportDecodesToTheSameXpubDesktopWould() {
-        val ur = AirgapUr.accountExport(master, account, path)
+        val ur = AirgapUr.accountExport(master, account, path, ScriptType.P2WPKH)
         assertEquals("crypto-account", ur.type)
         assertEquals(master.fingerprint.toHex() to account.xpub(Network.TESTNET.xpubHeader),
             AirgapUr.desktopXpub(ur, Network.TESTNET.xpubHeader))
     }
 
     @Test fun accountExportCarriesOriginAndNoUseInfo() {
-        val account = AirgapUr.accountExport(master, this.account, path).decodeFromRegistry() as CryptoAccount
+        val account = AirgapUr.accountExport(master, this.account, path, ScriptType.P2WPKH).decodeFromRegistry() as CryptoAccount
         assertContentEquals(master.fingerprint, account.masterFingerprint)
         val output = account.outputDescriptors.single()
         assertEquals(listOf(ScriptExpression.WITNESS_PUBLIC_KEY_HASH), output.scriptExpressions)
@@ -108,7 +108,7 @@ class AirgapUrTest {
     }
 
     @Test fun completedNonPsbtUrIsIgnored() {
-        val single = com.sparrowwallet.hummingbird.UREncoder.encode(AirgapUr.accountExport(master, account, path))
+        val single = com.sparrowwallet.hummingbird.UREncoder.encode(AirgapUr.accountExport(master, account, path, ScriptType.P2WPKH))
         val col = AirgapUr.PsbtCollector()
         assertEquals(AirgapUr.Progress.Ignored, col.receive(single))
         // and the collector still works afterwards
