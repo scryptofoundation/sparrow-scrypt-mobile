@@ -67,6 +67,17 @@ object OtherWallets {
     )
 
     /**
+     * A reason the vaults can't all be saved under their names, checked before any is sealed: a
+     * name the 40-character file limit cuts into another's, or a wallet that already exists.
+     */
+    fun restoreNamesProblem(vaults: List<RestoreVault>, exists: (String) -> Boolean): String? {
+        val files = vaults.map { walletFileName(it.name) }
+        if(files.any { it.isEmpty() }) return "Give the wallet a name"
+        if(files.toSet().size < files.size) return "Choose a shorter name, so the wallet and its private wallet both fit"
+        return files.firstOrNull(exists)?.let { "A wallet named \"$it\" already exists" }
+    }
+
+    /**
      * The vaults a restore seals: the public wallet, then for Cake Litecoin with [includeMweb] its MWEB
      * wallet from the same seed. Electrum is checked first for Cake Litecoin, as Cake does: a BIP39
      * phrase passes the Electrum check about 1 in 4096 times, an Electrum phrase BIP39's about 1 in 16.
@@ -81,7 +92,7 @@ object OtherWallets {
         val seedType: String
         val derivation: String
         if(electrum) {
-            require(ElectrumSeed.defaultDerivation(phrase) == "m/0'") { "This is not a Native Segwit Electrum seed" }
+            //ElectrumSeed only recognises segwit seeds, whose path is m/0'
             seedType = "ELECTRUM"
             derivation = "m/0'"
         } else {
@@ -103,7 +114,8 @@ object OtherWallets {
         )
         val vaults = mutableListOf(RestoreVault(name, public))
         if(includeMweb && app.mwebOption && account.coin == Coin.LITECOIN) {
-            vaults += RestoreVault("$name Private", public.copy(passphrase = "", derivationPath = "m/1000'", scriptType = "MWEB"))
+            //the same seed, passphrase included, as desktop's same-seed MWEB child wallet
+            vaults += RestoreVault("$name Private", public.copy(derivationPath = "m/1000'", scriptType = "MWEB"))
         }
         return vaults
     }

@@ -57,6 +57,12 @@ class HttpKeepAliveTest {
             if(mode == Mode.HANGS_AFTER_FIRST && served > 0) { Thread.sleep(10_000); return }
             if(mode == Mode.DROPS_POSTS && method == "POST") return
             served++
+            when(path) {
+                "/204" -> { out.write("HTTP/1.1 204 X\r\n\r\n".encodeToByteArray()); out.flush(); continue }
+                "/100" -> { out.write("HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 X\r\nContent-Length: 1\r\n\r\n5".encodeToByteArray()); out.flush(); continue }
+                "/huge" -> { out.write("HTTP/1.1 200 X\r\nContent-Length: 5000000\r\n\r\n".encodeToByteArray()); out.flush(); continue }
+                "/slow" -> { Thread.sleep(1_500); out.write("HTTP/1.1 200 X\r\nContent-Length: 1\r\n\r\n5".encodeToByteArray()); out.flush(); continue }
+            }
             val (status, body) = when {
                 path == "/blocks/tip/height" -> 200 to "5"
                 method == "POST" && path == "/tx" -> 200 to "ab".repeat(32)
@@ -184,5 +190,44 @@ class HttpKeepAliveTest {
         b.connect()
         assertEquals(5L, b.tipHeight())
         assertEquals(1, accepts.get())
+    }
+
+    private fun endpoint(timeoutMs: Int = 5_000) =
+        HttpEndpoint("http://127.0.0.1:${server.localPort}", timeoutMs = timeoutMs, deadlineMs = 10_000L)
+
+    @Test fun bodilessAnswerDoesNotWait(): Unit = runBlocking {
+        val e = endpoint()
+        val started = System.currentTimeMillis()
+        assertEquals(204, e.get("/204").status)
+        assertTrue(System.currentTimeMillis() - started < 2_000, "a 204 has no body to wait for")
+        assertEquals("5", e.get("/blocks/tip/height").body)
+        assertEquals(1, accepts.get())
+    }
+
+    @Test fun interimAnswerIsSkipped(): Unit = runBlocking {
+        val r = endpoint().get("/100")
+        assertEquals(200, r.status)
+        assertEquals("5", r.body)
+    }
+
+    @Test fun slowFirstByteIsNotSentAgain(): Unit = runBlocking {
+        val e = endpoint(timeoutMs = 500)
+        e.get("/blocks/tip/height")
+        assertFailsWith<IOException> { e.get("/slow") }
+        assertEquals(2, requests.get(), "a slow server is not a dead one: the GET is not resent")
+    }
+
+    @Test fun overCapAnswerDropsTheConnection(): Unit = runBlocking {
+        val e = endpoint()
+        assertFailsWith<IOException> { e.get("/huge") }
+        assertEquals("5", e.get("/blocks/tip/height").body)
+        assertEquals(2, accepts.get())
+    }
+
+    @Test fun timingLogBlanksTxidsInEveryRoute() {
+        val txid = "ab".repeat(32)
+        assertEquals("/address/*/txs/chain/*", HttpEndpoint.route("/address/xyz/txs/chain/$txid"))
+        assertEquals("/tx/*/status", HttpEndpoint.route("/tx/$txid/status"))
+        assertEquals("/scripthash/*/utxo", HttpEndpoint.route("/scripthash/${"cd".repeat(32)}/utxo"))
     }
 }

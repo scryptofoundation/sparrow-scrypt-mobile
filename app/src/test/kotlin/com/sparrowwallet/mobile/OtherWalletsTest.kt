@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import kotlin.test.assertNull
 import com.sparrowwallet.mobile.crypto.Addresses
 import com.sparrowwallet.mobile.crypto.Bip39
 import com.sparrowwallet.mobile.crypto.ChainParams
@@ -17,6 +18,8 @@ import kotlin.test.assertTrue
 class OtherWalletsTest {
     private val abandon = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
     private val electrumPhrase = "coach fan denial rifle frost rival join install one wasp cool antique"
+    /** Found by search: a valid BIP39 phrase that is also a segwit Electrum seed (prefix 100). */
+    private val overlap = "amazing family wife barrel nasty candy galaxy buddy siren time wing point"
 
     private fun app(name: String) = OtherWallets.ALL.first { it.name == name }
 
@@ -89,7 +92,7 @@ class OtherWalletsTest {
         assertEquals("MWEB", mweb.scriptType)
         assertEquals("m/1000'", mweb.derivationPath)
         assertEquals("litecoin", mweb.coin)
-        assertEquals("", mweb.passphrase)
+        assertEquals(pair[0].data.passphrase, mweb.passphrase)
         assertEquals(pair[0].data.mnemonic, mweb.mnemonic)
         assertEquals(pair[0].data.seedType, mweb.seedType)
         assertEquals(1, vaults("Cake Wallet", Coin.LITECOIN, includeMweb = false).size)
@@ -111,5 +114,33 @@ class OtherWalletsTest {
             assertEquals("mainnet", data.network)
             assertEquals(account.derivationPath, data.derivationPath)
         }
+    }
+
+    @Test
+    fun cakeMwebVaultKeepsThePassphrase() {
+        val pair = vaults("Cake Wallet", Coin.LITECOIN, includeMweb = true, userPassphrase = "pp")
+        assertEquals("pp", pair[0].data.passphrase)
+        assertEquals("pp", pair[1].data.passphrase)
+    }
+
+    @Test
+    fun pairNamesThatCollideAreRefusedBeforeSaving() {
+        val long = "x".repeat(40)
+        val pair = vaults("Cake Wallet", Coin.LITECOIN, includeMweb = true).map { it.copy(name = it.name.replace("W", long)) }
+        assertTrue(OtherWallets.restoreNamesProblem(pair) { false }!!.contains("shorter"))
+        val ok = vaults("Cake Wallet", Coin.LITECOIN, includeMweb = true)
+        assertNull(OtherWallets.restoreNamesProblem(ok) { false })
+        assertEquals("A wallet named \"W Private\" already exists", OtherWallets.restoreNamesProblem(ok) { it == "W Private" })
+    }
+
+    @Test
+    fun cakeOverlapPhraseRestoresAsElectrum() {
+        //valid BIP39 and a segwit Electrum seed at once (1 in ~4096 phrases): Cake makes the Electrum one
+        assertTrue(Bip39.isValid(overlap))
+        assertTrue(ElectrumSeed.isValid(overlap))
+        val data = vaults("Cake Wallet", Coin.LITECOIN, phrase = overlap).first().data
+        assertEquals("ELECTRUM", data.seedType)
+        assertEquals("m/0'", data.derivationPath)
+        assertEquals("BIP39", vaults("MyDoge", Coin.DOGECOIN, phrase = overlap).first().data.seedType)
     }
 }

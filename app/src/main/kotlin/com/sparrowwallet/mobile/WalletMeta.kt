@@ -8,6 +8,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
+/** A wallet's file name on disk: unsafe characters become _, at most 40 characters. */
+fun walletFileName(name: String): String =
+    name.trim().map { if(it.isLetterOrDigit() || it == ' ' || it == '-' || it == '_') it else '_' }
+        .joinToString("").take(40)
+
 /**
  * The unencrypted `.meta` file beside each vault: what the wallet list needs without a password.
  * Files written before the coin field read as Litecoin; an unknown coin is an error. Balances never go here.

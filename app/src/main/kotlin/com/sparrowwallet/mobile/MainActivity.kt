@@ -2092,6 +2092,7 @@ private fun SendScreen(
                     repo.invalidateSnapshots(publicData, privateData)
                 }
             } catch(t: Throwable) {
+                publicData?.let { repo.forgetScan(it) } // a spent coin in the scan: the next Preview scans again
                 error = t.message ?: "Broadcast failed"
             } finally {
                 busy = false

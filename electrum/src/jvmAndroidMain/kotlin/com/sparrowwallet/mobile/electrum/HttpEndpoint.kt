@@ -164,7 +164,8 @@ class HttpEndpoint(
             c?.let { drop(it) } ?: runCatching { raw.close() }
             if(NetworkPolicy.blocked) throw AirGappedException("Esplora")
             if(expired.get()) throw IOException("Request took too long", e)
-            if(kept != null && !answered) throw StaleConnection(e)
+            //a dead kept socket ends or resets at once; a slow server times out and must not get the GET twice
+            if(kept != null && !answered && e !is java.net.SocketTimeoutException) throw StaleConnection(e)
             throw e
         } catch(e: Throwable) {
             c?.let { drop(it) } ?: runCatching { raw.close() }
@@ -183,6 +184,19 @@ class HttpEndpoint(
 
     /** The response, and whether the connection can carry another request. */
     private fun readResponse(input: InputStream, onFirstByte: () -> Unit): Pair<Response, Boolean> {
+        var interim = 0
+        while(true) {
+            val (lines, status) = readHead(input, onFirstByte)
+            //1xx answers are interim: the real one follows on the same connection
+            if(status in 100..199) {
+                if(++interim > 8) throw IOException("Too many interim answers")
+                continue
+            }
+            return readRest(input, lines, status)
+        }
+    }
+
+    private fun readHead(input: InputStream, onFirstByte: () -> Unit): Pair<List<String>, Int> {
         val headerBytes = ByteArrayOutputStream()
         var matched = 0
         while(matched < 4) {
@@ -195,12 +209,17 @@ class HttpEndpoint(
         }
         val lines = headerBytes.toString(Charsets.ISO_8859_1.name()).split("\r\n")
         val status = lines[0].split(" ").getOrNull(1)?.toIntOrNull() ?: throw IOException("Not an HTTP response")
+        return lines to status
+    }
+
+    private fun readRest(input: InputStream, lines: List<String>, status: Int): Pair<Response, Boolean> {
         val headers = lines.drop(1).mapNotNull { line ->
             val colon = line.indexOf(':')
             if(colon > 0) line.substring(0, colon).trim().lowercase() to line.substring(colon + 1).trim() else null
         }.toMap()
         var framed = true
         val body = when {
+            status == 204 || status == 304 -> ByteArray(0) // never carry a body
             headers["transfer-encoding"]?.lowercase()?.contains("chunked") == true -> readChunked(input)
             headers["content-length"] != null -> {
                 val text = headers["content-length"]!!
@@ -279,8 +298,8 @@ class HttpEndpoint(
          */
         @Volatile var timingLog: ((String) -> Unit)? = null
 
-        private fun route(path: String): String =
-            path.replace(Regex("/(address|scripthash)/[^/]+"), "/$1/*").replace(Regex("/tx/[0-9a-fA-F]{64}"), "/tx/*")
+        internal fun route(path: String): String =
+            path.replace(Regex("/(address|scripthash)/[^/]+"), "/$1/*").replace(Regex("/[0-9a-fA-F]{64}(?=/|$)"), "/*")
 
         /** Closes sockets whose request outlived its deadline; one daemon thread for all endpoints. */
         private val DEADLINES = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "http-deadline").apply { isDaemon = true } }

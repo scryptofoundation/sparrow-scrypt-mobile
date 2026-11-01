@@ -67,9 +67,7 @@ class WalletRepository(context: Context) {
         val coin: Coin = Coin.LITECOIN
     )
 
-    private fun safeName(name: String): String =
-        name.trim().map { if(it.isLetterOrDigit() || it == ' ' || it == '-' || it == '_') it else '_' }
-            .joinToString("").take(40)
+    private fun safeName(name: String): String = walletFileName(name)
 
     private fun vaultFile(name: String) = File(walletsDir, "${safeName(name)}.vault")
     private fun metaFile(name: String) = File(walletsDir, "${safeName(name)}.meta")
@@ -256,6 +254,7 @@ class WalletRepository(context: Context) {
             saveWallet(v.name, mnemonic, passphrase, password, Network.fromId(network), derivationPath, scriptType,
                 seedType, coin = Coin.fromId(coin))
         }
+        OtherWallets.restoreNamesProblem(vaults) { vaultFile(it).exists() }?.let { throw IllegalArgumentException(it) }
         val first = vaults.first()
         save(first)?.let { throw IllegalArgumentException(it) }
         val second = vaults.getOrNull(1) ?: return safeName(first.name)
@@ -558,18 +557,22 @@ class WalletRepository(context: Context) {
         for(data in wallets.filterNotNull()) {
             snapshotAt.remove(data)
             mwebSnapshotAt.remove(data)
-            lastScan.remove(data)
+            lastScan.clear(data)
         }
     }
 
     /** The Send screen's coin scan, reused by the send it builds while fresh (see [reusableScan]). */
-    private class ScanAt(val scan: WalletScanner.UtxoScan, val tip: Long, val atMs: Long)
-    private val lastScan = java.util.concurrent.ConcurrentHashMap<VaultData, ScanAt>()
+    private val lastScan = ScanCache<VaultData, WalletScanner.UtxoScan>()
+
+    /** Forgets the reused coin scan, after a broadcast failed: the next Preview scans again. */
+    fun forgetScan(data: VaultData) = lastScan.clear(data)
 
     private suspend fun scanCoins(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType): Pair<WalletScanner.UtxoScan, Long> {
-        lastScan[data]?.takeIf { reusableScan(it.atMs, System.currentTimeMillis()) }?.let { return it.scan to it.tip }
+        lastScan.fresh(data, System.currentTimeMillis())?.let { return it }
         val tip = client.tipHeight()
-        return WalletScanner(client, scriptType).utxos(account) to tip
+        val scan = WalletScanner(client, scriptType).utxos(account)
+        lastScan.put(data, scan, tip, System.currentTimeMillis())
+        return scan to tip
     }
 
     fun snapshotFresh(data: VaultData, maxAgeMs: Long = 60_000): Boolean =
@@ -819,7 +822,7 @@ class WalletRepository(context: Context) {
         withBackend(coin(data), network(data)) { client ->
             val tip = client.tipHeight()
             val scan = WalletScanner(client, scriptType(data)).utxos(account)
-            lastScan[data] = ScanAt(scan, tip, System.currentTimeMillis())
+            lastScan.put(data, scan, tip, System.currentTimeMillis())
             scan.utxos
                 .filter { confirmedEnough(tip, it.utxo.height) }
                 .map { it.utxo.value }

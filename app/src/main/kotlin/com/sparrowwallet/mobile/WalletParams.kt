@@ -46,6 +46,23 @@ fun externalSigningSupported(coin: Coin, scriptType: String): Boolean =
 internal fun reusableScan(scannedAtMs: Long?, nowMs: Long, maxAgeMs: Long = 120_000): Boolean =
     scannedAtMs != null && nowMs >= scannedAtMs && nowMs - scannedAtMs <= maxAgeMs
 
+/** Coin scans per wallet, reused while [reusableScan] says they are fresh; never written to disk. */
+internal class ScanCache<K, S> {
+    private class Entry<S>(val scan: S, val tip: Long, val atMs: Long)
+    private val entries = java.util.concurrent.ConcurrentHashMap<K, Entry<S>>()
+
+    fun put(key: K, scan: S, tip: Long, nowMs: Long) {
+        entries[key] = Entry(scan, tip, nowMs)
+    }
+
+    fun fresh(key: K, nowMs: Long): Pair<S, Long>? =
+        entries[key]?.takeIf { reusableScan(it.atMs, nowMs) }?.let { it.scan to it.tip }
+
+    fun clear(key: K) {
+        entries.remove(key)
+    }
+}
+
 /**
  * The spendable inputs of a scan (at least [minConfirmations] deep at [tip]) as the wallet's
  * script type, and the change script at the first unused change index.

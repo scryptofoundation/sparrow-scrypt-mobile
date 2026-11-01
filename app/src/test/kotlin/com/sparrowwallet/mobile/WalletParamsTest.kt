@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import kotlin.test.assertNull
 import com.sparrowwallet.mobile.crypto.Bip39
 import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.mobile.crypto.Coin
@@ -99,5 +100,17 @@ class WalletParamsTest {
         assertFalse(reusableScan(scannedAtMs = 1_000, nowMs = 200_000))
         assertFalse(reusableScan(scannedAtMs = null, nowMs = 5))
         assertFalse(reusableScan(scannedAtMs = 10_000, nowMs = 5_000)) // a clock that went back
+    }
+
+    @Test
+    fun scanCacheKeepsAFreshScanUntilCleared() {
+        val cache = ScanCache<String, String>()
+        assertNull(cache.fresh("w", 0))
+        cache.put("w", "scan", tip = 7, nowMs = 1_000)
+        assertEquals("scan" to 7L, cache.fresh("w", 60_000))
+        assertNull(cache.fresh("w", 200_000))
+        cache.put("w", "scan2", tip = 8, nowMs = 1_000)
+        cache.clear("w")
+        assertNull(cache.fresh("w", 2_000))
     }
 }
