@@ -4,11 +4,12 @@ import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 /**
- * BIP174 partially-signed transactions for the external-signer flow, scoped to what
- * this wallet produces: P2WPKH inputs with witness utxos and BIP32 derivations.
+ * BIP174 partially-signed transactions for the external-signer flow, scoped to what this wallet
+ * produces: single-key Legacy (P2PKH), Nested Segwit (P2SH-P2WPKH) and Native Segwit (P2WPKH)
+ * inputs with BIP32 derivations. Segwit inputs carry a witness utxo (and nested ones their redeem
+ * script); any input can carry its full previous transaction, which a Legacy input must.
  * The creator emits everything a hardware wallet or desktop Sparrow needs to sign;
  * the finalizer accepts the signed result and extracts the network transaction.
- * For P2WPKH the txid excludes witnesses, so it is identical before and after signing.
  */
 object Psbt {
     private val MAGIC = byteArrayOf(0x70, 0x73, 0x62, 0x74, 0xFF.toByte()) // "psbt\xff"
@@ -17,7 +18,9 @@ object Psbt {
     private const val IN_NON_WITNESS_UTXO = 0x00
     private const val IN_WITNESS_UTXO = 0x01
     private const val IN_PARTIAL_SIG = 0x02
+    private const val IN_REDEEM_SCRIPT = 0x04
     private const val IN_BIP32_DERIVATION = 0x06
+    private const val IN_FINAL_SCRIPTSIG = 0x07
     private const val IN_FINAL_SCRIPTWITNESS = 0x08
     private const val OUT_BIP32_DERIVATION = 0x02
 
@@ -34,8 +37,18 @@ object Psbt {
         /** Every pair this phone does not interpret, in original order. */
         val unknown: List<Pair<ByteArray, ByteArray>> = emptyList(),
         /** Every pair as read, so re-encoding never drops or reorders anything. */
-        internal val entries: List<Pair<ByteArray, ByteArray>> = emptyList()
-    )
+        internal val entries: List<Pair<ByteArray, ByteArray>> = emptyList(),
+        /** A nested segwit input's redeem script (0014<key hash>). */
+        val redeemScript: ByteArray? = null,
+        /** A scriptSig another signer already finalized. */
+        val finalScriptSig: ByteArray? = null
+    ) {
+        /** The output this input spends: from the witness utxo, else from the previous transaction. */
+        fun spentOutput(prevTxid: String, vout: Long): TxOutput? =
+            if(witnessUtxoScript != null && witnessUtxoValue != null) TxOutput(witnessUtxoValue, witnessUtxoScript)
+            else nonWitnessUtxo?.let { raw -> runCatching { RawTx.parse(raw) }.getOrNull()
+                ?.takeIf { it.txid == prevTxid }?.outputs?.getOrNull(vout.toInt()) }
+    }
 
     class PsbtOutput(
         /** pubkey hex → master fingerprint (4) + path child numbers. */
@@ -78,8 +91,25 @@ object Psbt {
 
         for(input in unsigned.inputs) {
             val pub = input.key.pubKey
-            writeEntry(w, byteArrayOf(IN_WITNESS_UTXO.toByte()),
-                ByteWriter().u64le(input.value).varBytes(Scripts.p2wpkhOutput(pub)).toByteArray())
+            val spentScript = Scripts.outputScript(pub, input.scriptType)
+            input.prevTx?.let { raw ->
+                val spent = runCatching { RawTx.parse(raw) }.getOrNull()?.takeIf { it.txid == input.txid }
+                    ?.outputs?.getOrNull(input.vout.toInt())
+                require(spent != null && spent.value == input.value && spent.script.contentEquals(spentScript)) {
+                    "The previous transaction for ${input.txid}:${input.vout} does not match the coin"
+                }
+                writeEntry(w, byteArrayOf(IN_NON_WITNESS_UTXO.toByte()), raw)
+            }
+            when(input.scriptType) {
+                ScriptType.P2PKH -> require(input.prevTx != null) { "A Legacy input needs its previous transaction" }
+                ScriptType.P2SH_P2WPKH -> {
+                    writeEntry(w, byteArrayOf(IN_WITNESS_UTXO.toByte()),
+                        ByteWriter().u64le(input.value).varBytes(spentScript).toByteArray())
+                    writeEntry(w, byteArrayOf(IN_REDEEM_SCRIPT.toByte()), Scripts.p2wpkhOutput(pub))
+                }
+                ScriptType.P2WPKH -> writeEntry(w, byteArrayOf(IN_WITNESS_UTXO.toByte()),
+                    ByteWriter().u64le(input.value).varBytes(spentScript).toByteArray())
+            }
             writeEntry(w, byteArrayOf(IN_BIP32_DERIVATION.toByte()) + pub,
                 derivationValue(masterFingerprint, pathFor(input)))
             w.bytes(ByteArray(1))
@@ -124,6 +154,8 @@ object Psbt {
             val sigs = HashMap<String, ByteArray>()
             val derivations = HashMap<String, Pair<ByteArray, List<Long>>>()
             var finalWitness: List<ByteArray>? = null
+            var redeemScript: ByteArray? = null
+            var finalScriptSig: ByteArray? = null
             val unknown = ArrayList<Pair<ByteArray, ByteArray>>()
             val entries = readEntries(r)
             for((key, value) in entries) {
@@ -137,6 +169,8 @@ object Psbt {
                     }
                     IN_PARTIAL_SIG -> sigs[key.copyOfRange(1, key.size).toHex()] = value
                     IN_BIP32_DERIVATION -> derivations[key.copyOfRange(1, key.size).toHex()] = parseDerivation(value)
+                    IN_REDEEM_SCRIPT -> redeemScript = value.also { requireBareKey(key) }
+                    IN_FINAL_SCRIPTSIG -> finalScriptSig = value.also { requireBareKey(key) }
                     IN_FINAL_SCRIPTWITNESS -> {
                         requireBareKey(key)
                         val vr = ByteReader(value)
@@ -149,7 +183,7 @@ object Psbt {
             }
             nonWitnessUtxo?.let { checkNonWitnessUtxo(i, it, tx.inputs[i], utxoValue, utxoScript) }
             inputs.add(PsbtInput(utxoValue, utxoScript, sigs, derivations, finalWitness,
-                nonWitnessUtxo, unknown, entries))
+                nonWitnessUtxo, unknown, entries, redeemScript, finalScriptSig))
         }
         val outputs = tx.outputs.indices.map {
             // some creators stop after the inputs; a missing output map reads as empty
@@ -191,21 +225,42 @@ object Psbt {
     }
 
     /**
-     * Finalizes a signed P2WPKH PSBT into the broadcastable transaction: each input
-     * needs either a final witness or exactly one partial signature.
+     * Finalizes a signed PSBT into the broadcastable transaction. An input another signer
+     * finalized keeps its final scriptSig and witness; otherwise its one partial signature is
+     * placed by the type of the output it spends: P2PKH a scriptSig of signature and key,
+     * P2SH-P2WPKH a scriptSig pushing the redeem script and a witness, P2WPKH a witness.
      */
     fun finalize(parsed: Parsed): Tx {
         for((i, input) in parsed.inputs.withIndex()) {
-            val witness = input.finalWitness ?: run {
-                val (pubHex, sig) = input.partialSigs.entries.firstOrNull()?.let { it.key to it.value }
-                    ?: throw IllegalArgumentException("Input ${i + 1} has no signature — sign the PSBT first")
-                listOf(sig, pubHex.hexToBytes())
+            val txIn = parsed.tx.inputs[i]
+            if(input.finalScriptSig != null || input.finalWitness != null) {
+                txIn.scriptSig = input.finalScriptSig ?: ByteArray(0)
+                txIn.witness = input.finalWitness ?: emptyList()
+                continue
             }
-            require(witness.size == 2) { "Input ${i + 1}: unexpected witness shape for P2WPKH" }
-            parsed.tx.inputs[i].witness = witness
+            val (pubHex, sig) = input.partialSigs.entries.firstOrNull()?.let { it.key to it.value }
+                ?: throw IllegalArgumentException("Input ${i + 1} has no signature — sign the PSBT first")
+            val pub = pubHex.hexToBytes()
+            val spent = input.spentOutput(txIn.prevTxid, txIn.vout)?.script
+                ?: throw IllegalArgumentException("Input ${i + 1} has no witness utxo or previous transaction")
+            when {
+                spent.contentEquals(Scripts.p2pkhOutput(pub)) -> {
+                    txIn.scriptSig = push(sig) + push(pub)
+                    txIn.witness = emptyList()
+                }
+                spent.contentEquals(Scripts.outputScript(pub, ScriptType.P2SH_P2WPKH)) -> {
+                    txIn.scriptSig = push(Scripts.p2wpkhOutput(pub))
+                    txIn.witness = listOf(sig, pub)
+                }
+                spent.contentEquals(Scripts.p2wpkhOutput(pub)) -> txIn.witness = listOf(sig, pub)
+                else -> throw IllegalArgumentException("Input ${i + 1}: the signature's key does not own the coin")
+            }
         }
         return parsed.tx
     }
+
+    /** Direct push; signatures, keys and redeem scripts are all under 76 bytes. */
+    private fun push(data: ByteArray): ByteArray = byteArrayOf(data.size.toByte()) + data
 
     /** Signs every input this [keyFor] can serve (by pubkey from the derivation entries). */
     fun sign(parsed: Parsed, keyFor: (String) -> HDKey?): ByteArray {

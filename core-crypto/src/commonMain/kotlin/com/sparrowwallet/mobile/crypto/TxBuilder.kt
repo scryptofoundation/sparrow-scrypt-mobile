@@ -2,13 +2,17 @@ package com.sparrowwallet.mobile.crypto
 
 import kotlin.math.ceil
 
-/** A utxo the wallet can spend, paired with the key that owns it and the wallet's script type. */
+/**
+ * A utxo the wallet can spend, paired with the key that owns it and the wallet's script type.
+ * [prevTx] is the serialized transaction that created it, for a PSBT's signer (Legacy needs it).
+ */
 class SpendableInput(
     val txid: String, // display (big-endian) hex
     val vout: Long,
     val value: Long,  // smallest units (litoshis, sats)
     val key: HDKey,
-    val scriptType: ScriptType
+    val scriptType: ScriptType,
+    val prevTx: ByteArray? = null
 )
 
 class BuiltTx(val tx: Tx, val amount: Long, val fee: Long, val change: Long) {
