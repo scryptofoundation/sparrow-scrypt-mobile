@@ -9,13 +9,18 @@ import kotlinx.serialization.json.longOrNull
 
 /** [ChainBackend] over an Electrum server (Litecoin, Dogecoin, Dingocoin). */
 class ElectrumBackend(private val client: ElectrumClient) : ChainBackend {
+    private var version: List<String>? = null
+
     override suspend fun connect() {
         client.connect()
-        client.serverVersion()
+        version = client.serverVersion()
     }
 
-    /** server.version of the connected server: [software, protocol]. */
-    suspend fun serverVersion(): List<String> = client.serverVersion()
+    /**
+     * server.version of the connected server: [software, protocol]. The handshake's answer:
+     * ElectrumX refuses a second server.version on the same connection.
+     */
+    suspend fun serverVersion(): List<String> = version ?: client.serverVersion().also { version = it }
 
     override suspend fun balance(script: ByteArray): Balance = client.getBalance(ElectrumProtocol.scriptHash(script))
 
