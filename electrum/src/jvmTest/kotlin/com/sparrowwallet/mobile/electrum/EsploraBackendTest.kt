@@ -339,4 +339,30 @@ class EsploraBackendTest {
         val b = EsploraBackend(base, params).also { it.connect() }
         assertEquals(listOf(Utxo(T1, 1, 42, 5000), Utxo(T2, 0, 0, 7000)), b.unspent(script))
     }
+
+    private val rawA = "0200000001" + "11".repeat(32) + "00000000" + "00" + "fdffffff" + "01" + "e803000000000000" + "0151" + "00000000"
+    private val rawB = "0200000001" + "22".repeat(32) + "00000000" + "00" + "fdffffff" + "01" + "e803000000000000" + "0151" + "00000000"
+
+    @Test fun rawTransactionIsFetched(): Unit = runBlocking {
+        val txid = com.sparrowwallet.mobile.crypto.RawTx.parse(rawA.hexToBytes()).txid
+        routes = { _, path, _ -> if(path == "/blocks/tip/height") 200 to "5" else if(path == "/tx/$txid/hex") 200 to rawA else 404 to "" }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(rawA, b.rawTransaction(txid).toHex())
+    }
+
+    @Test fun rawTransactionWithAnotherTxidIsRefused(): Unit = runBlocking {
+        val txid = com.sparrowwallet.mobile.crypto.RawTx.parse(rawA.hexToBytes()).txid
+        routes = { _, path, _ -> if(path == "/blocks/tip/height") 200 to "5" else if(path == "/tx/$txid/hex") 200 to rawB else 404 to "" }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        val e = assertFailsWith<IOException> { b.rawTransaction(txid) }
+        assertTrue("different transaction" in e.message!!, e.message)
+    }
+
+    @Test fun rawTransactionThatIsNotHexIsRefused() {
+        val txid = com.sparrowwallet.mobile.crypto.RawTx.parse(rawA.hexToBytes()).txid
+        assertFailsWith<IOException> { verifiedRawTransaction(txid, "zz" + rawA.drop(2)) }
+        assertFailsWith<IOException> { verifiedRawTransaction(txid, rawA.dropLast(1)) }
+        assertFailsWith<IOException> { verifiedRawTransaction(txid, "") }
+        assertEquals(rawA, verifiedRawTransaction(txid, "  " + rawA.uppercase() + "\n").toHex())
+    }
 }

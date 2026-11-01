@@ -169,6 +169,12 @@ class EsploraBackend(
         )
     }
 
+    override suspend fun rawTransaction(txid: String): ByteArray {
+        val r = get("/tx/${requireTxid(txid)}/hex")
+        if(r.status != 200) throw IOException(failure(r))
+        return verifiedRawTransaction(txid, r.body)
+    }
+
     override suspend fun broadcast(txHex: String): String {
         val r = withRateLimit { http.post("/tx", txHex) }
         if(r.status == 404 || r.status == 405) {

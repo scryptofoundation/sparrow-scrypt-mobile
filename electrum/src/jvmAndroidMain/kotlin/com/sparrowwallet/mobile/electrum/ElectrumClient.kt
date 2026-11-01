@@ -119,6 +119,10 @@ class ElectrumClient(
     suspend fun getTransactionVerbose(txid: String): JsonObject =
         call("blockchain.transaction.get", listOf(JsonPrimitive(txid), JsonPrimitive(true))).jsonObject
 
+    /** The serialized transaction as hex (blockchain.transaction.get, not verbose). */
+    suspend fun getTransactionHex(txid: String): String =
+        call("blockchain.transaction.get", listOf(JsonPrimitive(txid), JsonPrimitive(false))).jsonPrimitive.content
+
     suspend fun broadcast(txHex: String): String =
         call("blockchain.transaction.broadcast", listOf(JsonPrimitive(txHex))).jsonPrimitive.content
 

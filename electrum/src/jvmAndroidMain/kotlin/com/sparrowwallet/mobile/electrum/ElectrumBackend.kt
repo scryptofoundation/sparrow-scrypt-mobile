@@ -25,6 +25,8 @@ class ElectrumBackend(private val client: ElectrumClient) : ChainBackend {
 
     override suspend fun transaction(txid: String): TxDetail = toTxDetail(client.getTransactionVerbose(txid))
 
+    override suspend fun rawTransaction(txid: String): ByteArray = verifiedRawTransaction(txid, client.getTransactionHex(txid))
+
     override suspend fun broadcast(txHex: String): String = client.broadcast(txHex)
 
     override suspend fun tipHeight(): Long = client.tipHeight()

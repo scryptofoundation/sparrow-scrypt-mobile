@@ -19,7 +19,7 @@ class LiveBackendsTest {
     private val enabled = System.getenv("LIVE_BACKENDS") == "1"
     private val master = HDKey.fromSeed(Bip39.seed("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"))
 
-    private fun check(label: String, params: ChainParams, open: () -> ChainBackend) = runBlocking {
+    private fun check(label: String, params: ChainParams, knownTxid: String? = null, open: () -> ChainBackend) = runBlocking {
         val script = Scripts.outputScript(master.derivePath(params.derivationPath(ScriptType.P2PKH)).deriveChild(0).deriveChild(0).pubKey, ScriptType.P2PKH)
         val backend = open()
         try {
@@ -27,7 +27,10 @@ class LiveBackendsTest {
             val tip = backend.tipHeight()
             val history = backend.history(script)
             val fee = backend.feeRate(2)
-            println("$label: tip $tip, history ${history.size}, fee $fee sat/vB")
+            //a previous transaction for a PSBT: fetched raw and checked to hash to its txid
+            val rawOf = knownTxid ?: history.firstOrNull()?.txHash
+            val raw = rawOf?.let { backend.rawTransaction(it).size }
+            println("$label: tip $tip, history ${history.size}, fee $fee sat/vB, raw tx ${raw ?: "-"} bytes")
             assertTrue(tip > 0, label)
             assertTrue(fee == null || fee > 0, label)
         } finally {
@@ -38,7 +41,7 @@ class LiveBackendsTest {
     @Test fun everyCoinsPublicBackendAnswers() {
         if(!enabled) return
         val pepTest = ChainParams.of(Coin.PEPECOIN, Network.TESTNET)
-        check("PEP testnet Esplora", pepTest) { EsploraBackend("https://pepe-testnet-api.nintondo.io", pepTest) }
+        check("PEP testnet Esplora", pepTest, "32d175436190a9d2dcf0cd0c70d101520ebb274f8e2f383cab17585a4477f2ef") { EsploraBackend("https://pepe-testnet-api.nintondo.io", pepTest) }
         val jkcTest = ChainParams.of(Coin.JUNKCOIN, Network.TESTNET)
         check("JKC testnet Esplora", jkcTest) { EsploraBackend("https://jkc-testnet-api.s3na.xyz", jkcTest) }
         val doge = ChainParams.of(Coin.DOGECOIN, Network.MAINNET)

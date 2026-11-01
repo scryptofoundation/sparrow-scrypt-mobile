@@ -35,6 +35,12 @@ interface ChainBackend {
 
     suspend fun transaction(txid: String): TxDetail
 
+    /**
+     * The serialized transaction, checked to hash to [txid] (a previous transaction a PSBT carries
+     * for its signer). A server answering another transaction is an error.
+     */
+    suspend fun rawTransaction(txid: String): ByteArray
+
     /** Broadcasts a raw transaction and returns its txid. */
     suspend fun broadcast(txHex: String): String
 

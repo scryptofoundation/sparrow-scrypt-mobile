@@ -26,6 +26,7 @@ class WalletScannerTest {
         override suspend fun history(script: ByteArray) = histories[script.toHex()] ?: emptyList()
         override suspend fun unspent(script: ByteArray) = utxos[script.toHex()] ?: emptyList()
         override suspend fun transaction(txid: String): TxDetail { txRequests += txid; return txs.getValue(txid) }
+        override suspend fun rawTransaction(txid: String): ByteArray = error("not used")
         override suspend fun broadcast(txHex: String) = error("not used")
         override suspend fun tipHeight() = 100L
         override suspend fun feeRate(targetBlocks: Int): Double? = null
