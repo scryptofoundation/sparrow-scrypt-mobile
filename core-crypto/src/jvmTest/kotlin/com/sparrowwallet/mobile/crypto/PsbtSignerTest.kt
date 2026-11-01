@@ -33,7 +33,7 @@ class PsbtSignerTest {
         assertEquals(80_000_000L - r.totalOut, r.fee)
         assertEquals(listOf(true, true), r.inputs.map { it.ours })
         val vsize = parsed.unsignedTxBytes.size + ceil((2 + 108 * 2) / 4.0)
-        assertEquals(round(r.fee!! / vsize * 100) / 100, r.feeRateLitPerVb)
+        assertEquals(round(r.fee!! / vsize * 100) / 100, r.feeRatePerVb)
     }
 
     @Test fun changeWithForeignScriptIsNotChange() {
@@ -140,11 +140,20 @@ class PsbtSignerTest {
         assertEquals("Input 1: witness UTXO does not match this wallet's key", e.message)
     }
 
-    @Test fun notSegwitInputIsRefused() {
-        val noUtxo = edit(fixturePsbt()) { maps -> maps[1].removeAll { it.first[0].toInt() == 0x01 } }
+    @Test fun inputWithNeitherUtxoIsRefused() {
+        val noUtxo = edit(fixturePsbt()) { maps -> maps[1].removeAll { it.first[0].toInt() == 0x01 || it.first[0].toInt() == 0x00 } }
         val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(Psbt.parse(noUtxo), master, net, account) }
-        assertEquals("Input 1 is not native segwit (P2WPKH)", e.message)
+        assertEquals("Input 1 has no witness UTXO or previous transaction", e.message)
         assertNull(PsbtSigner.review(Psbt.parse(noUtxo), master, net, account).fee)
+    }
+
+    @Test fun segwitInputWithOnlyItsPreviousTxIsSigned() {
+        //the full previous transaction proves the amount a BIP143 signature commits to
+        val prevOnly = edit(fixturePsbt()) { maps -> maps[1].removeAll { it.first[0].toInt() == 0x01 } }
+        val signed = Psbt.parse(PsbtSigner.sign(Psbt.parse(prevOnly), master, net, account))
+        assertEquals(1, signed.inputs[0].partialSigs.size)
+        assertEquals(PsbtSigner.review(Psbt.parse(fixturePsbt()), master, net, account).fee,
+            PsbtSigner.review(Psbt.parse(prevOnly), master, net, account).fee)
     }
 
     @Test fun foreignInputsAreLeftUnsigned() {

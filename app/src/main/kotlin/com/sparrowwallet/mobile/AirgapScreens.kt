@@ -167,7 +167,7 @@ fun PsbtReviewCard(review: PsbtReview) {
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 review.fee?.let { fee ->
-                    "Fee ${formatAmount(Coin.LITECOIN, fee)}" + (review.feeRateLitPerVb?.let { " (%.2f lit/vB)".format(it) } ?: "")
+                    "Fee ${formatAmount(Coin.LITECOIN, fee)}" + (review.feeRatePerVb?.let { " (%.2f lit/vB)".format(it) } ?: "")
                 } ?: "Fee unknown",
                 style = MaterialTheme.typography.bodyMedium
             )
