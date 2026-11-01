@@ -410,7 +410,7 @@ private fun WalletListScreen(
                                 Text(w.name)
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp),
                                     modifier = Modifier.padding(top = 5.dp)) {
-                                    LayerTag(privateLayer = w.scriptType == "MWEB")
+                                    if(coin.mweb) LayerTag(privateLayer = w.scriptType == "MWEB")
                                     if(pairedPrivate) LayerTag(privateLayer = true)
                                 }
                             }
@@ -1951,6 +1951,7 @@ private fun SendScreen(
     val scope = rememberCoroutineScope()
     val network = remember(home.data) { repo.network(home.data) }
     val sendCoin = remember(publicData) { publicData?.let { repo.coin(it) } ?: Coin.LITECOIN }
+    val copy = remember(sendCoin) { sendCopy(sendCoin) }
     val publicAccount = remember(publicData) { publicData?.let { repo.accountKey(it) } }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
 
@@ -2103,7 +2104,7 @@ private fun SendScreen(
     ScreenColumn {
         Column {
             Text("Send", style = MaterialTheme.typography.headlineSmall)
-            Text("${network.displayName.uppercase()} · ONE WALLET, TWO LAYERS",
+            Text("${network.displayName.uppercase()} · ${copy.subtitle}",
                 fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -2125,7 +2126,7 @@ private fun SendScreen(
         OutlinedTextField(
             value = address,
             onValueChange = { address = it; preview = null },
-            label = { Text("Address (public or private)") },
+            label = { Text(copy.addressLabel) },
             isError = addressError != null,
             modifier = Modifier.fillMaxWidth()
         )
@@ -2151,7 +2152,7 @@ private fun SendScreen(
                         sendMax = false; preview = null
                     },
                     enabled = !busy, modifier = Modifier.weight(1f)
-                ) { Text("→ My Public") }
+                ) { Text(copy.toSelf) }
             }
             if(privateData != null) {
                 OutlinedButton(
@@ -2190,10 +2191,10 @@ private fun SendScreen(
             verticalAlignment = Alignment.CenterVertically) {
             SectionLabel("Paying from")
             if(fundingPrivate == null) {
-                Text(if(utxos == null) "checking coins…" else "not enough funds in either layer", fontFamily = MonoFont,
+                Text(if(utxos == null) "checking coins…" else copy.shortfall, fontFamily = MonoFont,
                     style = MaterialTheme.typography.bodySmall, maxLines = 1,
                     color = MaterialTheme.colorScheme.error)
-            } else {
+            } else if(copy.showLayers) {
                 LayerTag(privateLayer = fundingPrivate)
             }
         }
@@ -2214,7 +2215,7 @@ private fun SendScreen(
         publicAvail?.let { avail ->
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
-                SectionLabel("Public")
+                SectionLabel(copy.available)
                 Text("${formatAmountShort(sendCoin, avail)} · ${formatUsd(avail, usdRate)}",
                     fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall, maxLines = 1,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2238,9 +2239,9 @@ private fun SendScreen(
                         "≈ ${formatAmountShort(sendCoin, estimatedFee)} · ${formatUsd(estimatedFee, usdRate)}"
                     !amountEntered -> "…"
                     utxos == null && fundingPrivate != true -> "checking coins…"
-                    fundingPrivate == false -> "public coins can't cover this"
+                    fundingPrivate == false -> copy.cannotCover
                     fundingPrivate == true -> "private coins can't cover this"
-                    else -> "not enough funds in either layer"
+                    else -> copy.shortfall
                 },
                 fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall, maxLines = 1,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2256,13 +2257,13 @@ private fun SendScreen(
             onMaxToggle = { sendMax = !sendMax; preview = null },
             usdRate = usdRate,
             amountLitoshis = amountLitoshis,
-            maxHint = if(fundingPrivate == true) "Entire private balance" else "Entire public balance",
+            maxHint = if(fundingPrivate == true) "Entire private balance" else copy.maxHint,
             coin = sendCoin
         )
 
         (preview as? WalletRepository.SendPreview)?.let { p ->
             ReviewCard(listOf(
-                "From" to "Public layer",
+                "From" to copy.from,
                 "To" to shortAddress(p.toAddress),
                 "Amount" to "${formatAmount(sendCoin, p.amount)} · ${formatUsd(p.amount, usdRate)}",
                 "Fee" to "${formatAmount(sendCoin, p.fee)} · ${formatUsd(p.fee, usdRate)}",

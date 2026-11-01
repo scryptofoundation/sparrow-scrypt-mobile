@@ -44,6 +44,31 @@ fun externalSigningSupported(coin: Coin, scriptType: String): Boolean =
  */
 fun txidKnownBeforeSigning(scriptType: String): Boolean = scriptType == ScriptType.P2WPKH.name
 
+/** The Send screen's words for the public side; the private (MWEB) side has its own. */
+data class SendCopy(
+    val subtitle: String,
+    val addressLabel: String,
+    val toSelf: String,
+    val from: String,
+    val available: String,
+    val maxHint: String,
+    val shortfall: String,
+    val cannotCover: String,
+    val showLayers: Boolean
+)
+
+/**
+ * A Litecoin wallet is one wallet in two layers, public and private (MWEB), and the Send screen
+ * says so. Coins without MWEB have one layer, so none of that wording applies.
+ */
+fun sendCopy(coin: Coin): SendCopy = if(coin.mweb) {
+    SendCopy("ONE WALLET, TWO LAYERS", "Address (public or private)", "→ My Public", "Public layer",
+        "Public", "Entire public balance", "not enough funds in either layer", "public coins can't cover this", true)
+} else {
+    SendCopy(coin.displayName.uppercase(), "Address", "→ My address", "This wallet",
+        "Available", "Entire balance", "not enough funds", "not enough funds", false)
+}
+
 /**
  * Whether a coin scan taken at [scannedAtMs] can build a send at [nowMs]: the Send screen scans when
  * it opens, and scanning again for Preview doubled a slow server's wait. A coin spent since then

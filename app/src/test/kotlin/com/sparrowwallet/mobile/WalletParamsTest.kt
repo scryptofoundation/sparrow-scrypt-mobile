@@ -121,4 +121,23 @@ class WalletParamsTest {
         assertFalse(txidKnownBeforeSigning("P2SH_P2WPKH"))
         assertFalse(txidKnownBeforeSigning("P2PKH"))
     }
+
+    @Test
+    fun sendScreenSpeaksOfLayersOnlyForMwebCoins() {
+        val ltc = sendCopy(Coin.LITECOIN)
+        assertEquals("ONE WALLET, TWO LAYERS", ltc.subtitle)
+        assertEquals("Address (public or private)", ltc.addressLabel)
+        assertTrue(ltc.showLayers)
+        val pep = sendCopy(Coin.PEPECOIN)
+        assertEquals("PEPECOIN", pep.subtitle)
+        assertEquals("Address", pep.addressLabel)
+        assertFalse(pep.showLayers)
+        val layerWords = Regex("(?i)layer|public|private")
+        for(coin in Coin.entries.filter { !it.mweb }) {
+            val c = sendCopy(coin)
+            for(text in listOf(c.subtitle, c.addressLabel, c.toSelf, c.from, c.available, c.maxHint, c.shortfall, c.cannotCover)) {
+                assertFalse(layerWords.containsMatchIn(text), "${coin.name}: $text")
+            }
+        }
+    }
 }
