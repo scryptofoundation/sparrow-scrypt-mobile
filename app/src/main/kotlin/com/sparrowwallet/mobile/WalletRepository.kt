@@ -22,6 +22,7 @@ import com.sparrowwallet.mobile.crypto.UnknownCoinException
 import com.sparrowwallet.mobile.crypto.UnsignedBuild
 import com.sparrowwallet.mobile.crypto.XpubKey
 import com.sparrowwallet.mobile.crypto.hexToBytes
+import com.sparrowwallet.mobile.crypto.sha256
 import com.sparrowwallet.mobile.crypto.toHex
 import com.sparrowwallet.mobile.electrum.ElectrumBackend
 import com.sparrowwallet.mobile.electrum.InscriptionIndex
@@ -646,8 +647,26 @@ class WalletRepository(context: Context) {
         mwebSnapshotCache[data] != null &&
             mwebSnapshotAt[data]?.let { System.currentTimeMillis() - it < maxAgeMs } == true
 
+    /** Prefs key per account, from a hash of its xpub so the key itself says nothing about the wallet. */
+    private val receiveShownKeys = java.util.concurrent.ConcurrentHashMap<VaultData, String>()
+
+    private fun receiveShownKey(data: VaultData): String = receiveShownKeys.getOrPut(data) {
+        "receiveShown." + sha256(accountXpub(data).encodeToByteArray()).toHex().take(16)
+    }
+
+    /** One past the highest receive index the Receive screen has shown; the sync keeps all of those watched. */
+    fun receiveShownTo(data: VaultData): Int = prefs.getInt(receiveShownKey(data), 0)
+
+    fun noteReceiveShown(data: VaultData, index: Int) {
+        if(index + 1 > receiveShownTo(data)) {
+            prefs.edit().putInt(receiveShownKey(data), index + 1).apply()
+        }
+    }
+
     suspend fun syncWallet(data: VaultData, account: HDKey, onProgress: (checked: Int) -> Unit = {}): WalletSnapshot =
-        withBackend(coin(data), network(data)) { WalletScanner(it, scriptType(data)).sync(account, onProgress = onProgress) }
+        withBackend(coin(data), network(data)) {
+            WalletScanner(it, scriptType(data)).sync(account, watchReceiveTo = receiveShownTo(data), onProgress = onProgress)
+        }
             .also { snapshotCache[data] = it; snapshotAt[data] = System.currentTimeMillis(); recordTotal(data, it.balance.total) }
 
     // ---- Sending ----

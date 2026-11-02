@@ -1793,16 +1793,17 @@ private fun ReceiveScreen(repo: WalletRepository, home: Screen.Home, startIndex:
         } else {
             val account = remember(data) { repo.accountKey(data) }
             var offset by remember { mutableStateOf(0) }
-            // stay inside the 20-address scan lookahead so a rotated-to address is still watched
-            val index = (startIndex + offset).coerceAtMost(19)
+            val index = startIndex + offset
             val address = remember(account, index, data) { repo.receiveAddress(data, account, index) }
+            // every address shown stays watched by the next sync, however far Next address goes
+            LaunchedEffect(data, index) { repo.noteReceiveShown(data, index) }
             QrImage(PaymentUri.build(repo.coin(data), address))
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Address #$index", style = MaterialTheme.typography.titleSmall)
                     Text(address, style = MaterialTheme.typography.bodyMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = { offset = (offset + 1) % 10 }) { Text("Next address") }
+                        TextButton(onClick = { offset++ }) { Text("Next address") }
                         if(offset > 0) {
                             TextButton(onClick = { offset = 0 }) { Text("First unused") }
                         }

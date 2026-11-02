@@ -74,6 +74,7 @@ class WalletScannerTest {
         val account = master.derivePath("m/44'/3'/0'")
         val backend = FakeBackend()
         backend.balances[script(account, 0, 0, ScriptType.P2PKH)] = Balance(7_000_000, 0)
+        backend.histories[script(account, 0, 0, ScriptType.P2PKH)] = listOf(HistoryEntry("fund", 10))
         assertEquals(Balance(7_000_000, 0), WalletScanner(backend, ScriptType.P2PKH).balance(account))
         assertEquals(Balance(0, 0), WalletScanner(backend, ScriptType.P2WPKH).balance(account))
     }
@@ -106,8 +107,81 @@ class WalletScannerTest {
         backend.utxos[receive0] = listOf(Utxo("mined", 0, 95, 5_000), Utxo("paid", 0, 96, 7_000), Utxo("oldmined", 0, 10, 9_000))
         backend.txs["mined"] = TxDetail("mined", listOf(TxIn(null, null, null)), listOf(TxOut(receive0, 5_000)), 0, 1_000, 6)
         backend.txs["paid"] = TxDetail("paid", listOf(TxIn("x".repeat(64), 0, null)), listOf(TxOut(receive0, 7_000)), 0, 1_000, 5)
+        backend.histories[receive0] = listOf(HistoryEntry("mined", 95), HistoryEntry("paid", 96), HistoryEntry("oldmined", 10))
         val scan = WalletScanner(backend, ScriptType.P2PKH).utxos(account, checkCoinbaseAbove = 50)
         assertEquals(mapOf("mined" to true, "paid" to false, "oldmined" to false), scan.utxos.associate { it.utxo.txHash to it.coinbase })
         assertTrue("oldmined" !in backend.txRequests) // too deep to be immature: never looked up
+    }
+
+    /** An address used at [index] on [chain], paid [value] by its own transaction. */
+    private fun used(backend: FakeBackend, account: HDKey, chain: Long, index: Long, value: Long) {
+        val script = script(account, chain, index, ScriptType.P2WPKH)
+        val txid = "tx-$chain-$index"
+        backend.txs[txid] = TxDetail(txid, listOf(TxIn("ff".repeat(32), 0, TxOut("0014" + "dd".repeat(20), value + 1_000))),
+            listOf(TxOut(script, value)), 0, 1_000, 3)
+        backend.histories[script] = listOf(HistoryEntry(txid, 50))
+        backend.balances[script] = Balance(value, 0)
+        backend.utxos[script] = listOf(Utxo(txid, 0, 50, value))
+    }
+
+    /** Like desktop, the scan runs on until 20 unused addresses follow the last used one, so no fixed count of addresses. */
+    @Test fun syncFindsAddressesPastTheFirstTwenty(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val backend = FakeBackend()
+        used(backend, account, 0, 15, 1_000)
+        used(backend, account, 0, 34, 2_000)
+        val snap = WalletScanner(backend).sync(account)
+        assertEquals(Balance(3_000, 0), snap.balance)
+        assertEquals(setOf("tx-0-15", "tx-0-34"), snap.history.map { it.txid }.toSet())
+        assertEquals(35, snap.firstUnusedReceiveIndex)
+    }
+
+    /** Twenty unused addresses in a row end the walk: one used just past them is not reached, as on desktop. */
+    @Test fun syncStopsAfterTwentyUnusedInARow(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val backend = FakeBackend()
+        used(backend, account, 0, 5, 1_000)
+        used(backend, account, 0, 26, 2_000)
+        assertEquals(Balance(1_000, 0), WalletScanner(backend).sync(account).balance)
+    }
+
+    /** Addresses handed out on the Receive screen stay watched: the walk runs 20 past them even when they are unused. */
+    @Test fun syncWatchesHandedOutReceiveAddresses(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val backend = FakeBackend()
+        used(backend, account, 0, 55, 4_000)
+        val snap = WalletScanner(backend).sync(account, watchReceiveTo = 40)
+        assertEquals(Balance(4_000, 0), snap.balance)
+        assertEquals(56, snap.firstUnusedReceiveIndex)
+    }
+
+    /** The next fresh address follows the highest used one (desktop's fresh node), not a gap below it. */
+    @Test fun freshReceiveFollowsTheHighestUsed(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val backend = FakeBackend()
+        used(backend, account, 0, 0, 1_000)
+        used(backend, account, 0, 2, 1_000)
+        assertEquals(3, WalletScanner(backend).sync(account).firstUnusedReceiveIndex)
+    }
+
+    @Test fun utxosAndChangePastTheFirstTwenty(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val backend = FakeBackend()
+        used(backend, account, 0, 12, 1_000)
+        used(backend, account, 0, 30, 5_000)
+        used(backend, account, 1, 4, 2_000)
+        used(backend, account, 1, 22, 6_000)
+        val scan = WalletScanner(backend).utxos(account)
+        assertEquals(setOf("tx-0-12" to 12, "tx-0-30" to 30, "tx-1-4" to 4, "tx-1-22" to 22),
+            scan.utxos.map { it.utxo.txHash to it.index }.toSet())
+        assertEquals(23, scan.nextChangeIndex)
+    }
+
+    @Test fun balancePastTheFirstTwenty(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val backend = FakeBackend()
+        used(backend, account, 0, 10, 1_000)
+        used(backend, account, 0, 25, 7_000)
+        assertEquals(Balance(8_000, 0), WalletScanner(backend).balance(account))
     }
 }

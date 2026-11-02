@@ -7,21 +7,49 @@ import com.sparrowwallet.mobile.crypto.toHex
 
 /**
  * Scans the wallet's derived addresses through a [ChainBackend], for any single-key script
- * type. A pragmatic fixed lookahead per chain rather than a growing gap-limit walk; enough
- * for early wallets, revisit when an address explorer screen lands.
+ * type. Like desktop, each chain is walked until [GAP_LIMIT] unused addresses follow the last
+ * used one (and the last address handed out, on the receive chain), so a wallet has no fixed
+ * number of addresses.
  */
 class WalletScanner(private val backend: ChainBackend, private val scriptType: ScriptType = ScriptType.P2WPKH) {
+    companion object {
+        /** Unused addresses checked past the last used one, desktop's default gap limit. */
+        const val GAP_LIMIT = 20
+    }
+
     private fun script(accountKey: Bip32Pub, chain: Int, index: Int): ByteArray =
         Scripts.outputScript(accountKey.deriveChild(chain.toLong()).deriveChild(index.toLong()).pubKey, scriptType)
 
-    suspend fun balance(accountKey: Bip32Pub, addressesPerChain: Int = 20): Balance {
+    /**
+     * Walks one chain from index 0, handing each address and its history to [visit], until [GAP_LIMIT] addresses
+     * past both the highest used one and [watchTo] have been checked. Returns the index after the highest used one.
+     */
+    private suspend fun walk(accountKey: Bip32Pub, chain: Int, watchTo: Int = 0,
+                             visit: suspend (index: Int, script: ByteArray, history: List<HistoryEntry>) -> Unit): Int {
+        var next = 0
+        var i = 0
+        while(i < maxOf(next, watchTo) + GAP_LIMIT) {
+            val script = script(accountKey, chain, i)
+            val history = backend.history(script)
+            if(history.isNotEmpty()) {
+                next = i + 1
+            }
+            visit(i, script, history)
+            i++
+        }
+        return next
+    }
+
+    suspend fun balance(accountKey: Bip32Pub): Balance {
         var confirmed = 0L
         var unconfirmed = 0L
         for(chain in 0..1) { // 0 = receive, 1 = change
-            for(i in 0 until addressesPerChain) {
-                val bal = backend.balance(script(accountKey, chain, i))
-                confirmed += bal.confirmed
-                unconfirmed += bal.unconfirmed
+            walk(accountKey, chain) { _, script, history ->
+                if(history.isNotEmpty()) {
+                    val bal = backend.balance(script)
+                    confirmed += bal.confirmed
+                    unconfirmed += bal.unconfirmed
+                }
             }
         }
         return Balance(confirmed, unconfirmed)
@@ -36,27 +64,27 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
     class UtxoScan(val utxos: List<ChainUtxo>, val nextChangeIndex: Int)
 
     /**
-     * Collects all spendable utxos over the same lookahead as [balance], and finds the
-     * first never-used change index for the change output. A utxo confirmed above
-     * [checkCoinbaseAbove] is looked up to tell whether it is a coinbase, which must mature
-     * before it is spent; deeper ones are mature either way and cost no lookup. [isHeld] marks
-     * the coins that may carry an inscription or tokens.
+     * Collects all spendable utxos over the same walk as [balance], and the change index after the highest used
+     * one for the change output. A utxo confirmed above [checkCoinbaseAbove] is looked up to tell whether it is a
+     * coinbase, which must mature before it is spent; deeper ones are mature either way and cost no lookup. [isHeld]
+     * marks the coins that may carry an inscription or tokens.
      */
-    suspend fun utxos(accountKey: Bip32Pub, addressesPerChain: Int = 20, checkCoinbaseAbove: Int = Int.MAX_VALUE,
+    suspend fun utxos(accountKey: Bip32Pub, checkCoinbaseAbove: Int = Int.MAX_VALUE,
                       isHeld: suspend (Utxo) -> Boolean = { false }): UtxoScan {
         val utxos = ArrayList<ChainUtxo>()
-        var nextChangeIndex = addressesPerChain
+        var nextChangeIndex = 0
         for(chain in 0..1) {
-            for(i in 0 until addressesPerChain) {
-                val script = script(accountKey, chain, i)
-                for(utxo in backend.unspent(script)) {
-                    val young = utxo.height > 0 && utxo.height > checkCoinbaseAbove
-                    val coinbase = young && backend.transaction(utxo.txHash).inputs.all { it.prevTxid == null }
-                    utxos.add(ChainUtxo(utxo, chain, i, coinbase, isHeld(utxo)))
+            val next = walk(accountKey, chain) { i, script, history ->
+                if(history.isNotEmpty()) {
+                    for(utxo in backend.unspent(script)) {
+                        val young = utxo.height > 0 && utxo.height > checkCoinbaseAbove
+                        val coinbase = young && backend.transaction(utxo.txHash).inputs.all { it.prevTxid == null }
+                        utxos.add(ChainUtxo(utxo, chain, i, coinbase, isHeld(utxo)))
+                    }
                 }
-                if(chain == 1 && i < nextChangeIndex && backend.history(script).isEmpty()) {
-                    nextChangeIndex = i
-                }
+            }
+            if(chain == 1) {
+                nextChangeIndex = next
             }
         }
         return UtxoScan(utxos, nextChangeIndex)
@@ -64,34 +92,35 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
 
     /**
      * One full wallet sync: balance, transaction history with net wallet deltas, and the
-     * first unused receive index. Outputs paying our scripts count in, inputs spending our
+     * receive index after the highest used one. Outputs paying our scripts count in, inputs spending our
      * previous outputs count out. A spent output comes with the input when the server
      * includes it (Esplora), else from the previous transaction, fetched once per sync.
+     * Receive addresses below [watchReceiveTo] were handed out, so the walk covers them even unused.
      * [onProgress] gets the running count of addresses checked; rate-limited servers make
      * a first sync take minutes.
      */
-    suspend fun sync(accountKey: Bip32Pub, addressesPerChain: Int = 20, onProgress: (checked: Int) -> Unit = {}): WalletSnapshot {
+    suspend fun sync(accountKey: Bip32Pub, watchReceiveTo: Int = 0, onProgress: (checked: Int) -> Unit = {}): WalletSnapshot {
         val ourScripts = HashSet<String>()
         var confirmed = 0L
         var unconfirmed = 0L
-        var firstUnusedReceive = addressesPerChain
+        var nextReceive = 0
         val heights = LinkedHashMap<String, Int>() // txid → height
         var checked = 0
         for(chain in 0..1) {
-            for(i in 0 until addressesPerChain) {
-                val script = script(accountKey, chain, i)
+            val next = walk(accountKey, chain, if(chain == 0) watchReceiveTo else 0) { _, script, history ->
                 ourScripts.add(script.toHex())
-                val bal = backend.balance(script)
-                confirmed += bal.confirmed
-                unconfirmed += bal.unconfirmed
-                onProgress(++checked)
-                val history = backend.history(script)
-                if(chain == 0 && i < firstUnusedReceive && history.isEmpty()) {
-                    firstUnusedReceive = i
+                if(history.isNotEmpty()) {
+                    val bal = backend.balance(script)
+                    confirmed += bal.confirmed
+                    unconfirmed += bal.unconfirmed
                 }
+                onProgress(++checked)
                 for(entry in history) {
                     heights[entry.txHash] = entry.height
                 }
+            }
+            if(chain == 0) {
+                nextReceive = next
             }
         }
 
@@ -123,6 +152,6 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
             )
         }.sortedWith(compareByDescending<TxSummary> { it.height <= 0 }.thenByDescending { it.height })
 
-        return WalletSnapshot(Balance(confirmed, unconfirmed), summaries, firstUnusedReceive)
+        return WalletSnapshot(Balance(confirmed, unconfirmed), summaries, nextReceive)
     }
 }
