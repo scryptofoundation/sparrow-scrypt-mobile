@@ -98,13 +98,60 @@ class PsbtSignerScriptTypesTest {
         assertTrue("does not match" in e.message!!, e.message)
     }
 
+    /** The coin mark's key, the same bytes desktop drongo writes (PSBT.COIN_MARK_KEY): fc, "sparrow-scrypt", subtype 0. */
+    private val markKey = "fc0e" + "sparrow-scrypt".encodeToByteArray().toHex() + "00"
+
+    private fun withMark(psbt: ByteArray, coinId: String?): ByteArray = PsbtFixtures.edit(psbt) { maps ->
+        maps[0].removeAll { it.first.toHex() == markKey }
+        if(coinId != null) maps[0].add(markKey.hexToBytes() to coinId.encodeToByteArray())
+    }
+
+    private fun review(w: Wallet, psbt: ByteArray) = PsbtSigner.review(Psbt.parse(psbt), master, w.params, w.accountPath, w.type)
+
     @Test
-    fun reviewWarnsWhenTheWalletSignsOnBitcoinsKeyPath() {
+    fun phonePsbtsCarryTheirCoin() {
+        val parsed = Psbt.parse(psbt(wallet(Coin.LUCKYCOIN, ScriptType.P2PKH)))
+        assertEquals("luckycoin", parsed.coinMark)
+        assertTrue(parsed.globalEntries.any { it.first.toHex() == markKey && it.second.decodeToString() == "luckycoin" })
+    }
+
+    /** Luckycoin and Junkcoin keys sit on Bitcoin's path: only the mark tells their PSBTs from Bitcoin's, so none means no. */
+    @Test
+    fun bitcoinPathWalletRefusesAnUnmarkedPsbt() {
         val lky = wallet(Coin.LUCKYCOIN, ScriptType.P2PKH)
-        val warning = PsbtSigner.review(Psbt.parse(psbt(lky)), master, lky.params, lky.accountPath, lky.type).warning
-        assertTrue(warning != null && "Bitcoin" in warning, warning)
+        val unmarked = withMark(psbt(lky), null)
+        val refusal = assertNotNull(review(lky, unmarked).refusal)
+        assertTrue("which coin" in refusal, refusal)
+        assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(Psbt.parse(unmarked), master, lky.params, lky.accountPath, lky.type) }
+    }
+
+    @Test
+    fun psbtMarkedForAnotherCoinIsRefused() {
+        val jkc = wallet(Coin.JUNKCOIN, ScriptType.P2PKH)
+        val bitcoin = withMark(psbt(jkc), "bitcoin")
+        assertTrue("is for bitcoin" in assertNotNull(review(jkc, bitcoin).refusal))
+        assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(Psbt.parse(bitcoin), master, jkc.params, jkc.accountPath, jkc.type) }
         val doge = wallet(Coin.DOGECOIN, ScriptType.P2PKH)
-        assertEquals(null, PsbtSigner.review(Psbt.parse(psbt(doge)), master, doge.params, doge.accountPath, doge.type).warning)
+        assertTrue("is for Pepecoin" in assertNotNull(review(doge, withMark(psbt(doge), "pepecoin")).refusal))
+    }
+
+    @Test
+    fun markedPsbtSignsOnBitcoinPathWallet() {
+        val lky = wallet(Coin.LUCKYCOIN, ScriptType.P2PKH)
+        val r = review(lky, psbt(lky))
+        assertEquals(null, r.refusal)
+        assertEquals(null, r.warning)
+        val direct = TxBuilder.build(inputs(lky), dest(lky), 4_000_000_000, rate, change(lky), params = lky.params)
+        assertContentEquals(direct.tx.serialize(), signedTx(lky, psbt(lky)).serialize())
+    }
+
+    /** A coin with its own key path can still sign PSBTs from desktop builds and software that write no mark. */
+    @Test
+    fun ownPathWalletSignsAnUnmarkedPsbt() {
+        val doge = wallet(Coin.DOGECOIN, ScriptType.P2PKH)
+        val unmarked = withMark(psbt(doge), null)
+        assertEquals(null, review(doge, unmarked).refusal)
+        assertEquals(null, Psbt.parse(unmarked).coinMark)
     }
 
     @Test

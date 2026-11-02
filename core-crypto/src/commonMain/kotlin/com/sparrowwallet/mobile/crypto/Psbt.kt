@@ -65,7 +65,18 @@ object Psbt {
         val outputs: List<PsbtOutput> = emptyList(),
         val globalUnknown: List<Pair<ByteArray, ByteArray>> = emptyList(),
         internal val globalEntries: List<Pair<ByteArray, ByteArray>> = emptyList()
-    )
+    ) {
+        /** The coin id the creator marked this PSBT with ([COIN_MARK_KEY]), or null when it has none. */
+        val coinMark: String?
+            get() = globalEntries.firstOrNull { it.first.contentEquals(COIN_MARK_KEY) }?.second?.decodeToString()
+    }
+
+    /**
+     * Names the coin a PSBT spends, as a BIP174 proprietary global: type fc, identifier "sparrow-scrypt", subtype 0;
+     * the value is the coin's id. Desktop drongo writes the same key (PSBT.COIN_MARK_KEY). Luckycoin and Junkcoin
+     * keys sit on Bitcoin's path, so nothing else in a PSBT tells their spends from a Bitcoin one.
+     */
+    val COIN_MARK_KEY: ByteArray = byteArrayOf(0xFC.toByte(), 14) + "sparrow-scrypt".encodeToByteArray() + byteArrayOf(0)
 
     /**
      * Creates a PSBT from an unsigned build: the serialized unsigned transaction, plus
@@ -85,8 +96,9 @@ object Psbt {
         val w = ByteWriter()
         w.bytes(MAGIC)
 
-        // global map: the unsigned transaction (no witnesses, empty scriptSigs)
+        // global map: the unsigned transaction (no witnesses, empty scriptSigs) and the coin it spends
         writeEntry(w, byteArrayOf(GLOBAL_UNSIGNED_TX.toByte()), unsigned.tx.serialize(false))
+        writeEntry(w, COIN_MARK_KEY, unsigned.coin.id.encodeToByteArray())
         w.bytes(ByteArray(1)) // map separator
 
         for(input in unsigned.inputs) {
@@ -200,7 +212,7 @@ object Psbt {
             PsbtOutput(derivations, unknown, entries)
         }
         require(r.remaining() == 0) { "Trailing data after PSBT" }
-        val globalUnknown = globalEntries.filter { it.first[0].toInt() != GLOBAL_UNSIGNED_TX }
+        val globalUnknown = globalEntries.filter { it.first[0].toInt() != GLOBAL_UNSIGNED_TX && !it.first.contentEquals(COIN_MARK_KEY) }
         return Parsed(txBytes, tx, inputs, outputs, globalUnknown, globalEntries)
     }
 

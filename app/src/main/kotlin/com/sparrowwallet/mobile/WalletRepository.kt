@@ -787,7 +787,7 @@ class WalletRepository(context: Context) {
                 SpendableInput(it.txid, it.vout, it.value, it.key, it.scriptType,
                     prevTxs.getOrPut(it.txid) { client.rawTransaction(it.txid) })
             }
-            val unsigned = UnsignedBuild(selected.tx, withPrevTxs, selected.amount, selected.fee, selected.change)
+            val unsigned = UnsignedBuild(selected.tx, withPrevTxs, selected.amount, selected.fee, selected.change, selected.coin)
             val psbt = Psbt.create(
                 unsigned, masterKey(data).fingerprint,
                 pathFor = { pathByKey.getValue(it.key) },

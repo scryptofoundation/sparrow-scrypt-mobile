@@ -30,7 +30,9 @@ class UnsignedBuild(
     val inputs: List<SpendableInput>,
     val amount: Long,
     val fee: Long,
-    val change: Long
+    val change: Long,
+    /** The coin it spends, marked in the PSBT made from it. */
+    val coin: Coin
 ) {
     /**
      * What the fee comes to per estimated vbyte once signed. Above the rate asked for where the coin charges
@@ -95,7 +97,7 @@ object TxBuilder {
             val fee = fee(sorted.size, listOf(destScript.size))
             val sendValue = total - fee
             require(sendValue >= dust) { "Balance is too small to cover the network fee" }
-            return assemble(sorted, listOf(TxOutput(sendValue, destScript)), sendValue, fee, 0)
+            return assemble(sorted, listOf(TxOutput(sendValue, destScript)), sendValue, fee, 0, coin)
         }
 
         require(amount >= dust) { "Amount is below the $dust $unit dust limit" }
@@ -121,7 +123,7 @@ object TxBuilder {
             fee += change
             change = 0
         }
-        return assemble(selected, outputs, amount, fee, change)
+        return assemble(selected, outputs, amount, fee, change, coin)
     }
 
     private fun assemble(
@@ -129,10 +131,11 @@ object TxBuilder {
         outputs: List<TxOutput>,
         amount: Long,
         fee: Long,
-        change: Long
+        change: Long,
+        coin: Coin
     ): UnsignedBuild {
         val tx = Tx(2, inputs.map { TxInput(it.txid, it.vout) }, outputs)
-        return UnsignedBuild(tx, inputs, amount, fee, change)
+        return UnsignedBuild(tx, inputs, amount, fee, change, coin)
     }
 
     /** Estimated vsize for a tx spending only P2WPKH inputs (72-byte signatures assumed). */

@@ -64,8 +64,9 @@ object PsbtSigner {
      * is change, an input there is signed. Anything else is foreign even with our master
      * fingerprint, so a PSBT cannot hide a payment to a key the wallet never scans, nor get
      * a signature for another coin's path (Bitcoin shares BIP143) under a Litecoin review.
-     * Coins on coin type 0 (Luckycoin, Junkcoin) share Bitcoin's own path, which no check can
-     * tell apart: the review warns instead.
+     * Coins on coin type 0 (Luckycoin, Junkcoin) share Bitcoin's own path, which only the
+     * creator's coin mark ([Psbt.COIN_MARK_KEY]) tells apart: such a wallet signs only a PSBT
+     * marked with its own coin, and any wallet refuses one marked for another coin.
      */
     fun review(parsed: Psbt.Parsed, master: HDKey, params: ChainParams, accountPath: List<Long>, scriptType: ScriptType): PsbtReview {
         val inputs = parsed.inputs.mapIndexed { i, input ->
@@ -102,18 +103,13 @@ object PsbtSigner {
         val witnessBytes = if(segwit == 0) 0 else 2 + WITNESS_BYTES * segwit + (types.size - segwit)
         val vsize = parsed.unsignedTxBytes.size + scriptSigBytes + ceil(witnessBytes / 4.0)
         val rate = fee?.let { round(it / vsize * 100) / 100 }
-        val pathWarning = if(accountPath.getOrNull(1)?.let { it and 0x7FFFFFFFL } == 0L) {
-            "This wallet's keys are on Bitcoin's path (coin type 0), so a Bitcoin transaction would " +
-                "sign the same way. Sign only PSBTs you made yourself."
-        } else null
         val carrying = inputs.count { it.mayCarry }
-        val carryWarning = if(carrying > 0) {
+        val warning = if(carrying > 0) {
             (if(carrying == 1) "1 input" else "$carrying inputs") + " may carry an inscription or tokens (made by an " +
                 "inscription transaction, or holding an inscription's usual value). Signing spends them, and anything " +
                 "they carry could be lost in a payment or the fee."
         } else null
-        val warning = listOfNotNull(carryWarning, pathWarning).joinToString("\n\n").ifEmpty { null }
-        return PsbtReview(inputs, outputs, totalIn, totalOut, fee, rate, refusal(parsed, master, accountPath, scriptType), warning)
+        return PsbtReview(inputs, outputs, totalIn, totalOut, fee, rate, refusal(parsed, master, params.coin, accountPath, scriptType), warning)
     }
 
     fun sign(parsed: Psbt.Parsed, master: HDKey, params: ChainParams, accountPath: List<Long>, scriptType: ScriptType): ByteArray {
@@ -132,7 +128,7 @@ object PsbtSigner {
             mapOf(pubHex to Ecdsa.signForInput(sighash, key.privKey))
         }
         require(ours > 0) { "This PSBT has no inputs belonging to this wallet" }
-        refusal(parsed, master, accountPath, scriptType)?.let { throw IllegalArgumentException(it) }
+        refusal(parsed, master, params.coin, accountPath, scriptType)?.let { throw IllegalArgumentException(it) }
         return Psbt.serialize(parsed, sigs)
     }
 
@@ -165,7 +161,8 @@ object PsbtSigner {
         else -> null
     }
 
-    private fun refusal(parsed: Psbt.Parsed, master: HDKey, accountPath: List<Long>, scriptType: ScriptType): String? {
+    private fun refusal(parsed: Psbt.Parsed, master: HDKey, coin: Coin, accountPath: List<Long>, scriptType: ScriptType): String? {
+        coinRefusal(parsed.coinMark, coin, accountPath)?.let { return it }
         if(scriptType == ScriptType.P2PKH) {
             val missing = parsed.inputs.withIndex().filter { (_, input) ->
                 input.nonWitnessUtxo == null && ourDerivation(input.derivations, master, accountPath) != null
@@ -178,6 +175,22 @@ object PsbtSigner {
         }
         parsed.inputs.indices.firstNotNullOfOrNull { inputProblem(parsed, it, master, accountPath, scriptType) }?.let { return it }
         return prevTxRefusal(parsed)
+    }
+
+    /**
+     * A PSBT marked for another coin is never signed. A wallet whose keys sit on Bitcoin's path (coin type 0) also
+     * refuses an unmarked one: its inputs would sign the same way for Bitcoin, so only the mark says which chain it spends.
+     */
+    private fun coinRefusal(mark: String?, coin: Coin, accountPath: List<Long>): String? {
+        if(mark != null && mark != coin.id) {
+            val named = Coin.entries.firstOrNull { it.id == mark }?.displayName ?: mark
+            return "This PSBT is for $named, not ${coin.displayName}."
+        }
+        if(mark == null && accountPath.getOrNull(1)?.let { it and 0x7FFFFFFFL } == 0L) {
+            return "This PSBT does not say which coin it is for. This wallet's keys are on Bitcoin's path (coin type 0), " +
+                "so a Bitcoin transaction would sign the same way. Make the PSBT in Sparrow-Scrypt on the PC, which marks its coin."
+        }
+        return null
     }
 
     /**
