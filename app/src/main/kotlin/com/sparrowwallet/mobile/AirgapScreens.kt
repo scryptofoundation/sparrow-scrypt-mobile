@@ -163,7 +163,8 @@ fun PsbtReviewCard(review: PsbtReview, coin: Coin) {
                 }
             }
             val signedHere = review.inputs.count { it.ours }
-            Text("${review.inputs.size} inputs, $signedHere signed by this phone",
+            val inputCount = review.inputs.size
+            Text((if(inputCount == 1) "1 input" else "$inputCount inputs") + ", $signedHere signed by this phone",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 review.fee?.let { fee ->
