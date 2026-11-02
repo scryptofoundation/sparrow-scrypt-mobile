@@ -1808,7 +1808,7 @@ private fun ReceiveScreen(repo: WalletRepository, home: Screen.Home, startIndex:
                             TextButton(onClick = { offset = 0 }) { Text("First unused") }
                         }
                     }
-                    Text("Rotates to a fresh address automatically once one is used (gap limit 10 ahead).",
+                    Text("Rotates to a fresh address once one is used. Every address shown here stays watched.",
                         style = MaterialTheme.typography.bodySmall)
                 }
             }
