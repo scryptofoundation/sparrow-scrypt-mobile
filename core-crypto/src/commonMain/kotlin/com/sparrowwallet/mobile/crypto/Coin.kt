@@ -50,6 +50,22 @@ enum class Coin(
 
     fun supports(scriptType: ScriptType): Boolean = scriptType == ScriptType.P2PKH || segwit
 
+    /**
+     * Blocks a coinbase waits before it can be spent: each chain's nCoinbaseMaturity as drongo has it,
+     * with Dogecoin's and Dingocoin's rise at their Digishield heights. Coins not verified yet keep 100.
+     */
+    fun coinbaseMaturity(network: Network, coinbaseHeight: Int): Int = when(this) {
+        DOGECOIN -> if(coinbaseHeight < 145_000) 30 else 240
+        JUNKCOIN -> if(network == Network.MAINNET) 70 else 30
+        LUCKYCOIN -> 70
+        BELLSCOIN -> 30
+        DINGOCOIN -> if(network == Network.MAINNET) 100 else if(coinbaseHeight < 5_000) 30 else 240
+        else -> 100
+    }
+
+    /** The longest any coinbase of this coin waits: a coin deeper than this is mature whatever it is. */
+    fun longestCoinbaseMaturity(network: Network): Int = coinbaseMaturity(network, Int.MAX_VALUE)
+
     /** The size a fee rate is charged on: Dingocoin Core rounds up to whole kilobytes. */
     fun feeSize(vsize: Long): Long = if(this == DINGOCOIN) (vsize + 999) / 1000 * 1000 else vsize
 

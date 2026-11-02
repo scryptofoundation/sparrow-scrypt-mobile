@@ -98,4 +98,16 @@ class WalletScannerTest {
         WalletScanner(FakeBackend()).sync(account, onProgress = { progress += it })
         assertEquals((1..40).toList(), progress)
     }
+
+    @Test fun utxosMarkYoungCoinbasesOnly(): Unit = runBlocking {
+        val account = master.derivePath("m/44'/1'/0'")
+        val backend = FakeBackend()
+        val receive0 = script(account, 0, 0, ScriptType.P2PKH)
+        backend.utxos[receive0] = listOf(Utxo("mined", 0, 95, 5_000), Utxo("paid", 0, 96, 7_000), Utxo("oldmined", 0, 10, 9_000))
+        backend.txs["mined"] = TxDetail("mined", listOf(TxIn(null, null, null)), listOf(TxOut(receive0, 5_000)), 0, 1_000, 6)
+        backend.txs["paid"] = TxDetail("paid", listOf(TxIn("x".repeat(64), 0, null)), listOf(TxOut(receive0, 7_000)), 0, 1_000, 5)
+        val scan = WalletScanner(backend, ScriptType.P2PKH).utxos(account, checkCoinbaseAbove = 50)
+        assertEquals(mapOf("mined" to true, "paid" to false, "oldmined" to false), scan.utxos.associate { it.utxo.txHash to it.coinbase })
+        assertTrue("oldmined" !in backend.txRequests) // too deep to be immature: never looked up
+    }
 }

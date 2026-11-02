@@ -2246,8 +2246,8 @@ private fun SendScreen(
             }
         }
         if(maturing > 0) {
-            Text("${formatAmountShort(sendCoin, maturing)} more is waiting for ${repo.minConfirmations} confirmations " +
-                "before it can be sent.", style = MaterialTheme.typography.bodySmall,
+            Text("${formatAmountShort(sendCoin, maturing)} more is waiting for confirmations before it can be sent " +
+                "(${repo.minConfirmations}, or longer for mined coins).", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         privateAvail?.let { avail ->

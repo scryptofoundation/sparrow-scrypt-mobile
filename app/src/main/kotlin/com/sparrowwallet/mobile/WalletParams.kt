@@ -44,17 +44,29 @@ fun externalSigningSupported(coin: Coin, scriptType: String): Boolean =
  */
 fun txidKnownBeforeSigning(scriptType: String): Boolean = scriptType == ScriptType.P2WPKH.name
 
+/** A scanned coin as Send judges it: [height] 0 or below is unconfirmed; [coinbaseMaturity] only for a mined coin. */
+data class ScannedCoin(val value: Long, val height: Int, val coinbaseMaturity: Int? = null)
+
 /**
- * The wallet's coins as Send sees them: [spendable] values (at least the confirmation rule deep)
- * and the total still [maturing] (newer or unconfirmed), which Send names so a fresh receive is not
+ * Whether a coin at [height] can go in the next block: [minConfirmations] deep, and a coinbase also
+ * [coinbaseMaturity] deep, or the network refuses the spend.
+ */
+fun spendableAt(tip: Long, height: Int, minConfirmations: Int, coinbaseMaturity: Int? = null): Boolean {
+    if(height <= 0) return false
+    val confirmations = tip - height + 1
+    return confirmations >= minConfirmations && (coinbaseMaturity == null || confirmations >= coinbaseMaturity)
+}
+
+/**
+ * The wallet's coins as Send sees them: [spendable] values and the total still [maturing] (newer,
+ * unconfirmed, or a coinbase short of its maturity), which Send names so a fresh receive is not
  * read as "not enough funds".
  */
 data class SendCoins(val spendable: List<Long>, val maturing: Long) {
     companion object {
-        /** [coins] are value to height, 0 or below meaning unconfirmed. */
-        fun split(coins: List<Pair<Long, Int>>, tip: Long, minConfirmations: Int): SendCoins {
-            val (deep, young) = coins.partition { (_, height) -> height in 1..(tip - (minConfirmations - 1)) }
-            return SendCoins(deep.map { it.first }, young.sumOf { it.first })
+        fun split(coins: List<ScannedCoin>, tip: Long, minConfirmations: Int): SendCoins {
+            val (ready, young) = coins.partition { spendableAt(tip, it.height, minConfirmations, it.coinbaseMaturity) }
+            return SendCoins(ready.map { it.value }, young.sumOf { it.value })
         }
     }
 }
@@ -110,13 +122,14 @@ internal class ScanCache<K, S> {
 }
 
 /**
- * The spendable inputs of a scan (at least [minConfirmations] deep at [tip]) as the wallet's
- * script type, and the change script at the first unused change index.
+ * The spendable inputs of a scan (at least [minConfirmations] deep at [tip], and a coinbase as deep
+ * as [coinbaseMaturity] gives for its height) as the wallet's script type, and the change script at
+ * the first unused change index.
  */
 internal fun spendables(scan: WalletScanner.UtxoScan, tip: Long, account: HDKey, scriptType: ScriptType,
-                        minConfirmations: Int): Pair<List<SpendableInput>, ByteArray> {
+                        minConfirmations: Int, coinbaseMaturity: (Int) -> Int = { 100 }): Pair<List<SpendableInput>, ByteArray> {
     val candidates = scan.utxos
-        .filter { it.utxo.height in 1..(tip - (minConfirmations - 1)) }
+        .filter { spendableAt(tip, it.utxo.height, minConfirmations, if(it.coinbase) coinbaseMaturity(it.utxo.height) else null) }
         .map {
             SpendableInput(
                 it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value,

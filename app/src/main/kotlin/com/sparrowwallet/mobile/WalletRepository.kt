@@ -575,10 +575,18 @@ class WalletRepository(context: Context) {
     private suspend fun scanCoins(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType): Pair<WalletScanner.UtxoScan, Long> {
         lastScan.fresh(data, System.currentTimeMillis())?.let { return it }
         val tip = client.tipHeight()
-        val scan = WalletScanner(client, scriptType).utxos(account)
+        val scan = WalletScanner(client, scriptType).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip))
         lastScan.put(data, scan, tip, System.currentTimeMillis())
         return scan to tip
     }
+
+    /** Coins confirmed above this height may be immature coinbases; deeper ones are mature either way. */
+    private fun coinbaseCheckAbove(data: VaultData, tip: Long): Int =
+        (tip - coin(data).longestCoinbaseMaturity(network(data))).toInt()
+
+    /** The send rule for one scanned coin: [minConfirmations] deep, and a coinbase also mature. */
+    private fun spendable(data: VaultData, tip: Long, u: WalletScanner.ChainUtxo): Boolean =
+        spendableAt(tip, u.utxo.height, minConfirmations, if(u.coinbase) coin(data).coinbaseMaturity(network(data), u.utxo.height) else null)
 
     fun snapshotFresh(data: VaultData, maxAgeMs: Long = 60_000): Boolean =
         snapshotCache[data] != null &&
@@ -647,7 +655,9 @@ class WalletRepository(context: Context) {
 
     private suspend fun collectSpendables(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType): Pair<List<SpendableInput>, ByteArray> {
         val (scan, tip) = scanCoins(client, data, account, scriptType)
-        return spendables(scan, tip, account, scriptType, minConfirmations)
+        val coin = coin(data)
+        val network = network(data)
+        return spendables(scan, tip, account, scriptType, minConfirmations) { coin.coinbaseMaturity(network, it) }
     }
 
     class UnsignedSendPreview(
@@ -687,7 +697,7 @@ class WalletRepository(context: Context) {
             val accountPath = parsePathChildren(data.derivationPath)
             val pathByKey = HashMap<HDKey, List<Long>>()
             val candidates = scan.utxos
-                .filter { confirmedEnough(tip, it.utxo.height) }
+                .filter { spendable(data, tip, it) }
                 .map {
                     val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                     pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
@@ -731,12 +741,13 @@ class WalletRepository(context: Context) {
         val service = mwebd(data)
 
         val (scan, tip) = withBackend(Coin.LITECOIN, net) {
-            WalletScanner(it, ScriptType.P2WPKH).utxos(account) to it.tipHeight()
+            val tip = it.tipHeight()
+            WalletScanner(it, ScriptType.P2WPKH).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip)) to tip
         }
         val accountPath = parsePathChildren(data.derivationPath)
         val pathByKey = HashMap<HDKey, List<Long>>()
         val candidates = scan.utxos
-            .filter { confirmedEnough(tip, it.utxo.height) }
+            .filter { spendable(data, tip, it) }
             .map {
                 val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                 pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
@@ -835,9 +846,13 @@ class WalletRepository(context: Context) {
     suspend fun sendCoins(data: VaultData, account: HDKey): SendCoins =
         withBackend(coin(data), network(data)) { client ->
             val tip = client.tipHeight()
-            val scan = WalletScanner(client, scriptType(data)).utxos(account)
+            val scan = WalletScanner(client, scriptType(data)).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip))
             lastScan.put(data, scan, tip, System.currentTimeMillis())
-            SendCoins.split(scan.utxos.map { it.utxo.value to it.utxo.height }, tip, minConfirmations)
+            val coin = coin(data)
+            val network = network(data)
+            SendCoins.split(scan.utxos.map {
+                ScannedCoin(it.utxo.value, it.utxo.height, if(it.coinbase) coin.coinbaseMaturity(network, it.utxo.height) else null)
+            }, tip, minConfirmations)
         }.let { it.copy(spendable = it.spendable.sortedDescending()) }
 
     // ---- Sparrow Link (desktop ↔ mobile transfer) ----

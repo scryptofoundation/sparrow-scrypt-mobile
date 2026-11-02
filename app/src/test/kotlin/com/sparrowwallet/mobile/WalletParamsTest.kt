@@ -144,8 +144,20 @@ class WalletParamsTest {
     @Test
     fun coinsUnderTheConfirmationRuleCountAsMaturing() {
         // value to height; 0 and below are unconfirmed
-        val coins = SendCoins.split(listOf(100L to 40, 200L to 45, 300L to 0, 400L to -1, 50L to 38), tip = 45, minConfirmations = 6)
+        val coins = SendCoins.split(listOf(100L to 40, 200L to 45, 300L to 0, 400L to -1, 50L to 38).map { (v, h) -> ScannedCoin(v, h) },
+            tip = 45, minConfirmations = 6)
         assertEquals(listOf(100L, 50L), coins.spendable)
         assertEquals(900L, coins.maturing)
+    }
+
+    @Test
+    fun aCoinbaseWaitsForItsMaturity() {
+        // tip 100: a coinbase 40 deep under a 70-block rule waits, one 70 deep is spendable
+        val coins = SendCoins.split(listOf(ScannedCoin(1_000, 61, coinbaseMaturity = 70), ScannedCoin(2_000, 31, coinbaseMaturity = 70),
+            ScannedCoin(3_000, 61)), tip = 100, minConfirmations = 6)
+        assertEquals(listOf(2_000L, 3_000L), coins.spendable)
+        assertEquals(1_000L, coins.maturing)
+        assertTrue(spendableAt(tip = 100, height = 31, minConfirmations = 6, coinbaseMaturity = 70))
+        assertFalse(spendableAt(tip = 100, height = 32, minConfirmations = 6, coinbaseMaturity = 70))
     }
 }
