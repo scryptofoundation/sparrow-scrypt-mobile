@@ -31,7 +31,14 @@ class UnsignedBuild(
     val amount: Long,
     val fee: Long,
     val change: Long
-)
+) {
+    /**
+     * What the fee comes to per estimated vbyte once signed. Above the rate asked for where the coin charges
+     * whole kilobytes (Dingocoin), so it agrees with what a signer's review shows.
+     */
+    val paidFeeRate: Long
+        get() = fee / TxBuilder.estimateVsize(inputs.map { it.scriptType }, tx.outputs.map { it.script.size })
+}
 
 /**
  * Builds and signs a single-key spend on any coin: largest-first coin selection, fee from a

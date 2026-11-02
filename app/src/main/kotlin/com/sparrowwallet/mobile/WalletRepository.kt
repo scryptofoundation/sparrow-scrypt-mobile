@@ -723,7 +723,7 @@ class WalletRepository(context: Context) {
                 changePubKey = changeKey.pubKey,
                 changePath = accountPath + listOf(1L, scan.nextChangeIndex.toLong())
             )
-            UnsignedSendPreview(toAddress, unsigned.amount, unsigned.fee, feeRate,
+            UnsignedSendPreview(toAddress, unsigned.amount, unsigned.fee, unsigned.paidFeeRate,
                 unsigned.tx.txid().takeIf { txidKnownBeforeSigning(data.scriptType) }, Psbt.toBase64(psbt))
         }
     }

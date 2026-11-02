@@ -36,6 +36,17 @@ class TxBuilderCoinTest {
         assertEquals(1000L * 100_000, built.fee) // one input, two outputs: under 1000 vbytes, charged as 1000
     }
 
+    @Test fun paidFeeRateIsTheFeeOverTheSize() {
+        // Dingocoin charges whole kilobytes, so what is paid per vbyte is above the rate asked for
+        val dingoBuild = TxBuilder.buildUnsigned(listOf(input(5_000_000_000)), p2pkh, 100_000_000, 100_000, p2pkh, params = dingo)
+        val dingoSize = TxBuilder.estimateVsize(listOf(ScriptType.P2PKH), listOf(25, 25))
+        assertEquals(dingoBuild.fee / dingoSize, dingoBuild.paidFeeRate)
+        assertTrue(dingoBuild.paidFeeRate > 100_000)
+        // elsewhere it is the rate asked for
+        val dogeBuild = TxBuilder.buildUnsigned(listOf(input(500_000_000)), p2pkh, 100_000_000, 1000, p2pkh, params = doge)
+        assertEquals(1000, dogeBuild.paidFeeRate)
+    }
+
     @Test fun legacyInputCountsItsFullSize() {
         assertEquals(10L + 148 + 2 * 34, TxBuilder.estimateVsize(listOf(ScriptType.P2PKH), listOf(25, 25)))
     }
