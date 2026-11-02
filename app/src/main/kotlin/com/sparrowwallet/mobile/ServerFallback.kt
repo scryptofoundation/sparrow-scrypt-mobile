@@ -1,5 +1,6 @@
 package com.sparrowwallet.mobile
 
+import com.sparrowwallet.mobile.crypto.BackendKind
 import com.sparrowwallet.mobile.crypto.AirGappedException
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
@@ -85,6 +86,36 @@ fun serverScreenState(settings: WalletRepository.ServerSettings?): ServerScreenS
 fun connectionSummary(result: List<String>): String =
     if(result.firstOrNull() == "Esplora") "Esplora, tip ${result.getOrNull(1)}"
     else "Electrum ${result.getOrNull(0)}, protocol ${result.getOrNull(1)}"
+
+/**
+ * The kind of server the Server screen starts on: the saved one's kind, else the coin's usual kind.
+ * Any coin can use either: your own node may run ElectrumX where the public servers are Esplora.
+ */
+fun serverKindFor(coin: Coin, saved: WalletRepository.ServerSettings?): BackendKind =
+    saved?.let { if(it.esploraUrl != null) BackendKind.ESPLORA else BackendKind.ELECTRUM } ?: coin.backend
+
+/** What the Server screen's fields hold, for either kind of server. */
+data class ServerFields(
+    val kind: BackendKind,
+    val host: String = "",
+    val port: String = "50002",
+    val useTls: Boolean = true,
+    val selfSigned: Boolean = false,
+    val esploraUrl: String = "",
+    val useProxy: Boolean = false,
+    val proxyHost: String = "127.0.0.1",
+    val proxyPort: String = "9050"
+) {
+    /** The settings these fields describe, or null while one is missing or malformed. */
+    fun settings(): WalletRepository.ServerSettings? {
+        val pp = proxyPort.toIntOrNull() ?: return null
+        if(useProxy && proxyHost.isBlank()) return null
+        if(kind == BackendKind.ESPLORA) return esploraSettings(esploraUrl, useProxy, proxyHost.trim(), pp)
+        val p = port.toIntOrNull() ?: return null
+        if(host.isBlank()) return null
+        return WalletRepository.ServerSettings(host.trim(), p, useTls, selfSigned, useProxy, proxyHost.trim(), pp)
+    }
+}
 
 /** Settings for an Esplora API base URL (http or https), or null when it is not one. */
 fun esploraSettings(url: String, useProxy: Boolean, proxyHost: String, proxyPort: Int): WalletRepository.ServerSettings? {

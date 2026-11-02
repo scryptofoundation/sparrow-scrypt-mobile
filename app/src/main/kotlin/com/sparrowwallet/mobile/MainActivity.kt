@@ -2372,28 +2372,24 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
     val scope = rememberCoroutineScope()
     val network = remember(data) { repo.network(data) }
     val coin = remember(data) { repo.coin(data) }
-    val esplora = coin.backend == BackendKind.ESPLORA
     val state = remember { serverScreenState(repo.serverSettings(coin, network)) }
     val saved = (state as? ServerScreenState.Configured)?.settings
-    var host by remember { mutableStateOf(saved?.host ?: "") }
-    var port by remember { mutableStateOf(saved?.port?.toString() ?: "50002") }
+    var kind by remember { mutableStateOf(serverKindFor(coin, saved)) }
+    val esplora = kind == BackendKind.ESPLORA
+    val savedElectrum = saved?.takeIf { it.esploraUrl == null }
+    var host by remember { mutableStateOf(savedElectrum?.host ?: "") }
+    var port by remember { mutableStateOf(savedElectrum?.port?.toString() ?: "50002") }
     var esploraUrl by remember { mutableStateOf(saved?.esploraUrl ?: "") }
-    var useTls by remember { mutableStateOf(saved?.useTls ?: true) }
-    var selfSigned by remember { mutableStateOf(saved?.allowSelfSigned ?: false) }
+    var useTls by remember { mutableStateOf(savedElectrum?.useTls ?: true) }
+    var selfSigned by remember { mutableStateOf(savedElectrum?.allowSelfSigned ?: false) }
     var useProxy by remember { mutableStateOf(saved?.useProxy ?: false) }
     var proxyHost by remember { mutableStateOf(saved?.proxyHost ?: "127.0.0.1") }
     var proxyPort by remember { mutableStateOf(saved?.proxyPort?.toString() ?: "9050") }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
 
-    fun current(): WalletRepository.ServerSettings? {
-        val pp = proxyPort.toIntOrNull() ?: return null
-        if(useProxy && proxyHost.isBlank()) return null
-        if(esplora) return esploraSettings(esploraUrl, useProxy, proxyHost.trim(), pp)
-        val p = port.toIntOrNull() ?: return null
-        if(host.isBlank()) return null
-        return WalletRepository.ServerSettings(host.trim(), p, useTls, selfSigned, useProxy, proxyHost.trim(), pp)
-    }
+    fun current(): WalletRepository.ServerSettings? =
+        ServerFields(kind, host, port, useTls, selfSigned, esploraUrl, useProxy, proxyHost, proxyPort).settings()
 
     ScreenColumn {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
@@ -2406,6 +2402,12 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
         if(state == ServerScreenState.NeedsOwnServer) {
             Text("${coin.displayName} ${network.displayName} has no public server. Enter your own node's server to use this wallet.",
                 style = MaterialTheme.typography.bodyMedium, color = LtcPalette.amber)
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            for((k, label) in listOf(BackendKind.ELECTRUM to "Electrum server", BackendKind.ESPLORA to "Esplora API")) {
+                if(kind == k) Button(onClick = {}, modifier = Modifier.weight(1f)) { Text(label) }
+                else OutlinedButton(onClick = { kind = k; status = null }, enabled = !busy, modifier = Modifier.weight(1f)) { Text(label) }
+            }
         }
         if(esplora) {
             OutlinedTextField(value = esploraUrl, onValueChange = { esploraUrl = it },

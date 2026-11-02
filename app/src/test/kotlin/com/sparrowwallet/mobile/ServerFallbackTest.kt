@@ -1,5 +1,9 @@
 package com.sparrowwallet.mobile
 
+import kotlin.test.assertNull
+import com.sparrowwallet.mobile.electrum.EsploraBackend
+import com.sparrowwallet.mobile.electrum.ElectrumBackend
+import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.mobile.crypto.AirGappedException
 import com.sparrowwallet.mobile.crypto.BackendKind
 import com.sparrowwallet.mobile.crypto.Coin
@@ -79,5 +83,21 @@ class ServerFallbackTest {
         val servers = PublicServers.forNetwork(Network.MAINNET)
         assertTrue(servers.first().host != "ltc.rentonisk.com")
         assertTrue(servers.all { it.useTls && !it.allowSelfSigned })
+    }
+
+    @Test fun anEsploraCoinCanUseAnElectrumServer() {
+        // your own Luckycoin node behind ElectrumX, as the desktop allows
+        val electrum = ServerFields(BackendKind.ELECTRUM, host = "10.0.2.2", port = "50102", useTls = false).settings()!!
+        assertNull(electrum.esploraUrl)
+        assertTrue(Backends.open(electrum, ChainParams.of(Coin.LUCKYCOIN, Network.TESTNET)) is ElectrumBackend)
+        assertEquals(BackendKind.ELECTRUM, serverKindFor(Coin.LUCKYCOIN, electrum))
+        assertEquals(BackendKind.ESPLORA, serverKindFor(Coin.LUCKYCOIN, null))
+        // and the other way round
+        val esplora = ServerFields(BackendKind.ESPLORA, esploraUrl = "https://example.org/api/").settings()!!
+        assertEquals("https://example.org/api", esplora.esploraUrl)
+        assertTrue(Backends.open(esplora, ChainParams.of(Coin.DOGECOIN, Network.MAINNET)) is EsploraBackend)
+        assertEquals(BackendKind.ESPLORA, serverKindFor(Coin.DOGECOIN, esplora))
+        assertNull(ServerFields(BackendKind.ELECTRUM, host = " ", port = "50002").settings())
+        assertNull(ServerFields(BackendKind.ESPLORA, esploraUrl = "ftp://x").settings())
     }
 }
