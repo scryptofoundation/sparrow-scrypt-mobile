@@ -36,4 +36,12 @@ class InscriptionChecksTest {
         assertTrue(heldFrom(serverAnswer = null) { true })
         assertFalse(heldFrom(serverAnswer = null) { false })
     }
+
+    /** Nintondo indexes inscriptions only: its "clean" cannot clear a coin made by a runestone or dunestone transaction. */
+    @Test
+    fun inscriptionOnlyIndexerCannotClearTokenCoins() {
+        assertTrue(heldFrom(serverAnswer = false, tokensIndexed = false, writesTokens = { true }) { false })
+        assertFalse(heldFrom(serverAnswer = false, tokensIndexed = false, writesTokens = { false }) { true })
+        assertFalse(heldFrom(serverAnswer = false, tokensIndexed = true, writesTokens = { true }) { true })
+    }
 }

@@ -40,5 +40,14 @@ sealed interface InscriptionSetting {
     }
 }
 
-/** Whether a coin is held: the indexer's answer when it has one, otherwise the local rule. */
-inline fun heldFrom(serverAnswer: Boolean?, localMayCarry: () -> Boolean): Boolean = serverAnswer ?: localMayCarry()
+/**
+ * Whether a coin is held: the indexer's answer when it has one, otherwise the local rule. An indexer that does not
+ * index tokens (Nintondo: inscriptions only) cannot clear a coin whose transaction [writesTokens] (a runestone or
+ * dunestone).
+ */
+inline fun heldFrom(serverAnswer: Boolean?, tokensIndexed: Boolean = true, writesTokens: () -> Boolean = { false },
+                    localMayCarry: () -> Boolean): Boolean = when(serverAnswer) {
+    true -> true
+    false -> !tokensIndexed && writesTokens()
+    null -> localMayCarry()
+}

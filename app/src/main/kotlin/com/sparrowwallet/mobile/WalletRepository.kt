@@ -615,15 +615,20 @@ class WalletRepository(context: Context) {
      * made it writes one (a transaction the server cannot give leaves the value rule).
      */
     private fun heldCheck(coin: Coin, network: Network, client: ChainBackend): suspend (com.sparrowwallet.mobile.electrum.Utxo) -> Boolean = { utxo ->
-        heldFrom(indexerAnswer(coin, network, utxo)) { localMayCarry(coin, client, utxo) }
+        val url = inscriptionSetting(coin, network).url(coin, network)
+        heldFrom(indexerAnswer(coin, network, utxo), tokensIndexed = url == null || !InscriptionIndex.isNintondo(url),
+            writesTokens = { creatingTx(client, utxo.txHash)?.let { CarrierScan.hasRunestone(it) || CarrierScan.hasDunestone(it) } == true }) {
+            localMayCarry(coin, client, utxo)
+        }
     }
 
     private suspend fun localMayCarry(coin: Coin, client: ChainBackend, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean {
         if(utxo.value in CarrierScan.postage(coin)) return true
-        val tx = carrierTxs[utxo.txHash] ?: runCatching { RawTx.parse(client.rawTransaction(utxo.txHash)) }.getOrNull()
-            ?.also { carrierTxs[utxo.txHash] = it }
-        return CarrierScan.mayCarry(coin, tx, utxo.txPos, utxo.value)
+        return CarrierScan.mayCarry(coin, creatingTx(client, utxo.txHash), utxo.txPos, utxo.value)
     }
+
+    private suspend fun creatingTx(client: ChainBackend, txid: String): RawTx.Parsed? =
+        carrierTxs[txid] ?: runCatching { RawTx.parse(client.rawTransaction(txid)) }.getOrNull()?.also { carrierTxs[txid] = it }
 
     /** Coins confirmed above this height may be immature coinbases; deeper ones are mature either way. */
     private fun coinbaseCheckAbove(data: VaultData, tip: Long): Int =
