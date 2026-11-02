@@ -150,6 +150,29 @@ class WalletParamsTest {
         assertEquals(900L, coins.maturing)
     }
 
+    /** A coin that may carry an inscription is held: left out of Send unless the user includes held coins. */
+    @Test
+    fun heldCoinsAreLeftOutUnlessIncluded() {
+        val coins = SendCoins.split(listOf(ScannedCoin(100_000, 40, held = true), ScannedCoin(5_000_000, 40), ScannedCoin(100_000, 45, held = true)),
+            tip = 45, minConfirmations = 6)
+        assertEquals(listOf(5_000_000L), coins.spendable)
+        assertEquals(listOf(100_000L), coins.held)
+        assertEquals(100_000L, coins.maturing)
+        assertEquals(listOf(5_000_000L, 100_000L), coins.usable(includeHeld = true))
+        assertEquals(listOf(5_000_000L), coins.usable(includeHeld = false))
+
+        val master = HDKey.fromSeed(Bip39.seed(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ""))
+        val account = master.derivePath("m/44'/3'/0'")
+        val scan = WalletScanner.UtxoScan(listOf(
+            WalletScanner.ChainUtxo(Utxo("11".repeat(32), 0, 100, 100_000), 0, 0, held = true),
+            WalletScanner.ChainUtxo(Utxo("22".repeat(32), 1, 100, 300_000_000), 0, 3)
+        ), nextChangeIndex = 2)
+        assertEquals(listOf(300_000_000L), spendables(scan, 200, account, ScriptType.P2PKH, 6).first.map { it.value })
+        assertEquals(setOf(100_000L, 300_000_000L),
+            spendables(scan, 200, account, ScriptType.P2PKH, 6, includeHeld = true).first.map { it.value }.toSet())
+    }
+
     @Test
     fun aCoinbaseWaitsForItsMaturity() {
         // tip 100: a coinbase 40 deep under a 70-block rule waits, one 70 deep is spendable

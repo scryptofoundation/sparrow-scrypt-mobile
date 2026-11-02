@@ -36,6 +36,20 @@ class PsbtSignerTest {
         assertEquals(round(r.fee!! / vsize * 100) / 100, r.feeRatePerVb)
     }
 
+    /** An input worth the coin's usual inscription postage may carry one: the signer says so before signing. */
+    @Test fun reviewFlagsAnInputThatMayCarryAnInscription() {
+        val postage = SpendableInput(inputs[0].txid, inputs[0].vout, 10_000, inputs[0].key, inputs[0].scriptType)
+        val psbt = PsbtFixtures.createPsbt(TxBuilder.buildUnsigned(listOf(postage) + inputs.drop(1), destScript, 0, 2, changeScript,
+            sendMax = true, params = Network.MAINNET.litecoin))
+        val r = PsbtSigner.review(Psbt.parse(psbt), master, net, account)
+        assertEquals(listOf(10_000L), r.inputs.filter { it.mayCarry }.map { it.value })
+        assertEquals(true, r.warning?.contains("may carry an inscription"))
+
+        val plain = PsbtSigner.review(Psbt.parse(fixturePsbt()), master, net, account)
+        assertEquals(false, plain.inputs.any { it.mayCarry })
+        assertNull(plain.warning)
+    }
+
     @Test fun changeWithForeignScriptIsNotChange() {
         // the output pays destKey; its derivation names destKey's pubkey but the change path,
         // which derives a different key: claiming it is change would hide a payment

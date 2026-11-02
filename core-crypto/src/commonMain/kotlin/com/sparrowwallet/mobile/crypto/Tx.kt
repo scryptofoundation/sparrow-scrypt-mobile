@@ -190,7 +190,13 @@ object Ecdsa {
  * non-witness UTXO, so it does not go through [Tx], which assumes unsigned inputs.
  */
 object RawTx {
-    class Parsed(val txid: String, val outputs: List<TxOutput>)
+    /** [scriptSigs] and [witnesses] are per input, for [CarrierScan]; a witness is empty for a legacy input. */
+    class Parsed(
+        val txid: String,
+        val outputs: List<TxOutput>,
+        val scriptSigs: List<ByteArray> = emptyList(),
+        val witnesses: List<List<ByteArray>> = emptyList()
+    )
 
     fun parse(bytes: ByteArray): Parsed {
         val r = ByteReader(bytes)
@@ -205,21 +211,25 @@ object RawTx {
 
         val inputCount = r.varInt()
         require(inputCount in 0..100_000) { "Unreasonable input count" }
-        repeat(inputCount.toInt()) {
+        val scriptSigs = List(inputCount.toInt()) {
             r.bytes(36)   // outpoint
-            r.varBytes()  // scriptSig
+            val scriptSig = r.varBytes()
             r.bytes(4)    // sequence
+            scriptSig
         }
         val outputCount = r.varInt()
         require(outputCount in 0..100_000) { "Unreasonable output count" }
         val outputs = List(outputCount.toInt()) { TxOutput(r.u64le(), r.varBytes()) }
         val bodyEnd = bytes.size - r.remaining()
 
-        if(flag and 0x01 != 0) {
-            repeat(inputCount.toInt()) {
+        val witnesses = if(flag and 0x01 != 0) {
+            List(inputCount.toInt()) {
                 val items = r.varInt()
-                repeat(items.toInt()) { r.varBytes() }
+                require(items in 0..100_000) { "Unreasonable witness size" }
+                List(items.toInt()) { r.varBytes() }
             }
+        } else {
+            List(inputCount.toInt()) { emptyList() }
         }
         if(flag and 0x08 != 0) {
             require(r.remaining() >= 4) { "Truncated transaction" }
@@ -229,6 +239,6 @@ object RawTx {
         require(r.remaining() == 0) { "Trailing bytes after transaction" }
 
         val stripped = version + bytes.copyOfRange(bodyStart, bodyEnd) + locktime
-        return Parsed(sha256d(stripped).reversedArray().toHex(), outputs)
+        return Parsed(sha256d(stripped).reversedArray().toHex(), outputs, scriptSigs, witnesses)
     }
 }

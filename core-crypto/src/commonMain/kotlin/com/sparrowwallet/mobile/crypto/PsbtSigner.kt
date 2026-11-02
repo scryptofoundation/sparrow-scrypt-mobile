@@ -3,7 +3,8 @@ package com.sparrowwallet.mobile.crypto
 import kotlin.math.ceil
 import kotlin.math.round
 
-data class ReviewInput(val index: Int, val value: Long?, val ours: Boolean)
+/** [mayCarry]: the coin it spends may carry an inscription or tokens ([CarrierScan]). */
+data class ReviewInput(val index: Int, val value: Long?, val ours: Boolean, val mayCarry: Boolean = false)
 
 data class ReviewOutput(
     val index: Int,
@@ -69,7 +70,10 @@ object PsbtSigner {
     fun review(parsed: Psbt.Parsed, master: HDKey, params: ChainParams, accountPath: List<Long>, scriptType: ScriptType): PsbtReview {
         val inputs = parsed.inputs.mapIndexed { i, input ->
             val txIn = parsed.tx.inputs[i]
-            ReviewInput(i, input.spentOutput(txIn.prevTxid, txIn.vout)?.value, ourDerivation(input.derivations, master, accountPath) != null)
+            val value = input.spentOutput(txIn.prevTxid, txIn.vout)?.value
+            val prevTx = input.nonWitnessUtxo?.let { raw -> runCatching { RawTx.parse(raw) }.getOrNull()?.takeIf { it.txid == txIn.prevTxid } }
+            val mayCarry = value != null && CarrierScan.mayCarry(params.coin, prevTx, txIn.vout.toInt(), value)
+            ReviewInput(i, value, ourDerivation(input.derivations, master, accountPath) != null, mayCarry)
         }
         val outputs = parsed.tx.outputs.mapIndexed { j, out ->
             val change = parsed.outputs.getOrNull(j)?.derivations?.values?.any { (fp, path) ->
@@ -98,10 +102,17 @@ object PsbtSigner {
         val witnessBytes = if(segwit == 0) 0 else 2 + WITNESS_BYTES * segwit + (types.size - segwit)
         val vsize = parsed.unsignedTxBytes.size + scriptSigBytes + ceil(witnessBytes / 4.0)
         val rate = fee?.let { round(it / vsize * 100) / 100 }
-        val warning = if(accountPath.getOrNull(1)?.let { it and 0x7FFFFFFFL } == 0L) {
+        val pathWarning = if(accountPath.getOrNull(1)?.let { it and 0x7FFFFFFFL } == 0L) {
             "This wallet's keys are on Bitcoin's path (coin type 0), so a Bitcoin transaction would " +
                 "sign the same way. Sign only PSBTs you made yourself."
         } else null
+        val carrying = inputs.count { it.mayCarry }
+        val carryWarning = if(carrying > 0) {
+            (if(carrying == 1) "1 input" else "$carrying inputs") + " may carry an inscription or tokens (made by an " +
+                "inscription transaction, or holding an inscription's usual value). Signing spends them, and anything " +
+                "they carry could be lost in a payment or the fee."
+        } else null
+        val warning = listOfNotNull(carryWarning, pathWarning).joinToString("\n\n").ifEmpty { null }
         return PsbtReview(inputs, outputs, totalIn, totalOut, fee, rate, refusal(parsed, master, accountPath, scriptType), warning)
     }
 

@@ -57,7 +57,8 @@ class HttpEndpoint(
 
     val url: String = baseUrl.trimEnd('/')
 
-    suspend fun get(path: String): Response = request("GET", path, null)
+    /** [accept] is sent as the Accept header (ord answers JSON only when asked for it). */
+    suspend fun get(path: String, accept: String = "*/*"): Response = request("GET", path, null, accept)
 
     suspend fun post(path: String, body: String): Response = request("POST", path, body)
 
@@ -85,16 +86,16 @@ class HttpEndpoint(
         if(conn === c) conn = null
     }
 
-    private suspend fun request(method: String, path: String, body: String?): Response = lock.withLock {
+    private suspend fun request(method: String, path: String, body: String?, accept: String = "*/*"): Response = lock.withLock {
         withContext(Dispatchers.IO) {
             NetworkPolicy.check("Esplora")
             //a broadcast goes on a fresh connection: a kept one may have died while idle, and a POST is never retried
             if(method != "GET") close()
             try {
-                exchange(method, path, body)
+                exchange(method, path, body, accept)
             } catch(e: StaleConnection) {
                 NetworkPolicy.check("Esplora")
-                exchange(method, path, body)
+                exchange(method, path, body, accept)
             }
         }
     }
@@ -127,7 +128,7 @@ class HttpEndpoint(
         }
     }
 
-    private fun exchange(method: String, path: String, body: String?): Response {
+    private fun exchange(method: String, path: String, body: String?, accept: String): Response {
         val started = System.nanoTime()
         val kept = conn
         val raw = kept?.raw ?: if(proxy != null) Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress(proxy.host, proxy.port))) else Socket()
@@ -147,7 +148,7 @@ class HttpEndpoint(
                 append("$method $prefix$path HTTP/1.1\r\n")
                 append("Host: $hostHeader\r\n")
                 append("User-Agent: sparrow-ltc-mobile\r\n")
-                append("Accept: */*\r\n")
+                append("Accept: $accept\r\n")
                 append("Connection: keep-alive\r\n")
                 if(payload != null) {
                     append("Content-Type: text/plain\r\n")

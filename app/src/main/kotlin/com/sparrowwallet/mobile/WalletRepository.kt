@@ -4,6 +4,8 @@ import android.content.Context
 import com.sparrowwallet.mobile.crypto.Addresses
 import com.sparrowwallet.mobile.crypto.Bech32
 import com.sparrowwallet.mobile.crypto.Bip39
+import com.sparrowwallet.mobile.crypto.CarrierScan
+import com.sparrowwallet.mobile.crypto.RawTx
 import com.sparrowwallet.mobile.crypto.ElectrumSeed
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.ChainParams
@@ -22,6 +24,7 @@ import com.sparrowwallet.mobile.crypto.XpubKey
 import com.sparrowwallet.mobile.crypto.hexToBytes
 import com.sparrowwallet.mobile.crypto.toHex
 import com.sparrowwallet.mobile.electrum.ElectrumBackend
+import com.sparrowwallet.mobile.electrum.InscriptionIndex
 import com.sparrowwallet.mobile.electrum.ChainBackend
 import com.sparrowwallet.mobile.electrum.SocksProxy
 import com.sparrowwallet.mobile.electrum.WalletScanner
@@ -575,9 +578,51 @@ class WalletRepository(context: Context) {
     private suspend fun scanCoins(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType): Pair<WalletScanner.UtxoScan, Long> {
         lastScan.fresh(data, System.currentTimeMillis())?.let { return it }
         val tip = client.tipHeight()
-        val scan = WalletScanner(client, scriptType).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip))
+        val scan = WalletScanner(client, scriptType).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip), isHeld = heldCheck(coin(data), network(data), client))
         lastScan.put(data, scan, tip, System.currentTimeMillis())
         return scan to tip
+    }
+
+    /** Transactions never change, so the ones read to decide held coins are kept for the session. */
+    private val carrierTxs = java.util.concurrent.ConcurrentHashMap<String, RawTx.Parsed>()
+    /** An indexer's answer for a confirmed coin never changes while it is unspent; keyed by indexer URL and outpoint. */
+    private val indexerAnswers = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val indexers = java.util.concurrent.ConcurrentHashMap<String, InscriptionIndex>()
+
+    fun inscriptionSetting(coin: Coin, network: Network): InscriptionSetting =
+        InscriptionSetting.parse(prefs.getString("inscriptions.${coin.id}.${network.id}", null))
+
+    fun saveInscriptionSetting(coin: Coin, network: Network, setting: InscriptionSetting) {
+        prefs.edit().putString("inscriptions.${coin.id}.${network.id}", setting.stored()).apply()
+        lastScan.clearAll()
+    }
+
+    /** What the coin's indexer says about a coin: carries, clean, or null (checks off, not indexed, unreachable). */
+    suspend fun indexerAnswer(coin: Coin, network: Network, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean? {
+        val url = inscriptionSetting(coin, network).url(coin, network) ?: return null
+        val key = "$url|${utxo.txHash}:${utxo.txPos}"
+        indexerAnswers[key]?.let { return it }
+        val proxy = serverSettings(coin, network)?.takeIf { it.useProxy }?.let { SocksProxy(it.proxyHost, it.proxyPort) }
+        val index = indexers.getOrPut(url) { InscriptionIndex(url, proxy) }
+        val answer = runCatching { index.carries(utxo.txHash, utxo.txPos) }.getOrNull()
+        if(answer != null && utxo.height > 0) indexerAnswers[key] = answer
+        return answer
+    }
+
+    /**
+     * Whether a scanned coin is held because it may carry an inscription or tokens. The coin's indexer decides when
+     * one is set and answers; otherwise [CarrierScan]: its value is the coin's usual postage, or the transaction that
+     * made it writes one (a transaction the server cannot give leaves the value rule).
+     */
+    private fun heldCheck(coin: Coin, network: Network, client: ChainBackend): suspend (com.sparrowwallet.mobile.electrum.Utxo) -> Boolean = { utxo ->
+        heldFrom(indexerAnswer(coin, network, utxo)) { localMayCarry(coin, client, utxo) }
+    }
+
+    private suspend fun localMayCarry(coin: Coin, client: ChainBackend, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean {
+        if(utxo.value in CarrierScan.postage(coin)) return true
+        val tx = carrierTxs[utxo.txHash] ?: runCatching { RawTx.parse(client.rawTransaction(utxo.txHash)) }.getOrNull()
+            ?.also { carrierTxs[utxo.txHash] = it }
+        return CarrierScan.mayCarry(coin, tx, utxo.txPos, utxo.value)
     }
 
     /** Coins confirmed above this height may be immature coinbases; deeper ones are mature either way. */
@@ -626,7 +671,8 @@ class WalletRepository(context: Context) {
      * broadcasting. The UI shows the resulting fee/amount and only then calls [broadcast].
      * With [sendMax] the whole spendable balance minus fee goes to the destination.
      */
-    suspend fun prepareSend(data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean): SendPreview {
+    suspend fun prepareSend(data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean,
+                            includeHeld: Boolean = false): SendPreview {
         val net = network(data)
         val coin = coin(data)
         if(coin == Coin.LITECOIN && isMwebAddress(toAddress, net)) {
@@ -636,7 +682,7 @@ class WalletRepository(context: Context) {
         val destScript = Addresses.toScriptPubKey(toAddress, params)
         return withBackend(coin, net) { client ->
             val feeRate = clampFeeRate(coin, client.feeRate(2))
-            val (candidates, changeScript) = collectSpendables(client, data, account, scriptType(data))
+            val (candidates, changeScript) = collectSpendables(client, data, account, scriptType(data), includeHeld)
             val built = TxBuilder.build(candidates, destScript, amountLitoshis, feeRate, changeScript, sendMax, params)
             SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex())
         }
@@ -653,11 +699,13 @@ class WalletRepository(context: Context) {
         snap.utxos.filter { !it.spent && confirmedEnough(snap.status.blockHeaderHeight.toLong(), it.height) }
             .sumOf { it.value }
 
-    private suspend fun collectSpendables(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType): Pair<List<SpendableInput>, ByteArray> {
+    /** Held coins (which may carry an inscription) only with [includeHeld]; never into MWEB, where they would be lost. */
+    private suspend fun collectSpendables(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType,
+                                          includeHeld: Boolean = false): Pair<List<SpendableInput>, ByteArray> {
         val (scan, tip) = scanCoins(client, data, account, scriptType)
         val coin = coin(data)
         val network = network(data)
-        return spendables(scan, tip, account, scriptType, minConfirmations) { coin.coinbaseMaturity(network, it) }
+        return spendables(scan, tip, account, scriptType, minConfirmations, { coin.coinbaseMaturity(network, it) }, includeHeld)
     }
 
     class UnsignedSendPreview(
@@ -678,7 +726,7 @@ class WalletRepository(context: Context) {
      * externally signed anywhere yet.
      */
     suspend fun prepareSendPsbt(
-        data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean
+        data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean, includeHeld: Boolean = false
     ): UnsignedSendPreview {
         val net = network(data)
         val coin = coin(data)
@@ -697,7 +745,7 @@ class WalletRepository(context: Context) {
             val accountPath = parsePathChildren(data.derivationPath)
             val pathByKey = HashMap<HDKey, List<Long>>()
             val candidates = scan.utxos
-                .filter { spendable(data, tip, it) }
+                .filter { spendable(data, tip, it) && (includeHeld || !it.held) }
                 .map {
                     val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                     pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
@@ -742,12 +790,14 @@ class WalletRepository(context: Context) {
 
         val (scan, tip) = withBackend(Coin.LITECOIN, net) {
             val tip = it.tipHeight()
-            WalletScanner(it, ScriptType.P2WPKH).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip)) to tip
+            WalletScanner(it, ScriptType.P2WPKH).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip),
+                isHeld = heldCheck(Coin.LITECOIN, net, it)) to tip
         }
         val accountPath = parsePathChildren(data.derivationPath)
         val pathByKey = HashMap<HDKey, List<Long>>()
+        //a held coin may carry an inscription, which ord cannot follow into MWEB
         val candidates = scan.utxos
-            .filter { spendable(data, tip, it) }
+            .filter { spendable(data, tip, it) && !it.held }
             .map {
                 val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                 pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
@@ -846,14 +896,14 @@ class WalletRepository(context: Context) {
     suspend fun sendCoins(data: VaultData, account: HDKey): SendCoins =
         withBackend(coin(data), network(data)) { client ->
             val tip = client.tipHeight()
-            val scan = WalletScanner(client, scriptType(data)).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip))
-            lastScan.put(data, scan, tip, System.currentTimeMillis())
             val coin = coin(data)
+            val scan = WalletScanner(client, scriptType(data)).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip), isHeld = heldCheck(coin, network(data), client))
+            lastScan.put(data, scan, tip, System.currentTimeMillis())
             val network = network(data)
             SendCoins.split(scan.utxos.map {
-                ScannedCoin(it.utxo.value, it.utxo.height, if(it.coinbase) coin.coinbaseMaturity(network, it.utxo.height) else null)
+                ScannedCoin(it.utxo.value, it.utxo.height, if(it.coinbase) coin.coinbaseMaturity(network, it.utxo.height) else null, it.held)
             }, tip, minConfirmations)
-        }.let { it.copy(spendable = it.spendable.sortedDescending()) }
+        }.let { it.copy(spendable = it.spendable.sortedDescending(), held = it.held.sortedDescending()) }
 
     // ---- Sparrow Link (desktop ↔ mobile transfer) ----
 

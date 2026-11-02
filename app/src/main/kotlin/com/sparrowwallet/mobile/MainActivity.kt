@@ -1988,16 +1988,20 @@ private fun SendScreen(
     var usdRate by remember { mutableStateOf<Double?>(null) }
     var amountIsUsd by remember { mutableStateOf(false) }
     var feeRate by remember { mutableStateOf<Long?>(null) }
-    var utxos by remember { mutableStateOf<List<Long>?>(null) }
+    var scannedCoins by remember { mutableStateOf<SendCoins?>(null) }
     var maturing by remember { mutableStateOf(0L) }
+    // coins that may carry an inscription or tokens are held back unless the user includes them
+    var includeHeld by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if(NetworkPolicy.blocked) return@LaunchedEffect
         usdRate = PriceService.currentUsd(sendCoin)
         feeRate = runCatching { repo.currentFeeRate(sendCoin, network) }.getOrNull()
         val coins = publicData?.let { d -> runCatching { repo.sendCoins(d, publicAccount!!) }.getOrNull() }
-        utxos = coins?.spendable ?: emptyList()
+        scannedCoins = coins ?: SendCoins(emptyList(), 0L)
         maturing = coins?.maturing ?: 0L
     }
+    val heldCoins = scannedCoins?.held.orEmpty()
+    val utxos: List<Long>? = scannedCoins?.usable(includeHeld)
     val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         result.contents?.let { text ->
             try {
@@ -2093,7 +2097,7 @@ private fun SendScreen(
                 preview = if(fundingPrivate == true) {
                     repo.prepareMwebSend(privateData!!, address.trim(), amountLitoshis ?: 0L, sendMax)
                 } else {
-                    repo.prepareSend(publicData!!, publicAccount!!, address.trim(), amountLitoshis ?: 0L, sendMax)
+                    repo.prepareSend(publicData!!, publicAccount!!, address.trim(), amountLitoshis ?: 0L, sendMax, includeHeld)
                 }
             } catch(t: Throwable) {
                 error = t.message ?: "Could not build the transaction"
@@ -2250,6 +2254,17 @@ private fun SendScreen(
                 "(${repo.minConfirmations}, or longer for mined coins).", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        if(heldCoins.isNotEmpty() && fundingPrivate != true && !isMwebDest) {
+            Text("${heldCoins.size} ${if(heldCoins.size == 1) "coin" else "coins"} (${formatAmountShort(sendCoin, heldCoins.sum())}) " +
+                (if(includeHeld) "that may carry an inscription or tokens can be spent. Anything they carry could be lost."
+                 else "held back: they may carry an inscription or tokens."),
+                style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
+            Row(verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { includeHeld = !includeHeld; preview = null }) {
+                Checkbox(checked = includeHeld, onCheckedChange = { includeHeld = it; preview = null })
+                Text("Include held coins", style = MaterialTheme.typography.bodySmall)
+            }
+        }
         privateAvail?.let { avail ->
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
@@ -2341,7 +2356,7 @@ private fun SendScreen(
                             try {
                                 onSignExternally(repo.prepareSendPsbt(
                                     publicData!!, publicAccount!!, address.trim(),
-                                    amountLitoshis ?: 0L, sendMax))
+                                    amountLitoshis ?: 0L, sendMax, includeHeld))
                             } catch(t: Throwable) {
                                 error = t.message ?: "Could not build the PSBT"
                             } finally {
@@ -2385,6 +2400,11 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
     var useProxy by remember { mutableStateOf(saved?.useProxy ?: false) }
     var proxyHost by remember { mutableStateOf(saved?.proxyHost ?: "127.0.0.1") }
     var proxyPort by remember { mutableStateOf(saved?.proxyPort?.toString() ?: "9050") }
+    val publicIndexer = remember { InscriptionSetting.Public.url(coin, network) }
+    val savedChecks = remember { repo.inscriptionSetting(coin, network) }
+    // "off", "public" or "custom"; Public only where the coin has a public indexer
+    var checks by remember { mutableStateOf(when(savedChecks) { is InscriptionSetting.Custom -> "custom"; InscriptionSetting.Public -> if(publicIndexer != null) "public" else "off"; else -> "off" }) }
+    var checksUrl by remember { mutableStateOf((savedChecks as? InscriptionSetting.Custom)?.customUrl ?: "") }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
 
@@ -2430,6 +2450,21 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
             Text("Install the Orbot app and start it before syncing over Tor.",
                 style = MaterialTheme.typography.bodySmall)
         }
+        SectionLabel("Inscription checks")
+        Text("Asks an indexer whether each coin carries an inscription or tokens, so none is spent by accident. " +
+            "The indexer sees the coins it is asked about. With checks off, coins that look like they may carry one " +
+            "are held back from sends.", style = MaterialTheme.typography.bodySmall)
+        RadioList(listOfNotNull("off", publicIndexer?.let { "public" }, "custom"), checks, {
+            when(it) {
+                "public" -> "Public (" + java.net.URI(publicIndexer!!).host + ")"
+                "custom" -> "My own indexer"
+                else -> "Off"
+            }
+        }) { checks = it }
+        if(checks == "custom") {
+            OutlinedTextField(value = checksUrl, onValueChange = { checksUrl = it },
+                label = { Text("Indexer URL (ord or Nintondo API)") }, modifier = Modifier.fillMaxWidth())
+        }
         status?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(
@@ -2450,7 +2485,16 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
             Button(
                 onClick = {
                     val s = current() ?: run { status = "Fix the server fields first"; return@Button }
+                    val checksSetting = when(checks) {
+                        "public" -> InscriptionSetting.Public
+                        "custom" -> InscriptionSetting.parse("custom:" + checksUrl.trim())
+                        else -> InscriptionSetting.Off
+                    }
+                    if(checks == "custom" && checksSetting == InscriptionSetting.Off) {
+                        status = "The indexer URL must start with http:// or https://"; return@Button
+                    }
                     repo.saveServerSettings(coin, network, s)
+                    repo.saveInscriptionSetting(coin, network, checksSetting)
                     status = "Saved for ${coin.displayName} ${network.displayName}"
                 },
                 enabled = !busy, modifier = Modifier.weight(1f)

@@ -45,7 +45,7 @@ fun externalSigningSupported(coin: Coin, scriptType: String): Boolean =
 fun txidKnownBeforeSigning(scriptType: String): Boolean = scriptType == ScriptType.P2WPKH.name
 
 /** A scanned coin as Send judges it: [height] 0 or below is unconfirmed; [coinbaseMaturity] only for a mined coin. */
-data class ScannedCoin(val value: Long, val height: Int, val coinbaseMaturity: Int? = null)
+data class ScannedCoin(val value: Long, val height: Int, val coinbaseMaturity: Int? = null, val held: Boolean = false)
 
 /**
  * Whether a coin at [height] can go in the next block: [minConfirmations] deep, and a coinbase also
@@ -62,11 +62,16 @@ fun spendableAt(tip: Long, height: Int, minConfirmations: Int, coinbaseMaturity:
  * unconfirmed, or a coinbase short of its maturity), which Send names so a fresh receive is not
  * read as "not enough funds".
  */
-data class SendCoins(val spendable: List<Long>, val maturing: Long) {
+data class SendCoins(val spendable: List<Long>, val maturing: Long, val held: List<Long> = emptyList()) {
+    /** The coins Send may use: [held] ones (which may carry an inscription) only when the user includes them. */
+    fun usable(includeHeld: Boolean): List<Long> = if(includeHeld) spendable + held else spendable
+
     companion object {
+        /** [held] lists ready coins that may carry an inscription; Send leaves them out by default. */
         fun split(coins: List<ScannedCoin>, tip: Long, minConfirmations: Int): SendCoins {
             val (ready, young) = coins.partition { spendableAt(tip, it.height, minConfirmations, it.coinbaseMaturity) }
-            return SendCoins(ready.map { it.value }, young.sumOf { it.value })
+            val (held, free) = ready.partition { it.held }
+            return SendCoins(free.map { it.value }, young.sumOf { it.value }, held.map { it.value })
         }
     }
 }
@@ -119,6 +124,11 @@ internal class ScanCache<K, S> {
     fun clear(key: K) {
         entries.remove(key)
     }
+
+    /** Drops every scan, when what decides a scan's held coins changes. */
+    fun clearAll() {
+        entries.clear()
+    }
 }
 
 /**
@@ -127,9 +137,12 @@ internal class ScanCache<K, S> {
  * the first unused change index.
  */
 internal fun spendables(scan: WalletScanner.UtxoScan, tip: Long, account: HDKey, scriptType: ScriptType,
-                        minConfirmations: Int, coinbaseMaturity: (Int) -> Int = { 100 }): Pair<List<SpendableInput>, ByteArray> {
+                        minConfirmations: Int, coinbaseMaturity: (Int) -> Int = { 100 },
+                        includeHeld: Boolean = false): Pair<List<SpendableInput>, ByteArray> {
+    //held coins may carry an inscription or tokens: only when the user includes them
     val candidates = scan.utxos
         .filter { spendableAt(tip, it.utxo.height, minConfirmations, if(it.coinbase) coinbaseMaturity(it.utxo.height) else null) }
+        .filter { includeHeld || !it.held }
         .map {
             SpendableInput(
                 it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value,

@@ -27,8 +27,11 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
         return Balance(confirmed, unconfirmed)
     }
 
-    /** A wallet utxo tagged with the derivation (chain/index) of the address holding it, and whether it was mined. */
-    class ChainUtxo(val utxo: Utxo, val chain: Int, val index: Int, val coinbase: Boolean = false)
+    /**
+     * A wallet utxo tagged with the derivation (chain/index) of the address holding it, whether it was mined, and
+     * whether it is [held] because it may carry an inscription or tokens.
+     */
+    class ChainUtxo(val utxo: Utxo, val chain: Int, val index: Int, val coinbase: Boolean = false, val held: Boolean = false)
 
     class UtxoScan(val utxos: List<ChainUtxo>, val nextChangeIndex: Int)
 
@@ -36,9 +39,11 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
      * Collects all spendable utxos over the same lookahead as [balance], and finds the
      * first never-used change index for the change output. A utxo confirmed above
      * [checkCoinbaseAbove] is looked up to tell whether it is a coinbase, which must mature
-     * before it is spent; deeper ones are mature either way and cost no lookup.
+     * before it is spent; deeper ones are mature either way and cost no lookup. [isHeld] marks
+     * the coins that may carry an inscription or tokens.
      */
-    suspend fun utxos(accountKey: Bip32Pub, addressesPerChain: Int = 20, checkCoinbaseAbove: Int = Int.MAX_VALUE): UtxoScan {
+    suspend fun utxos(accountKey: Bip32Pub, addressesPerChain: Int = 20, checkCoinbaseAbove: Int = Int.MAX_VALUE,
+                      isHeld: suspend (Utxo) -> Boolean = { false }): UtxoScan {
         val utxos = ArrayList<ChainUtxo>()
         var nextChangeIndex = addressesPerChain
         for(chain in 0..1) {
@@ -47,7 +52,7 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
                 for(utxo in backend.unspent(script)) {
                     val young = utxo.height > 0 && utxo.height > checkCoinbaseAbove
                     val coinbase = young && backend.transaction(utxo.txHash).inputs.all { it.prevTxid == null }
-                    utxos.add(ChainUtxo(utxo, chain, i, coinbase))
+                    utxos.add(ChainUtxo(utxo, chain, i, coinbase, isHeld(utxo)))
                 }
                 if(chain == 1 && i < nextChangeIndex && backend.history(script).isEmpty()) {
                     nextChangeIndex = i
