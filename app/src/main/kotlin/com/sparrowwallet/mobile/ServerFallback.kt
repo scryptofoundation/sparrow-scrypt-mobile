@@ -51,7 +51,8 @@ object PublicServers {
             Coin.BELLSCOIN -> listOf(esplora("https://api.nintondo.io"))
             Coin.PEPECOIN -> listOf(esplora("https://peppool.space/api"))
             Coin.LUCKYCOIN -> listOf(esplora("https://luckyscan.org/api"))
-            Coin.JUNKCOIN -> listOf(esplora("https://explorer.junk-coin.com/api")) // reads only, no broadcast
+            // junk-api.s3na.xyz broadcasts (verified 2026-11-03); explorer.junk-coin.com serves reads only
+            Coin.JUNKCOIN -> listOf(esplora("https://junk-api.s3na.xyz"), esplora("https://explorer.junk-coin.com/api"))
         }
         Network.TESTNET -> when(coin) {
             Coin.LITECOIN -> testnet

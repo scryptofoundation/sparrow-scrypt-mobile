@@ -58,7 +58,9 @@ class ServerFallbackTest {
         assertEquals(listOf("https://api.nintondo.io"), PublicServers.forCoin(Coin.BELLSCOIN, Network.MAINNET).map { it.esploraUrl })
         assertEquals(listOf("https://peppool.space/api"), PublicServers.forCoin(Coin.PEPECOIN, Network.MAINNET).map { it.esploraUrl })
         assertEquals(listOf("https://luckyscan.org/api"), PublicServers.forCoin(Coin.LUCKYCOIN, Network.MAINNET).map { it.esploraUrl })
-        assertEquals(listOf("https://explorer.junk-coin.com/api"), PublicServers.forCoin(Coin.JUNKCOIN, Network.MAINNET).map { it.esploraUrl })
+        // The broadcasting server first: explorer.junk-coin.com serves reads only
+        assertEquals(listOf("https://junk-api.s3na.xyz", "https://explorer.junk-coin.com/api"),
+            PublicServers.forCoin(Coin.JUNKCOIN, Network.MAINNET).map { it.esploraUrl })
         assertEquals(listOf("https://pepe-testnet-api.nintondo.io"), PublicServers.forCoin(Coin.PEPECOIN, Network.TESTNET).map { it.esploraUrl })
         assertEquals(listOf("https://jkc-testnet-api.s3na.xyz"), PublicServers.forCoin(Coin.JUNKCOIN, Network.TESTNET).map { it.esploraUrl })
         for(coin in listOf(Coin.DOGECOIN, Coin.LUCKYCOIN, Coin.DINGOCOIN, Coin.BELLSCOIN)) {
