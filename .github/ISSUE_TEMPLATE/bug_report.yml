@@ -1,0 +1,76 @@
+name: Bug report
+description: Something in Sparrow-Scrypt Mobile does not work as it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. Never post a seed, a private key, a wallet password or a wallet file here: this page is public.
+        A security hole (anything that could lose funds or leak keys) goes to the Security tab instead, not here.
+  - type: dropdown
+    id: coin
+    attributes:
+      label: Coin
+      multiple: true
+      options:
+        - Litecoin
+        - Litecoin MWEB
+        - Dogecoin
+        - Pepecoin
+        - Junkcoin
+        - Luckycoin
+        - Bellscoin
+        - Dingocoin
+        - Not coin specific
+    validations:
+      required: true
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network
+      options:
+        - Mainnet
+        - Testnet
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: The release you installed
+      placeholder: 0.17.0 beta 1
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Phone
+      description: Make, model and Android version
+      placeholder: Pixel 7, Android 15
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Server
+      description: Public server, or your own (Electrum or Esplora), and whether Tor is on. Leave out any address you want to keep private.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Optional. Cover any addresses, balances or words you want to keep private.
