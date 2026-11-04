@@ -382,7 +382,7 @@ private fun WalletListScreen(
         }
     }
     ScreenColumn {
-        Text("Sparrow LTC", style = MaterialTheme.typography.headlineMedium)
+        Text("Sparrow-Scrypt", style = MaterialTheme.typography.headlineMedium)
         if(wallets.isEmpty()) {
             Text("Litecoin, Dogecoin and five more coins, in sync with your desktop.", style = MaterialTheme.typography.bodyMedium)
         } else {
@@ -2562,7 +2562,7 @@ private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData,
                     Text("View key — spend pubkey:", style = MaterialTheme.typography.bodySmall)
                     Text(mweb.spendPubKeyHex, style = MaterialTheme.typography.bodySmall)
                     Text("Same two lines Electrum-LTC shows under Wallet → Information, and what desktop " +
-                        "Sparrow-LTC derives — usable for MWEB watch-only tools. MWEB balance and sending " +
+                        "Sparrow-Scrypt derives, usable for MWEB watch-only tools. MWEB balance and sending " +
                         "aren't on mobile yet (needs the mwebd scanner); funds sent here are visible on desktop.",
                         style = MaterialTheme.typography.bodySmall)
                 }

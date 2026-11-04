@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -11,15 +13,39 @@ kotlin {
     }
 }
 
+//Release builds are signed with the key keystore.properties names; that file and the key stay outside git, and without
+//them the release build is left unsigned
+val releaseSigning = rootProject.file("keystore.properties").takeIf { it.isFile }?.let { file ->
+    Properties().apply { file.inputStream().use { load(it) } }
+}
+
 android {
     namespace = "com.sparrowwallet.mobile"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.sparrowwallet.mobile"
+        //Sparrow-Scrypt's own id, so the app does not sit in Sparrow Wallet's namespace (the code namespace is unchanged)
+        applicationId = "io.github.scryptofoundation.sparrowscrypt"
         minSdk = 26
         targetSdk = 35
-        versionCode = 46
-        versionName = "0.16.2"
+        versionCode = 47
+        versionName = "0.17.0-beta.1"
+    }
+    signingConfigs {
+        if(releaseSigning != null) {
+            create("release") {
+                storeFile = file(releaseSigning.getProperty("storeFile"))
+                storePassword = releaseSigning.getProperty("storePassword")
+                keyAlias = releaseSigning.getProperty("keyAlias")
+                keyPassword = releaseSigning.getProperty("keyPassword")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if(releaseSigning != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
     buildFeatures {
         compose = true

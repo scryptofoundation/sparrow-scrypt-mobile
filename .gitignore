@@ -4,5 +4,8 @@ build/
 */build/
 local.properties
 *.apk
+keystore.properties
+*.jks
+*.keystore
 .idea/
 captures/
