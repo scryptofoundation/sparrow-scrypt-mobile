@@ -8,7 +8,7 @@ Android only for now. There is no iPhone version yet.
 
 ## Status: beta
 
-Current version: **0.17.0 beta 1** (tag `v0.17.0-beta.1`).
+Current version: **0.17.0 beta 2** (tag `v0.17.0-beta.2`).
 
 Sparrow-Scrypt Mobile is in public testing. Expect bugs. Use testnet wallets where you can and small amounts where you can't, and never put a seed that holds real savings into a beta build.
 
@@ -52,7 +52,7 @@ The APK is on the [Releases](../../releases) page, with a SHA256 checksum. Check
 
 | System | File |
 | --- | --- |
-| Android 8.0 or later | `Sparrow-Scrypt-Mobile-0.17.0-beta.1.apk` |
+| Android 8.0 or later | `Sparrow-Scrypt-Mobile-0.17.0-beta.2.apk` |
 
 The app is not in the Play Store yet. To install it, open the APK on your phone and allow your browser or file manager to install unknown apps when Android asks.
 
@@ -60,7 +60,7 @@ Every release is signed with the same key. Its SHA-256 certificate fingerprint i
 
 `5E:A1:04:86:53:A3:A4:F8:20:69:F0:C7:8A:37:14:E2:F5:C6:BC:CB:B2:D6:B0:3C:35:23:9F:CE:47:A3:11:5D`
 
-You can check it with `apksigner verify --print-certs Sparrow-Scrypt-Mobile-0.17.0-beta.1.apk`.
+You can check it with `apksigner verify --print-certs Sparrow-Scrypt-Mobile-0.17.0-beta.2.apk`.
 
 ## Building
 
