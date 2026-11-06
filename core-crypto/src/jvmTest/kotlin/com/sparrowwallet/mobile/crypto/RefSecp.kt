@@ -3,10 +3,9 @@ package com.sparrowwallet.mobile.crypto
 import java.math.BigInteger
 
 /**
- * Pure-BigInteger secp256k1 — sufficient (and fully correct) for key derivation and
- * parity testing on the JVM. Production mobile targets will delegate to secp256k1-kmp
- * (libsecp256k1); the expect signatures mirror that API so the swap is drop-in.
- * NOT constant-time — do not use for signing in production.
+ * Reference secp256k1 in plain BigInteger arithmetic, kept only as an independent test oracle for
+ * the production code (libsecp256k1 for keys, BouncyCastle for ECDSA). NOT constant-time: it must
+ * never ship. It was the app's implementation up to 0.17.0-beta.1.
  */
 private val P = BigInteger("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f", 16)
 private val N = BigInteger("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141", 16)
@@ -17,7 +16,7 @@ private val G = Point(
 
 private data class Point(val x: BigInteger, val y: BigInteger)
 
-actual fun secpPublicKeyCreate(privKey: ByteArray): ByteArray {
+fun refPublicKeyCreate(privKey: ByteArray): ByteArray {
     require(privKey.size == 32) { "Private key must be 32 bytes" }
     val k = BigInteger(1, privKey)
     require(k.signum() > 0 && k < N) { "Private key out of range" }
@@ -28,7 +27,7 @@ actual fun secpPublicKeyCreate(privKey: ByteArray): ByteArray {
     return out
 }
 
-actual fun secpPrivKeyTweakAdd(privKey: ByteArray, tweak: ByteArray): ByteArray {
+fun refPrivKeyTweakAdd(privKey: ByteArray, tweak: ByteArray): ByteArray {
     require(privKey.size == 32 && tweak.size == 32) { "Keys must be 32 bytes" }
     require(BigInteger(1, tweak) < N) { "Tweak out of range" }
     val sum = (BigInteger(1, privKey) + BigInteger(1, tweak)).mod(N)
@@ -36,21 +35,21 @@ actual fun secpPrivKeyTweakAdd(privKey: ByteArray, tweak: ByteArray): ByteArray 
     return to32Bytes(sum)
 }
 
-actual fun secpPubKeyTweakAdd(pubKey: ByteArray, tweak: ByteArray): ByteArray {
+fun refPubKeyTweakAdd(pubKey: ByteArray, tweak: ByteArray): ByteArray {
     val t = BigInteger(1, tweak)
     require(t.signum() > 0 && t < N) { "Tweak out of range" }
     val sum = add(decompress(pubKey), pmulG(t)) ?: throw IllegalStateException("Point at infinity")
     return compress(sum)
 }
 
-actual fun secpPubKeyTweakMul(pubKey: ByteArray, scalar: ByteArray): ByteArray {
+fun refPubKeyTweakMul(pubKey: ByteArray, scalar: ByteArray): ByteArray {
     val k = BigInteger(1, scalar)
     require(k.signum() > 0 && k < N) { "Scalar out of range" }
     val product = multiply(decompress(pubKey), k) ?: throw IllegalStateException("Point at infinity")
     return compress(product)
 }
 
-actual fun secpSign(messageHash: ByteArray, privKey: ByteArray): ByteArray {
+fun refSign(messageHash: ByteArray, privKey: ByteArray): ByteArray {
     require(messageHash.size == 32 && privKey.size == 32) { "Hash and key must be 32 bytes" }
     val d = BigInteger(1, privKey)
     require(d.signum() > 0 && d < N) { "Private key out of range" }
@@ -62,7 +61,7 @@ actual fun secpSign(messageHash: ByteArray, privKey: ByteArray): ByteArray {
     // actuals must reproduce this via libsecp256k1's ndata parameter.
     var counter: Long? = null
     while(true) {
-        val (r, s) = signAttempt(d, z, privKey, counter)
+        val (r, s) = refSignAttempt(d, z, privKey, counter)
         if(r.bitLength() <= 255) {
             return to32Bytes(r) + to32Bytes(s)
         }
@@ -70,7 +69,7 @@ actual fun secpSign(messageHash: ByteArray, privKey: ByteArray): ByteArray {
     }
 }
 
-private fun signAttempt(d: BigInteger, z: BigInteger, privKey: ByteArray, counter: Long?): Pair<BigInteger, BigInteger> {
+internal fun refSignAttempt(d: BigInteger, z: BigInteger, privKey: ByteArray, counter: Long?): Pair<BigInteger, BigInteger> {
     // RFC6979 HMAC-SHA256 DRBG; bits2octets(h1) = h1 mod n since hash length == qlen
     val h1 = to32Bytes(z.mod(N))
     // 32-byte little-endian counter; guard it<8 because Kotlin's ushr masks shifts to 0..63

@@ -3,9 +3,9 @@ package com.sparrowwallet.mobile.crypto
 /**
  * secp256k1 operations (expect/actual).
  *
- * Signatures deliberately mirror the secp256k1-kmp (ACINQ) API subset we use, so
- * production targets can delegate straight to libsecp256k1 while the JVM parity
- * target uses a pure-BigInteger implementation.
+ * The JVM and Android actuals (SecpNative.kt) use libsecp256k1 for keys and tweaks and
+ * BouncyCastle with drongo's nonce for ECDSA, both made for secret data. A plain
+ * BigInteger version lives only in the tests, as a reference.
  */
 
 /** Compressed (33-byte) public key for a 32-byte private key. */
@@ -23,7 +23,7 @@ expect fun secpPubKeyTweakMul(pubKey: ByteArray, scalar: ByteArray): ByteArray
 /**
  * ECDSA signature over a 32-byte message hash: RFC6979 deterministic nonce with
  * low-R grinding (§3.6 counter as 32-byte LE additional data) and low-S
- * normalization — byte-identical to drongo/Bitcoin Core. Returns compact 64-byte
- * r||s. Native actuals must grind via libsecp256k1's ndata parameter.
+ * normalization, byte-identical to drongo/Bitcoin Core. Returns compact 64-byte
+ * r||s.
  */
 expect fun secpSign(messageHash: ByteArray, privKey: ByteArray): ByteArray

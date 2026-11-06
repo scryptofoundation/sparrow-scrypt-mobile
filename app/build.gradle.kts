@@ -83,4 +83,6 @@ dependencies {
     implementation("io.grpc:grpc-stub:1.79.0")
     implementation("com.google.protobuf:protobuf-java:4.34.0")
     testImplementation(kotlin("test"))
+    //Unit tests run on the build machine's JVM, where libsecp256k1's Android library cannot load
+    testImplementation(libs.secp256k1.kmp.jni.jvm)
 }
