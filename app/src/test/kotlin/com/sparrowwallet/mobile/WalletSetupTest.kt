@@ -11,9 +11,12 @@ import kotlin.test.assertTrue
 class WalletSetupTest {
     @Test
     fun scriptTypesFollowSegwit() {
-        assertEquals(listOf(ScriptType.P2PKH), WalletSetup.scriptTypes(Coin.DOGECOIN))
-        assertEquals(ScriptType.P2WPKH, WalletSetup.scriptTypes(Coin.BELLSCOIN).first())
-        assertEquals(listOf(ScriptType.P2WPKH, ScriptType.P2SH_P2WPKH, ScriptType.P2PKH), WalletSetup.scriptTypes(Coin.LITECOIN))
+        assertEquals(listOf(ScriptType.P2PKH), WalletSetup.scriptTypes(Coin.DOGECOIN, Network.MAINNET))
+        assertEquals(ScriptType.P2WPKH, WalletSetup.scriptTypes(Coin.BELLSCOIN, Network.MAINNET).first())
+        assertEquals(listOf(ScriptType.P2WPKH, ScriptType.P2SH_P2WPKH, ScriptType.P2PKH, ScriptType.P2TR),
+            WalletSetup.scriptTypes(Coin.LITECOIN, Network.MAINNET))
+        assertFalse(ScriptType.P2TR in WalletSetup.scriptTypes(Coin.BELLSCOIN, Network.TESTNET))
+        assertEquals("Taproot", WalletSetup.scriptTypeLabel(ScriptType.P2TR))
     }
 
     @Test

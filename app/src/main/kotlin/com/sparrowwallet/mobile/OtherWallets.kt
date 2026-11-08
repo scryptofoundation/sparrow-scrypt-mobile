@@ -53,9 +53,10 @@ object OtherWallets {
             listOf(Account(Coin.DOGECOIN, ScriptType.P2PKH, "m/44'/3'/0'", "", "Legacy"))),
         //Nintondo derives every address type from the same m/44'/0'/0' keys; Native Segwit is its default
         App("Nintondo", "Adds Nintondo's built-in passphrase for you. Pick the address type the Nintondo wallet uses: " +
-            "Native Segwit (bel1) is its default, Legacy (B) the other choice. Taproot is not supported yet. $CHANGE_NOTE",
+            "Native Segwit (bel1q) is its default, Taproot (bel1p) and Legacy (B) the others. $CHANGE_NOTE",
             listOf(Account(Coin.BELLSCOIN, ScriptType.P2WPKH, "m/44'/0'/0'", "bells", "Native Segwit (default)"),
-                Account(Coin.BELLSCOIN, ScriptType.P2PKH, "m/44'/0'/0'", "bells", "Legacy"))),
+                Account(Coin.BELLSCOIN, ScriptType.P2PKH, "m/44'/0'/0'", "bells", "Legacy"),
+                Account(Coin.BELLSCOIN, ScriptType.P2TR, "m/44'/0'/0'", "bells", "Taproot"))),
         App("Peppool", "Restores the first Peppool account's Legacy (P) address. Peppool keeps each further account " +
             "at its own path; only the first is restored here. $CHANGE_NOTE",
             listOf(Account(Coin.PEPECOIN, ScriptType.P2PKH, "m/44'/3434'/0'", "", "Legacy"))),

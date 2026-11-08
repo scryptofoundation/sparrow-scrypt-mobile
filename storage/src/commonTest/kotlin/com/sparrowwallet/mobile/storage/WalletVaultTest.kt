@@ -67,6 +67,13 @@ class WalletVaultTest {
     }
 
     @Test
+    fun taprootScriptTypeRoundTrips() {
+        val tr = data.copy(derivationPath = "m/86'/2'/0'", scriptType = "P2TR")
+        assertEquals(tr, WalletVault.open(WalletVault.seal(tr, "pw", iters), "pw"))
+        assertEquals("P2TR", WalletVault.open(WalletVault.seal(tr, "pw", iters), "pw").scriptType)
+    }
+
+    @Test
     fun vaultKeepsCoin() {
         val doge = data.copy(coin = "dogecoin", derivationPath = "m/44'/3'/0'", scriptType = "P2PKH")
         val blob = WalletVault.seal(doge, "pw", iters)

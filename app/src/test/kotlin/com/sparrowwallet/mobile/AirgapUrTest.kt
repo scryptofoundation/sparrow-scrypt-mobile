@@ -49,6 +49,17 @@ class AirgapUrTest {
         assertContentEquals(this.account.parentFingerprint, key.parentFingerprint)
     }
 
+    @Test fun accountExportTaprootIsTrDescriptor() {
+        val trPath = listOf(86L + hardened, 1L + hardened, 0L + hardened)
+        val trAccount = trPath.fold(master) { key, child -> key.deriveChild(child) }
+        val decoded = AirgapUr.accountExport(master, trAccount, trPath, ScriptType.P2TR).decodeFromRegistry() as CryptoAccount
+        val output = decoded.outputDescriptors.single()
+        assertEquals(listOf(ScriptExpression.TAPROOT), output.scriptExpressions)
+        assertContentEquals(trAccount.pubKey, output.hdKey.key)
+        assertContentEquals(trAccount.chainCode, output.hdKey.chainCode)
+        assertEquals("86'/1'/0'", output.hdKey.origin.path)
+    }
+
     @Test fun psbtRoundTripsThroughManyPartsWithLossAndRepeats() {
         val psbt = fakePsbt(4_000, 7)
         val enc = AirgapUr.psbtEncoder(psbt)

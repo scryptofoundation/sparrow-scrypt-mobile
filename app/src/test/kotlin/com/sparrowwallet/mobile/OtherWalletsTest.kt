@@ -8,6 +8,7 @@ import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.ElectrumSeed
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.Network
+import com.sparrowwallet.mobile.crypto.ScriptType
 import com.sparrowwallet.mobile.storage.VaultData
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -48,6 +49,18 @@ class OtherWalletsTest {
         assertEquals("LACv4L1XCLC6yw56YMFaZA8fVH7iw66bH6", first("luckycoinwallet", Coin.LUCKYCOIN))
         assertEquals("DBus3bamQjgJULBJtYXpEzDWQRwF5iwxgC", first("Cake Wallet", Coin.DOGECOIN))
         assertEquals("ltc1qjmxnz78nmc8nq77wuxh25n2es7rzm5c2rkk4wh", first("Cake Wallet", Coin.LITECOIN))
+    }
+
+    @Test
+    fun nintondoOffersTaproot() {
+        val account = app("Nintondo").accountsFor(Coin.BELLSCOIN).first { it.scriptType == ScriptType.P2TR }
+        assertEquals("m/44'/0'/0'", account.derivationPath)
+        assertEquals("bells", account.hiddenPassphrase)
+        assertEquals("Taproot", account.label)
+        assertEquals("bel1paacjc7szg778dqsx3amwy7t02p8j5hsd9em3gxlq9jl9rl88jf3s53f3ea",
+            receive0(OtherWallets.restoreVaults(app("Nintondo"), account, abandon, "W", false).first().data))
+        assertTrue("Taproot is not supported yet" !in app("Nintondo").help)
+        assertTrue("Taproot (bel1p) and Legacy (B) the others" in app("Nintondo").help)
     }
 
     @Test
@@ -102,7 +115,7 @@ class OtherWalletsTest {
     @Test
     fun everyRowIsSupportedByItsCoin() {
         for(app in OtherWallets.ALL) for(account in app.accounts) {
-            assertTrue(account.coin.supports(account.scriptType), "${app.name} ${account.coin}")
+            assertTrue(ChainParams.of(account.coin, Network.MAINNET).supports(account.scriptType), "${app.name} ${account.coin}")
         }
     }
 

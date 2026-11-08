@@ -147,7 +147,7 @@ class WalletRepository(context: Context) {
         if(vaultFile(clean).exists()) return "A wallet named \"$clean\" already exists"
         val publicType = ScriptType.entries.firstOrNull { it.name == scriptType }
         if(publicType == null && !(scriptType == "MWEB" && coin.mweb)) return "${coin.displayName} has no $scriptType wallets"
-        if(publicType != null && !ChainParams.of(coin, network).supports(publicType)) return "${coin.displayName} has no $scriptType wallets"
+        if(publicType != null) ImportRules.problem(coin, network, scriptType, false)?.let { return it }
         val classified = classifySeed(mnemonic.trim(), coin, network, publicType ?: ScriptType.P2WPKH)
         val invalid = if(ElectrumSeed.isValid(mnemonic.trim()) && !WalletSetup.electrumSeedAllowed(coin))
             "Electrum seeds are Litecoin only" else "Not a valid BIP39 or Electrum seed"
@@ -228,7 +228,7 @@ class WalletRepository(context: Context) {
             "testnet" -> Network.TESTNET
             else -> throw SparrowImport.ImportException("Unsupported network in wallet file: ${imported.network}")
         }
-        ImportRules.problem(imported.coin, imported.scriptType, linkedMweb)?.let { throw SparrowImport.ImportException(it) }
+        ImportRules.problem(imported.coin, network, imported.scriptType, linkedMweb)?.let { throw SparrowImport.ImportException(it) }
         SparrowImport.seedProblem(imported)?.let { throw SparrowImport.ImportException(it) }
         return network
     }

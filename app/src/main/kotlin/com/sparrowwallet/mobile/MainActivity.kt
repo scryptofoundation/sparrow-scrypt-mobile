@@ -837,10 +837,13 @@ private fun SaveWalletScreen(
             label = { Text("Wallet name") },
             modifier = Modifier.fillMaxWidth()
         )
-        CoinPicker(coin) { coin = it; scriptType = WalletSetup.scriptTypes(it).first() }
-        NetworkPicker(network) { network = it }
-        if(WalletSetup.scriptTypes(coin).size > 1) {
-            ScriptTypePicker(WalletSetup.scriptTypes(coin), scriptType) { scriptType = it }
+        CoinPicker(coin) { coin = it; scriptType = WalletSetup.scriptTypes(it, network).first() }
+        NetworkPicker(network) {
+            network = it
+            if(scriptType !in WalletSetup.scriptTypes(coin, it)) scriptType = WalletSetup.scriptTypes(coin, it).first()
+        }
+        if(WalletSetup.scriptTypes(coin, network).size > 1) {
+            ScriptTypePicker(WalletSetup.scriptTypes(coin, network), scriptType) { scriptType = it }
         }
         if(mnemonicEditable) {
             OutlinedTextField(
@@ -1944,8 +1947,8 @@ private fun shortAddress(address: String): String =
  */
 private fun estimatePublicFee(utxosDesc: List<Long>, amount: Long, sendMax: Boolean, ratePerVb: Long,
                               coin: Coin = Coin.LITECOIN, inputType: ScriptType = ScriptType.P2WPKH): Long? {
-    val inputVbytes = when(inputType) { ScriptType.P2PKH -> 148L; ScriptType.P2SH_P2WPKH -> 91L; ScriptType.P2WPKH -> 68L; ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 7") }
-    val outputVbytes = if(inputType == ScriptType.P2WPKH) 31L else 34L
+    val inputVbytes = when(inputType) { ScriptType.P2PKH -> 148L; ScriptType.P2SH_P2WPKH -> 91L; ScriptType.P2WPKH -> 68L; ScriptType.P2TR -> 58L }
+    val outputVbytes = when(inputType) { ScriptType.P2WPKH -> 31L; ScriptType.P2TR -> 43L; else -> 34L }
     fun vsize(inputs: Int, outputs: Int): Long = coin.feeSize(11L + inputVbytes * inputs + outputVbytes * outputs)
     if(utxosDesc.isEmpty()) return null
     if(sendMax) return vsize(utxosDesc.size, 1) * ratePerVb
