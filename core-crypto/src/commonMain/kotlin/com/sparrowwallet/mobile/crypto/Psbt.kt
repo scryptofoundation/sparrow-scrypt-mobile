@@ -335,7 +335,7 @@ object Psbt {
                 txIn.witness = listOf(sig)
                 continue
             }
-            if(input.partialSigs.isEmpty()) throw IllegalArgumentException("Input ${i + 1} has no signature — sign the PSBT first")
+            if(input.partialSigs.isEmpty()) throw IllegalArgumentException("Input ${i + 1} has no signature. Sign the PSBT first")
             val spent = input.spentOutput(txIn.prevTxid, txIn.vout)?.script
                 ?: throw IllegalArgumentException("Input ${i + 1} has no witness utxo or previous transaction")
             val (pub, sig) = input.partialSigs.entries.map { it.key.hexToBytes() to it.value }
