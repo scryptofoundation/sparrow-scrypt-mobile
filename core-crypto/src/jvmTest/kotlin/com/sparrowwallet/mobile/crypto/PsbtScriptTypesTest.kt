@@ -8,7 +8,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * PSBTs for Legacy, Nested Segwit and Native Segwit inputs: what Psbt.create writes per type, and
+ * PSBTs for Legacy, Nested Segwit, Native Segwit and Taproot inputs: what Psbt.create writes per type, and
  * Psbt.finalize turning each type's signatures into the same transaction direct signing makes.
  */
 class PsbtScriptTypesTest {
@@ -88,12 +88,16 @@ class PsbtScriptTypesTest {
 
     @Test
     fun finalizeBuildsTheScriptSigPerType() {
-        for(type in ScriptType.entries.filter { it != ScriptType.P2TR }) {
+        for(type in ScriptType.entries) {
             val w = wallet(type)
             val ins = inputs(w)
             val direct = TxBuilder.build(ins, dest(w), 60_000_000, 2, change(w), params = ltc).tx
             val psbt = PsbtFixtures.edit(create(w, ins)) { maps ->
-                for(i in ins.indices) maps[1 + i] += (byteArrayOf(0x02) + ins[i].key.pubKey) to signature(direct, i, type)
+                for(i in ins.indices) {
+                    //a Taproot key-path signature (0x13) names no key; the others are partial signatures by key
+                    val key = if(type == ScriptType.P2TR) byteArrayOf(0x13) else byteArrayOf(0x02) + ins[i].key.pubKey
+                    maps[1 + i] += key to signature(direct, i, type)
+                }
             }
             val final = Psbt.finalize(Psbt.parse(psbt))
             assertContentEquals(direct.serialize(), final.serialize(), "$type")
@@ -101,8 +105,22 @@ class PsbtScriptTypesTest {
                 ScriptType.P2PKH -> assertTrue(final.inputs.all { it.witness.isEmpty() })
                 ScriptType.P2SH_P2WPKH -> assertTrue(final.inputs.all { it.scriptSig.size == 23 && it.witness.size == 2 })
                 ScriptType.P2WPKH -> assertTrue(final.inputs.all { it.scriptSig.isEmpty() && it.witness.size == 2 })
-                ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 6")
+                ScriptType.P2TR -> assertTrue(final.inputs.all { it.scriptSig.isEmpty() && it.witness.size == 1 && it.witness[0].size == 64 })
             }
+        }
+    }
+
+    @Test
+    fun taprootPsbtCarriesNoPreviousTransaction() {
+        val w = wallet(ScriptType.P2TR)
+        val ins = inputs(w)
+        val parsed = Psbt.parse(create(w, ins))
+        for((i, input) in parsed.inputs.withIndex()) {
+            assertNull(input.nonWitnessUtxo)
+            assertContentEquals(Scripts.outputScript(ins[i].key.pubKey, ScriptType.P2TR), input.witnessUtxoScript)
+            assertContentEquals(Taproot.xOnly(ins[i].key.pubKey), input.tapInternalKey)
+            assertEquals(path(w, ins[i]), input.tapDerivations[Taproot.xOnly(ins[i].key.pubKey).toHex()]!!.second)
+            assertTrue(input.derivations.isEmpty())
         }
     }
 
@@ -117,7 +135,7 @@ class PsbtScriptTypesTest {
 
     @Test
     fun alreadyFinalizedInputIsKept() {
-        for(type in ScriptType.entries.filter { it != ScriptType.P2TR }) {
+        for(type in ScriptType.entries) {
             val w = wallet(type)
             val ins = inputs(w)
             val direct = TxBuilder.build(ins, dest(w), 60_000_000, 2, change(w), params = ltc).tx

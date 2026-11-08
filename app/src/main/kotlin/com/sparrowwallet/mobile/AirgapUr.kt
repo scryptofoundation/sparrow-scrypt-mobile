@@ -31,7 +31,7 @@ object AirgapUr {
 
     /**
      * The account as `ur:crypto-account`: master fingerprint plus one output in the wallet's
-     * script type (pkh, sh(wpkh) or wpkh) whose key carries chain code, full origin and parent
+     * script type (pkh, sh(wpkh), wpkh or tr) whose key carries chain code, full origin and parent
      * fingerprint, which is everything desktop's QR import reads to rebuild the xpub. No coin
      * info: desktop takes the coin from the wallet being created.
      */
@@ -43,7 +43,7 @@ object AirgapUr {
             ScriptType.P2PKH -> listOf(ScriptExpression.PUBLIC_KEY_HASH)
             ScriptType.P2SH_P2WPKH -> listOf(ScriptExpression.SCRIPT_HASH, ScriptExpression.WITNESS_PUBLIC_KEY_HASH)
             ScriptType.P2WPKH -> listOf(ScriptExpression.WITNESS_PUBLIC_KEY_HASH)
-            ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 6")
+            ScriptType.P2TR -> listOf(ScriptExpression.TAPROOT)
         }
         val output = CryptoOutput(expressions, key)
         return CryptoAccount(master.fingerprint, listOf(output)).toUR()

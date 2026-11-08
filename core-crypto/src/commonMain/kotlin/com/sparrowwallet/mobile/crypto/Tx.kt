@@ -190,6 +190,9 @@ object Scripts {
     /** P2TR scriptPubKey: OP_1 PUSH32 <BIP86 output key> */
     fun p2trOutput(pubKey33: ByteArray): ByteArray = byteArrayOf(0x51, 0x20) + Taproot.outputKey(pubKey33)
 
+    /** A segwit v1 (Taproot) output script: OP_1 PUSH32 <x-only output key>. */
+    fun isP2tr(script: ByteArray): Boolean = script.size == 34 && script[0] == 0x51.toByte() && script[1] == 0x20.toByte()
+
     /** BIP143 scriptCode for spending a P2WPKH input (the implied P2PKH script). */
     fun p2pkhScriptCode(pubKey: ByteArray): ByteArray = p2pkhOutput(pubKey)
 
@@ -226,14 +229,16 @@ object Ecdsa {
 
 object Schnorr {
     /**
-     * BIP340 signature (64 bytes, zero aux) of [hash] with the BIP86-tweaked [privKey], checked
-     * against the output key before it is returned. SIGHASH_DEFAULT: no sighash byte appended.
+     * BIP340 signature (64 bytes, zero aux) of [hash] with the BIP86-tweaked [privKey], checked before
+     * it is returned against [expectedOutputKey], the x-only key of the output being spent (bytes 2..34
+     * of its script), so a wrong tweak or a key that does not own the coin never yields a signature.
+     * No sighash byte appended: a caller signing with SIGHASH_ALL appends 0x01 itself.
      */
-    fun signForInput(hash: ByteArray, privKey: ByteArray): ByteArray {
+    fun signForInput(hash: ByteArray, privKey: ByteArray, expectedOutputKey: ByteArray): ByteArray {
+        require(expectedOutputKey.size == 32) { "Expected an x-only output key" }
         val tweaked = Taproot.tweakPrivKey(privKey)
         val sig = secpSignSchnorr(hash, tweaked)
-        val outputKey = Taproot.xOnly(secpPublicKeyCreate(tweaked))
-        check(secpVerifySchnorr(sig, hash, outputKey)) { "Generated signature failed verification" }
+        check(secpVerifySchnorr(sig, hash, expectedOutputKey)) { "Generated signature failed verification" }
         return sig
     }
 }

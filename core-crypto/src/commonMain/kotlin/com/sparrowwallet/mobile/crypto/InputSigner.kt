@@ -15,7 +15,11 @@ object InputSigner {
         val spentScripts = if(scriptType == ScriptType.P2TR) keys.map { Scripts.p2trOutput(it.pubKey) } else emptyList()
         val digests = keys.mapIndexed { i, key -> digest(tx, i, key, scriptType, values[i], values, spentScripts) }
         for((i, key) in keys.withIndex()) {
-            val sig = if(scriptType == ScriptType.P2TR) Schnorr.signForInput(digests[i], key.privKey) else Ecdsa.signForInput(digests[i], key.privKey)
+            val sig = if(scriptType == ScriptType.P2TR) {
+                Schnorr.signForInput(digests[i], key.privKey, spentScripts[i].copyOfRange(2, 34))
+            } else {
+                Ecdsa.signForInput(digests[i], key.privKey)
+            }
             apply(tx.inputs[i], key, scriptType, sig)
         }
     }

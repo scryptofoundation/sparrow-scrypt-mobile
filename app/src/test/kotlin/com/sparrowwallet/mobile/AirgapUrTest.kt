@@ -132,6 +132,8 @@ class AirgapUrTest {
         assertEquals(listOf(ScriptExpression.SCRIPT_HASH, ScriptExpression.WITNESS_PUBLIC_KEY_HASH),
             export(Coin.LITECOIN, ScriptType.P2SH_P2WPKH).first)
         assertEquals(listOf(ScriptExpression.WITNESS_PUBLIC_KEY_HASH), export(Coin.LITECOIN, ScriptType.P2WPKH).first)
+        //desktop's QR import reads tr() as a Taproot wallet
+        assertEquals(listOf(ScriptExpression.TAPROOT), export(Coin.LITECOIN, ScriptType.P2TR).first)
         assertTrue(export(Coin.DOGECOIN, ScriptType.P2PKH).second.second.startsWith("dgub"))
     }
 

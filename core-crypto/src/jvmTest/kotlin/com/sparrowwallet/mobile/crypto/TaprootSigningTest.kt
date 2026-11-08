@@ -143,6 +143,19 @@ class TaprootSigningTest {
     }
 
     @Test
+    fun signatureForAnotherOutputKeyIsNotReturned() {
+        val master = HDKey.fromSeed(Bip39.seed("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ""))
+        val key = master.derivePath("m/86'/2'/0'/0/0")
+        val other = master.derivePath("m/86'/2'/0'/0/1")
+        val hash = ByteArray(32) { 7 }
+        assertEquals(64, Schnorr.signForInput(hash, key.privKey, Taproot.outputKey(key.pubKey)).size)
+        val e = assertFailsWith<IllegalStateException> { Schnorr.signForInput(hash, key.privKey, Taproot.outputKey(other.pubKey)) }
+        assertEquals("Generated signature failed verification", e.message)
+        //the untweaked internal key is not the output key either
+        assertFailsWith<IllegalStateException> { Schnorr.signForInput(hash, key.privKey, Taproot.xOnly(key.pubKey)) }
+    }
+
+    @Test
     fun estimateVsizeTaproot() {
         assertEquals(111L, TxBuilder.estimateVsize(listOf(ScriptType.P2TR), listOf(34)))
     }

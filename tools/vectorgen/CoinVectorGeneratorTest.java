@@ -4,6 +4,7 @@ import com.sparrowwallet.drongo.Coin;
 import com.sparrowwallet.drongo.KeyPurpose;
 import com.sparrowwallet.drongo.Network;
 import com.sparrowwallet.drongo.Utils;
+import com.sparrowwallet.drongo.address.Address;
 import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.Policy;
 import com.sparrowwallet.drongo.policy.PolicyType;
@@ -30,7 +31,8 @@ import java.util.List;
  * deterministic, so the mobile implementation must reproduce every byte.
  *
  * Run:    from a drongo checkout, COIN_VECTORS_OUT=<mobile>/vectors/coins.json ./gradlew test --tests '*CoinVectorGenerator*'
- * Output: COIN_VECTORS_OUT, default ../../mobile/vectors/coins.json
+ * Output: COIN_VECTORS_OUT, default ../../mobile/vectors/coins.json; and TAPROOT_PSBT_OUT, default
+ *         ../../mobile/vectors/taproot-psbt.json
  */
 public class CoinVectorGeneratorTest {
     private static final String MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -91,6 +93,102 @@ public class CoinVectorGeneratorTest {
         Files.createDirectories(out.getParent());
         Files.writeString(out, json);
         System.out.println("Coin vectors written to " + out.toAbsolutePath().normalize());
+
+        String taprootEnv = System.getenv("TAPROOT_PSBT_OUT");
+        Path taprootOut = Path.of(taprootEnv != null ? taprootEnv : "../../mobile/vectors/taproot-psbt.json");
+        Files.createDirectories(taprootOut.getParent());
+        Files.writeString(taprootOut, taprootPsbtJson(seed));
+        System.out.println("Taproot PSBT vector written to " + taprootOut.toAbsolutePath().normalize());
+    }
+
+    /**
+     * A Litecoin testnet Taproot wallet spending two coins to an external address with change, through drongo's own
+     * PSBT path: the unsigned PSBT the desktop exports (v0, outputs in order), the PSBT it signs, and the final tx.
+     */
+    private static String taprootPsbtJson(DeterministicSeed seed) throws Exception {
+        Network previousNetwork = Network.get();
+        Coin previousCoin = Coin.beginScope(Coin.LITECOIN);
+        Network.set(Network.TESTNET);
+        try {
+            Keystore keystore = Keystore.fromSeed(seed, PolicyType.SINGLE_HD, ScriptType.P2TR.getDefaultDerivation());
+            Wallet wallet = wallet(keystore, ScriptType.P2TR);
+            wallet.setStoredBlockHeight(800006);
+            WalletNode receiveNode = wallet.getNode(KeyPurpose.RECEIVE);
+            receiveNode.fillToIndex(wallet, 1);
+            WalletNode changeNode = wallet.getNode(KeyPurpose.CHANGE);
+            changeNode.fillToIndex(wallet, 0);
+            WalletNode[] spent = new WalletNode[2];
+            for(WalletNode child : receiveNode.getChildren()) {
+                if(child.getIndex() < 2) {
+                    spent[child.getIndex()] = child;
+                }
+            }
+            WalletNode change0 = changeNode.getChildren().stream().filter(n -> n.getIndex() == 0).findFirst().orElseThrow();
+            Address external = ScriptType.P2WPKH.getAddress(PolicyType.SINGLE_HD, ECKey.fromPrivate(Sha256Hash.hash("external payee".getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+
+            //Coin 0 is output 0 of one funding tx, coin 1 output 1 of another
+            Transaction fundingA = new Transaction();
+            fundingA.addInput(Sha256Hash.ZERO_HASH, 0, new Script(new byte[0]));
+            fundingA.addOutput(INPUT_VALUES[0], wallet.getAddress(spent[0]));
+            Transaction fundingB = new Transaction();
+            fundingB.addInput(Sha256Hash.ZERO_HASH, 1, new Script(new byte[0]));
+            fundingB.addOutput(1000L, external);
+            fundingB.addOutput(INPUT_VALUES[1], wallet.getAddress(spent[1]));
+            Transaction[] fundings = {fundingA, fundingB};
+            java.util.Date date = new java.util.Date(0);
+            java.util.Map<Sha256Hash, BlockTransaction> blockTransactions = new java.util.LinkedHashMap<>();
+            java.util.Map<BlockTransactionHashIndex, WalletNode> selected = new java.util.LinkedHashMap<>();
+            for(int i = 0; i < 2; i++) {
+                blockTransactions.put(fundings[i].getTxId(), new BlockTransaction(fundings[i].getTxId(), 800000, date, 0L, fundings[i]));
+                BlockTransactionHashIndex utxo = new BlockTransactionHashIndex(fundings[i].getTxId(), 800000, date, 0L, i, INPUT_VALUES[i]);
+                spent[i].getTransactionOutputs().add(utxo);
+                selected.put(utxo, spent[i]);
+            }
+            wallet.updateTransactions(blockTransactions);
+
+            long amount = 450000000L;
+            long changeValue = 40000000L;
+            long fee = INPUT_VALUES[0] + INPUT_VALUES[1] - amount - changeValue;
+            Transaction tx = new Transaction();
+            tx.setVersion(2);
+            tx.setLocktime(0);
+            for(int i = 0; i < 2; i++) {
+                TransactionInput input = tx.addInput(fundings[i].getTxId(), i, new Script(new byte[0]), new TransactionWitness(tx));
+                input.setSequenceNumber(SEQUENCE);
+            }
+            TransactionOutput paymentOut = tx.addOutput(amount, external);
+            TransactionOutput changeOut = tx.addOutput(changeValue, wallet.getAddress(change0));
+            Payment payment = new Payment(external, "Payment", amount, false);
+            List<WalletTransaction.Output> outputs = List.of(new WalletTransaction.PaymentOutput(paymentOut, payment),
+                    new WalletTransaction.ChangeOutput(changeOut, change0, changeValue));
+            WalletTransaction walletTransaction = new WalletTransaction(wallet, tx, List.of(), List.of(selected), List.of(payment), outputs,
+                    java.util.Map.of(change0, changeValue), fee);
+
+            //PSBTv0 with global xpubs and the outputs kept in order, as the phone reads it
+            PSBT psbt = new PSBT(walletTransaction, 0, true, false);
+            String unsigned = java.util.Base64.getEncoder().encodeToString(psbt.serialize());
+            wallet.sign(psbt);
+            //Serialized before finalising, which clears the derivations
+            String signed = java.util.Base64.getEncoder().encodeToString(psbt.serialize());
+            wallet.finalise(psbt);
+            String txHex = Utils.bytesToHex(psbt.extractTransaction().bitcoinSerialize());
+
+            return "{\n"
+                    + "  \"description\": \"A Litecoin testnet Taproot (BIP86) PSBT made, signed and finalized by drongo (Sparrow-Scrypt desktop). The phone must sign it to the same transaction.\",\n"
+                    + "  \"mnemonic\": " + q(MNEMONIC) + ",\n"
+                    + "  \"coin\": \"LITECOIN\", \"network\": \"TESTNET\", \"scriptType\": \"P2TR\",\n"
+                    + "  \"derivationPath\": " + q(keystore.getKeyDerivation().getDerivationPath()) + ",\n"
+                    + "  \"masterFingerprint\": " + q(keystore.getKeyDerivation().getMasterFingerprint()) + ",\n"
+                    + "  \"inputValues\": [" + INPUT_VALUES[0] + ", " + INPUT_VALUES[1] + "],\n"
+                    + "  \"externalAddress\": " + q(external.toString()) + ", \"amount\": " + amount + ", \"change\": " + changeValue + ", \"fee\": " + fee + ",\n"
+                    + "  \"unsignedPsbt\": " + q(unsigned) + ",\n"
+                    + "  \"signedPsbt\": " + q(signed) + ",\n"
+                    + "  \"txHex\": " + q(txHex) + "\n"
+                    + "}\n";
+        } finally {
+            Coin.endScope(previousCoin);
+            Network.set(previousNetwork);
+        }
     }
 
     private static Wallet wallet(Keystore keystore, ScriptType scriptType) {

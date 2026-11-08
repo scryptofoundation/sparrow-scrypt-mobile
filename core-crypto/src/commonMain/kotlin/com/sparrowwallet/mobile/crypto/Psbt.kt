@@ -6,8 +6,9 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 /**
  * BIP174 partially-signed transactions for the external-signer flow, scoped to what this wallet
  * produces: single-key Legacy (P2PKH), Nested Segwit (P2SH-P2WPKH) and Native Segwit (P2WPKH)
- * inputs with BIP32 derivations. Segwit inputs carry a witness utxo (and nested ones their redeem
- * script); any input can carry its full previous transaction, which a Legacy input must.
+ * inputs with BIP32 derivations, and BIP86 Taproot (P2TR) inputs with BIP371 Taproot derivations.
+ * Segwit inputs carry a witness utxo (and nested ones their redeem script); any input but a
+ * Taproot one can carry its full previous transaction, which a Legacy input must.
  * The creator emits everything a hardware wallet or desktop Sparrow needs to sign;
  * the finalizer accepts the signed result and extracts the network transaction.
  */
@@ -18,11 +19,18 @@ object Psbt {
     private const val IN_NON_WITNESS_UTXO = 0x00
     private const val IN_WITNESS_UTXO = 0x01
     private const val IN_PARTIAL_SIG = 0x02
+    private const val IN_SIGHASH_TYPE = 0x03
     private const val IN_REDEEM_SCRIPT = 0x04
     private const val IN_BIP32_DERIVATION = 0x06
     private const val IN_FINAL_SCRIPTSIG = 0x07
     private const val IN_FINAL_SCRIPTWITNESS = 0x08
+    private const val IN_TAP_KEY_SIG = 0x13
+    private const val IN_TAP_LEAF_SCRIPT = 0x15
+    private const val IN_TAP_BIP32_DERIVATION = 0x16
+    private const val IN_TAP_INTERNAL_KEY = 0x17
     private const val OUT_BIP32_DERIVATION = 0x02
+    private const val OUT_TAP_INTERNAL_KEY = 0x05
+    private const val OUT_TAP_BIP32_DERIVATION = 0x07
 
     class PsbtInput(
         val witnessUtxoValue: Long?,
@@ -41,7 +49,17 @@ object Psbt {
         /** A nested segwit input's redeem script (0014<key hash>). */
         val redeemScript: ByteArray? = null,
         /** A scriptSig another signer already finalized. */
-        val finalScriptSig: ByteArray? = null
+        val finalScriptSig: ByteArray? = null,
+        /** The signature hash type the creator asks for (0x03), or null when it names none. */
+        val sighashType: Int? = null,
+        /** A Taproot key-path signature (0x13): 64 bytes, or 65 ending in a hash type other than DEFAULT. */
+        val tapKeySig: ByteArray? = null,
+        /** x-only key hex → master fingerprint (4) + path child numbers (0x16); the leaf hashes are skipped. */
+        val tapDerivations: Map<String, Pair<ByteArray, List<Long>>> = emptyMap(),
+        /** The Taproot internal key, x only (0x17). */
+        val tapInternalKey: ByteArray? = null,
+        /** The input carries a Taproot leaf script (0x15): a script-path spend. */
+        val hasLeafScripts: Boolean = false
     ) {
         /** The output this input spends: from the witness utxo, else from the previous transaction. */
         fun spentOutput(prevTxid: String, vout: Long): TxOutput? =
@@ -55,7 +73,9 @@ object Psbt {
         val derivations: Map<String, Pair<ByteArray, List<Long>>>,
         val unknown: List<Pair<ByteArray, ByteArray>>,
         /** Every pair as read, so re-encoding never drops or reorders anything. */
-        internal val entries: List<Pair<ByteArray, ByteArray>> = emptyList()
+        internal val entries: List<Pair<ByteArray, ByteArray>> = emptyList(),
+        /** x-only key hex → master fingerprint (4) + path child numbers (0x07); the leaf hashes are skipped. */
+        val tapDerivations: Map<String, Pair<ByteArray, List<Long>>> = emptyMap()
     )
 
     class Parsed(
@@ -110,28 +130,43 @@ object Psbt {
                 require(spent != null && spent.value == input.value && spent.script.contentEquals(spentScript)) {
                     "The previous transaction for ${input.txid}:${input.vout} does not match the coin"
                 }
-                writeEntry(w, byteArrayOf(IN_NON_WITNESS_UTXO.toByte()), raw)
+                // a Taproot signature commits to every spent amount, so the desktop never adds it there either
+                if(input.scriptType != ScriptType.P2TR) writeEntry(w, byteArrayOf(IN_NON_WITNESS_UTXO.toByte()), raw)
             }
+            val witnessUtxo = ByteWriter().u64le(input.value).varBytes(spentScript).toByteArray()
             when(input.scriptType) {
                 ScriptType.P2PKH -> require(input.prevTx != null) { "A Legacy input needs its previous transaction" }
                 ScriptType.P2SH_P2WPKH -> {
-                    writeEntry(w, byteArrayOf(IN_WITNESS_UTXO.toByte()),
-                        ByteWriter().u64le(input.value).varBytes(spentScript).toByteArray())
+                    writeEntry(w, byteArrayOf(IN_WITNESS_UTXO.toByte()), witnessUtxo)
                     writeEntry(w, byteArrayOf(IN_REDEEM_SCRIPT.toByte()), Scripts.p2wpkhOutput(pub))
                 }
-                ScriptType.P2WPKH -> writeEntry(w, byteArrayOf(IN_WITNESS_UTXO.toByte()),
-                    ByteWriter().u64le(input.value).varBytes(spentScript).toByteArray())
-                ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 6")
+                ScriptType.P2WPKH, ScriptType.P2TR -> writeEntry(w, byteArrayOf(IN_WITNESS_UTXO.toByte()), witnessUtxo)
             }
-            writeEntry(w, byteArrayOf(IN_BIP32_DERIVATION.toByte()) + pub,
-                derivationValue(masterFingerprint, pathFor(input)))
+            if(input.scriptType == ScriptType.P2TR) {
+                // as drongo writes it: the internal key's derivation with no leaf hashes, then the internal key
+                val xOnly = Taproot.xOnly(pub)
+                writeEntry(w, byteArrayOf(IN_TAP_BIP32_DERIVATION.toByte()) + xOnly,
+                    byteArrayOf(0) + derivationValue(masterFingerprint, pathFor(input)))
+                writeEntry(w, byteArrayOf(IN_TAP_INTERNAL_KEY.toByte()), xOnly)
+            } else {
+                writeEntry(w, byteArrayOf(IN_BIP32_DERIVATION.toByte()) + pub,
+                    derivationValue(masterFingerprint, pathFor(input)))
+            }
             w.bytes(ByteArray(1))
         }
 
-        for((index, _) in unsigned.tx.outputs.withIndex()) {
+        for((index, output) in unsigned.tx.outputs.withIndex()) {
             if(index == changeIndex && changePubKey != null && changePath != null) {
-                writeEntry(w, byteArrayOf(OUT_BIP32_DERIVATION.toByte()) + changePubKey,
-                    derivationValue(masterFingerprint, changePath))
+                if(Scripts.isP2tr(output.script)) {
+                    // drongo's order: the derivation, then the internal key
+                    val xOnly = Taproot.xOnly(changePubKey)
+                    writeEntry(w, byteArrayOf(OUT_TAP_BIP32_DERIVATION.toByte()) + xOnly,
+                        byteArrayOf(0) + derivationValue(masterFingerprint, changePath))
+                    writeEntry(w, byteArrayOf(OUT_TAP_INTERNAL_KEY.toByte()), xOnly)
+                } else {
+                    writeEntry(w, byteArrayOf(OUT_BIP32_DERIVATION.toByte()) + changePubKey,
+                        derivationValue(masterFingerprint, changePath))
+                }
             }
             w.bytes(ByteArray(1))
         }
@@ -169,10 +204,38 @@ object Psbt {
             var finalWitness: List<ByteArray>? = null
             var redeemScript: ByteArray? = null
             var finalScriptSig: ByteArray? = null
+            var sighashType: Int? = null
+            var tapKeySig: ByteArray? = null
+            val tapDerivations = HashMap<String, Pair<ByteArray, List<Long>>>()
+            var tapInternalKey: ByteArray? = null
+            var hasLeafScripts = false
             val unknown = ArrayList<Pair<ByteArray, ByteArray>>()
             val entries = readEntries(r)
             for((key, value) in entries) {
                 when(key[0].toInt()) {
+                    IN_SIGHASH_TYPE -> {
+                        requireBareKey(key)
+                        require(value.size == 4) { "Input ${i + 1}: malformed sighash type" }
+                        sighashType = ByteReader(value).u32le().toInt()
+                    }
+                    IN_TAP_KEY_SIG -> {
+                        requireBareKey(key)
+                        require(value.size == 64 || value.size == 65) { "Input ${i + 1}: malformed Taproot signature" }
+                        tapKeySig = value
+                    }
+                    IN_TAP_LEAF_SCRIPT -> {
+                        hasLeafScripts = true
+                        unknown += key to value
+                    }
+                    IN_TAP_BIP32_DERIVATION -> {
+                        require(key.size == 33) { "Malformed PSBT key" }
+                        tapDerivations[key.copyOfRange(1, key.size).toHex()] = parseTapDerivation(value)
+                    }
+                    IN_TAP_INTERNAL_KEY -> {
+                        requireBareKey(key)
+                        require(value.size == 32) { "Input ${i + 1}: malformed Taproot internal key" }
+                        tapInternalKey = value
+                    }
                     IN_NON_WITNESS_UTXO -> nonWitnessUtxo = value.also { requireBareKey(key) }
                     IN_WITNESS_UTXO -> {
                         requireBareKey(key)
@@ -196,21 +259,24 @@ object Psbt {
             }
             nonWitnessUtxo?.let { checkNonWitnessUtxo(i, it, tx.inputs[i], utxoValue, utxoScript) }
             inputs.add(PsbtInput(utxoValue, utxoScript, sigs, derivations, finalWitness,
-                nonWitnessUtxo, unknown, entries, redeemScript, finalScriptSig))
+                nonWitnessUtxo, unknown, entries, redeemScript, finalScriptSig,
+                sighashType, tapKeySig, tapDerivations, tapInternalKey, hasLeafScripts))
         }
         val outputs = tx.outputs.indices.map {
             // some creators stop after the inputs; a missing output map reads as empty
             val entries = if(r.remaining() > 0) readEntries(r) else emptyList()
             val derivations = HashMap<String, Pair<ByteArray, List<Long>>>()
+            val tapDerivations = HashMap<String, Pair<ByteArray, List<Long>>>()
             val unknown = ArrayList<Pair<ByteArray, ByteArray>>()
             for((key, value) in entries) {
-                if(key[0].toInt() == OUT_BIP32_DERIVATION) {
-                    derivations[key.copyOfRange(1, key.size).toHex()] = parseDerivation(value)
-                } else {
-                    unknown += key to value
+                when {
+                    key[0].toInt() == OUT_BIP32_DERIVATION -> derivations[key.copyOfRange(1, key.size).toHex()] = parseDerivation(value)
+                    key[0].toInt() == OUT_TAP_BIP32_DERIVATION && key.size == 33 ->
+                        tapDerivations[key.copyOfRange(1, key.size).toHex()] = parseTapDerivation(value)
+                    else -> unknown += key to value
                 }
             }
-            PsbtOutput(derivations, unknown, entries)
+            PsbtOutput(derivations, unknown, entries, tapDerivations)
         }
         require(r.remaining() == 0) { "Trailing data after PSBT" }
         val globalUnknown = globalEntries.filter { it.first[0].toInt() != GLOBAL_UNSIGNED_TX && !it.first.contentEquals(COIN_MARK_KEY) }
@@ -223,6 +289,15 @@ object Psbt {
         val path = ArrayList<Long>()
         while(vr.remaining() >= 4) path.add(vr.u32le())
         return fp to path
+    }
+
+    /** A Taproot derivation: the leaf hashes the key signs for (skipped), then fingerprint and path. */
+    private fun parseTapDerivation(value: ByteArray): Pair<ByteArray, List<Long>> {
+        val vr = ByteReader(value)
+        val leaves = vr.varInt()
+        require(leaves in 0L..(vr.remaining() / 32).toLong()) { "Truncated Taproot derivation" }
+        vr.bytes(32 * leaves.toInt())
+        return parseDerivation(vr.bytes(vr.remaining()))
     }
 
     /**
@@ -242,7 +317,7 @@ object Psbt {
      * finalized keeps its final scriptSig and witness; otherwise the partial signature whose key
      * owns the spent output (others' signatures are ignored) is placed by that output's type:
      * P2PKH a scriptSig of signature and key, P2SH-P2WPKH a scriptSig pushing the redeem script
-     * and a witness, P2WPKH a witness.
+     * and a witness, P2WPKH a witness. A Taproot key-path signature becomes the witness on its own.
      */
     fun finalize(parsed: Parsed): Tx {
         for((i, input) in parsed.inputs.withIndex()) {
@@ -252,12 +327,22 @@ object Psbt {
                 txIn.witness = input.finalWitness ?: emptyList()
                 continue
             }
+            input.tapKeySig?.let { sig ->
+                val spent = input.spentOutput(txIn.prevTxid, txIn.vout)?.script
+                    ?: throw IllegalArgumentException("Input ${i + 1} has no witness utxo or previous transaction")
+                require(Scripts.isP2tr(spent)) { "Input ${i + 1}: a Taproot signature on a coin that is not Taproot" }
+                txIn.scriptSig = ByteArray(0)
+                txIn.witness = listOf(sig)
+                continue
+            }
             if(input.partialSigs.isEmpty()) throw IllegalArgumentException("Input ${i + 1} has no signature — sign the PSBT first")
             val spent = input.spentOutput(txIn.prevTxid, txIn.vout)?.script
                 ?: throw IllegalArgumentException("Input ${i + 1} has no witness utxo or previous transaction")
             val (pub, sig) = input.partialSigs.entries.map { it.key.hexToBytes() to it.value }
-                //P2TR joins when Task 6 adds Taproot PSBT finalization
-                .firstOrNull { (pub, _) -> ScriptType.entries.any { it != ScriptType.P2TR && Scripts.outputScript(pub, it).contentEquals(spent) } }
+                // a key that is no valid compressed point has no Taproot output, rather than failing the search
+                .firstOrNull { (pub, _) ->
+                    ScriptType.entries.any { runCatching { Scripts.outputScript(pub, it) }.getOrNull()?.contentEquals(spent) == true }
+                }
                 ?: throw IllegalArgumentException("Input ${i + 1}: the signature's key does not own the coin")
             when {
                 spent.contentEquals(Scripts.p2pkhOutput(pub)) -> {
@@ -298,23 +383,31 @@ object Psbt {
 
     /**
      * Writes [parsed] back out with every pair exactly as read, adding [extraSigs] (per
-     * input, pubkey hex to signature) as partial signatures at the end of each input map.
+     * input, pubkey hex to signature) as partial signatures and [tapKeySigs] (per input, or
+     * null) as Taproot key-path signatures at the end of each input map.
      */
-    fun serialize(parsed: Parsed, extraSigs: List<Map<String, ByteArray>> = emptyList()): ByteArray {
+    fun serialize(
+        parsed: Parsed,
+        extraSigs: List<Map<String, ByteArray>> = emptyList(),
+        tapKeySigs: List<ByteArray?> = emptyList()
+    ): ByteArray {
         val w = ByteWriter()
         w.bytes(MAGIC)
         for((key, value) in parsed.globalEntries) writeEntry(w, key, value)
         w.bytes(ByteArray(1))
         for((i, input) in parsed.inputs.withIndex()) {
             val sigs = extraSigs.getOrNull(i).orEmpty()
+            val tapSig = tapKeySigs.getOrNull(i)
             // a signature already present for a key we sign with is replaced, not trusted
             for((key, value) in input.entries) {
-                val replaced = key[0].toInt() == IN_PARTIAL_SIG && key.copyOfRange(1, key.size).toHex() in sigs
+                val replaced = (key[0].toInt() == IN_PARTIAL_SIG && key.copyOfRange(1, key.size).toHex() in sigs) ||
+                    (key[0].toInt() == IN_TAP_KEY_SIG && tapSig != null)
                 if(!replaced) writeEntry(w, key, value)
             }
             for((pubHex, sig) in sigs) {
                 writeEntry(w, byteArrayOf(IN_PARTIAL_SIG.toByte()) + pubHex.hexToBytes(), sig)
             }
+            tapSig?.let { writeEntry(w, byteArrayOf(IN_TAP_KEY_SIG.toByte()), it) }
             w.bytes(ByteArray(1))
         }
         for(j in parsed.tx.outputs.indices) {
