@@ -144,8 +144,9 @@ object TxBuilder {
 
     /**
      * Estimated vsize with 72-byte signatures: a P2PKH input is 148 bytes, a P2SH-P2WPKH input
-     * 64 bytes plus a 108-byte witness, a P2WPKH input 41 plus 108. The segwit marker and flag
-     * count only when some input has a witness.
+     * 64 bytes plus a 108-byte witness, a P2WPKH input 41 plus 108, a P2TR input 41 plus a 66-byte
+     * witness (64-byte signature). An output is 8 + script size + its length prefix (a P2TR
+     * output is 43). The segwit marker and flag count only when some input has a witness.
      */
     fun estimateVsize(inputTypes: List<ScriptType>, outputScriptSizes: List<Int>): Long {
         val inputBase = inputTypes.sumOf {

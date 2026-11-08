@@ -1942,7 +1942,8 @@ private fun shortAddress(address: String): String =
 
 /**
  * Live public-side fee estimate: largest-first coin selection over the wallet's real
- * utxos with the P2WPKH size formula (~11 + 68/input + 31/output vB). Returns null
+ * utxos with the script type's size formula (P2WPKH ~11 + 68/input + 31/output vB; the
+ * per-input size follows [inputType], P2TR 58). Returns null
  * when the amount can't be covered. Review still shows the exact built fee.
  */
 private fun estimatePublicFee(utxosDesc: List<Long>, amount: Long, sendMax: Boolean, ratePerVb: Long,

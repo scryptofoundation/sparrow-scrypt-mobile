@@ -21,7 +21,7 @@ import javax.crypto.spec.GCMParameterSpec
 data class SyncCredentials(
     val name: String,
     val network: String,
-    val scriptType: String,               // "P2WPKH" or "MWEB"
+    val scriptType: String,               // a script type name ("P2WPKH", "P2TR", ...) or "MWEB"
     val coin: String = "litecoin",        // saved before this field: Litecoin
     val xpub: String? = null,             // public wallets
     val scanSecretHex: String? = null,    // MWEB wallets

@@ -33,7 +33,7 @@ data class VaultData(
     val derivationPath: String = "m/84'/2'/0'",
     /** Network id ("mainnet"/"testnet"); defaults keep vaults sealed before this field readable. */
     val network: String = "mainnet",
-    /** "P2WPKH" (spendable on mobile) or "MWEB" (keys-only until the mwebd scanner lands). */
+    /** a script type name ("P2WPKH", "P2SH_P2WPKH", "P2PKH", "P2TR", all spendable on mobile) or "MWEB" (keys-only until the mwebd scanner lands). */
     val scriptType: String = "P2WPKH",
     /** Desktop-recorded MWEB transaction history (see [MwebHistoryEntry]). */
     val mwebHistory: List<MwebHistoryEntry> = emptyList(),

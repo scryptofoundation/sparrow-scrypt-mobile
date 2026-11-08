@@ -3,7 +3,9 @@ package com.sparrowwallet.mobile.crypto
 /**
  * Signs single-key inputs of one script type, matching drongo byte for byte (SignedTxCoinParityTest):
  * P2PKH with the original sighash and a scriptSig, P2WPKH with BIP143 and a witness, P2SH-P2WPKH
- * with BIP143, a witness and a scriptSig pushing the redeem script. SIGHASH_ALL, no FORKID.
+ * with BIP143, a witness and a scriptSig pushing the redeem script. Those use SIGHASH_ALL, no
+ * FORKID. P2TR signs the key path (BIP341, SIGHASH_DEFAULT) with a 64-byte signature as the
+ * only witness item and an empty scriptSig.
  */
 object InputSigner {
     /**
