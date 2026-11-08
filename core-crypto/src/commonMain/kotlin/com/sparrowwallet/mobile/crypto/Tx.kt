@@ -150,6 +150,9 @@ object Scripts {
     fun p2shP2wpkhOutput(pubKey: ByteArray): ByteArray =
         byteArrayOf(0xA9.toByte(), 0x14) + hash160(byteArrayOf(0x00, 0x14) + hash160(pubKey)) + byteArrayOf(0x87.toByte())
 
+    /** P2TR scriptPubKey: OP_1 PUSH32 <BIP86 output key> */
+    fun p2trOutput(pubKey33: ByteArray): ByteArray = byteArrayOf(0x51, 0x20) + Taproot.outputKey(pubKey33)
+
     /** BIP143 scriptCode for spending a P2WPKH input (the implied P2PKH script). */
     fun p2pkhScriptCode(pubKey: ByteArray): ByteArray = p2pkhOutput(pubKey)
 
@@ -158,7 +161,7 @@ object Scripts {
         ScriptType.P2PKH -> p2pkhOutput(pubKey)
         ScriptType.P2SH_P2WPKH -> p2shP2wpkhOutput(pubKey)
         ScriptType.P2WPKH -> p2wpkhOutput(pubKey)
-        ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 3")
+        ScriptType.P2TR -> p2trOutput(pubKey)
     }
 }
 

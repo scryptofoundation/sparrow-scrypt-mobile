@@ -52,7 +52,9 @@ object Addresses {
         ScriptType.P2PKH -> p2pkh(pubKey, params.p2pkhVersion)
         ScriptType.P2SH_P2WPKH -> p2shP2wpkh(pubKey, params.p2shVersion)
         ScriptType.P2WPKH -> p2wpkh(pubKey, requireNotNull(params.bech32Hrp) { "${params.coin.displayName} has no segwit addresses" })
-        ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 3")
+        ScriptType.P2TR -> Bech32.encodeWitness(
+            requireNotNull(params.bech32Hrp) { "${params.coin.displayName} has no segwit addresses" }, 1, Taproot.outputKey(pubKey)
+        )
     }
 
     /** Litecoin decoding, kept for the call sites that predate the coin axis. */
