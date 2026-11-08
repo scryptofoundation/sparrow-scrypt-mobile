@@ -71,4 +71,21 @@ class SparrowExportTest {
         assertEquals("P2PKH", imported.scriptType)
         assertTrue(imported.xpub!!.startsWith("dgub"), imported.xpub)
     }
+
+    @Test
+    fun taprootWalletExportsATrPolicyAndRoundTrips() {
+        assertEquals("tr(SparrowMobile)", SparrowExport.miniscript("P2TR", "SparrowMobile"))
+        assertEquals("wpkh(K)", SparrowExport.miniscript("P2WPKH", "K"))
+        val ltc = ChainParams.of(Coin.LITECOIN, Network.MAINNET)
+        val account = master.derivePath("m/86'/2'/0'")
+        val file = SparrowExport.exportFile(
+            name = "Taproot Export", network = "mainnet", seedType = "BIP39", mnemonic = mnemonic,
+            derivationPath = "m/86'/2'/0'", masterFingerprint = master.fingerprint.toHex(),
+            xpub = account.xpub(ltc.xpubHeader), password = "pass",
+            coin = Coin.LITECOIN, scriptType = "P2TR", params = SparrowImport.TEST_PARAMS
+        )
+        val imported = SparrowImport.importFile(file, "pass", SparrowImport.TEST_PARAMS)
+        assertEquals("P2TR", imported.scriptType)
+        assertEquals(Coin.LITECOIN, imported.coin)
+    }
 }

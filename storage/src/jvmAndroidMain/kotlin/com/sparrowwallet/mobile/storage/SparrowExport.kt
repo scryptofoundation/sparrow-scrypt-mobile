@@ -102,9 +102,10 @@ object SparrowExport {
     }
 
     /** Desktop's single-key policy script for the wallet's script type. */
-    private fun miniscript(scriptType: String, key: String): String = when(scriptType) {
+    internal fun miniscript(scriptType: String, key: String): String = when(scriptType) {
         "P2PKH" -> "pkh($key)"
         "P2SH_P2WPKH" -> "sh(wpkh($key))"
+        "P2TR" -> "tr($key)"
         else -> "wpkh($key)"
     }
 
