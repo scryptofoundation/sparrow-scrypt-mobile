@@ -32,7 +32,7 @@ object CoinVectors {
 
     class Entry(val coin: String, val network: String, val params: Params, val scriptTypes: List<ScriptTypeVector>)
 
-    class SignedInput(val prevTxid: String, val vout: Long, val value: Long, val keyPath: String, val sequence: Long)
+    class SignedInput(val prevTxid: String, val vout: Long, val value: Long, val keyPath: String, val sequence: Long, val spentScript: String)
     class SignedOutput(val value: Long, val script: String)
     class SignedTx(
         val coin: String, val network: String, val scriptType: String,
@@ -77,7 +77,7 @@ object CoinVectors {
                     o["inputs"]!!.jsonArray.map {
                         val i = it.jsonObject
                         SignedInput(i.str("prevTxid")!!, i["vout"]!!.jsonPrimitive.long, i["value"]!!.jsonPrimitive.long,
-                            i.str("keyPath")!!, i["sequence"]!!.jsonPrimitive.long)
+                            i.str("keyPath")!!, i["sequence"]!!.jsonPrimitive.long, i.str("spentScript")!!)
                     },
                     o["outputs"]!!.jsonArray.map {
                         val out = it.jsonObject

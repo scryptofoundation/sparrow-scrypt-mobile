@@ -8,12 +8,14 @@ import com.sparrowwallet.drongo.crypto.ECKey;
 import com.sparrowwallet.drongo.policy.Policy;
 import com.sparrowwallet.drongo.policy.PolicyType;
 import com.sparrowwallet.drongo.protocol.Script;
+import com.sparrowwallet.drongo.psbt.PSBT;
 import com.sparrowwallet.drongo.protocol.ScriptType;
 import com.sparrowwallet.drongo.protocol.SigHash;
 import com.sparrowwallet.drongo.protocol.Sha256Hash;
 import com.sparrowwallet.drongo.protocol.Transaction;
 import com.sparrowwallet.drongo.protocol.TransactionInput;
 import com.sparrowwallet.drongo.protocol.TransactionSignature;
+import com.sparrowwallet.drongo.protocol.TransactionOutput;
 import com.sparrowwallet.drongo.protocol.TransactionWitness;
 import org.junit.jupiter.api.Test;
 
@@ -32,7 +34,7 @@ import java.util.List;
  */
 public class CoinVectorGeneratorTest {
     private static final String MNEMONIC = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    private static final List<ScriptType> SCRIPT_TYPES = List.of(ScriptType.P2PKH, ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH);
+    private static final List<ScriptType> SCRIPT_TYPES = List.of(ScriptType.P2PKH, ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH, ScriptType.P2TR);
     private static final String PREV_TXID_0 = "11".repeat(32);
     private static final String PREV_TXID_1 = "22".repeat(32);
     private static final long[] INPUT_VALUES = {200000000L, 300000000L};
@@ -153,25 +155,43 @@ public class CoinVectorGeneratorTest {
         tx.addOutput(450000000L, new WalletNode(wallet, KeyPurpose.RECEIVE, 2).getAddress());
         tx.addOutput(40000000L, new WalletNode(wallet, KeyPurpose.CHANGE, 0).getAddress());
 
-        //Every legacy digest is taken before any scriptSig is set: a legacy sighash covers the other inputs' scripts
-        ECKey[] keys = new ECKey[2];
-        TransactionSignature[] sigs = new TransactionSignature[2];
-        for(int i = 0; i < 2; i++) {
-            keys[i] = keystore.getKey(spent[i]);
-            Script p2pkh = ScriptType.P2PKH.getOutputScript(keys[i].getPubKeyHash());
-            Sha256Hash sighash = segwit
-                    ? tx.hashForWitnessSignature(i, p2pkh, INPUT_VALUES[i], SigHash.ALL)
-                    : tx.hashForLegacySignature(i, p2pkh, SigHash.ALL);
-            sigs[i] = new TransactionSignature(keys[i].signEcdsa(sighash), SigHash.ALL);
-        }
-        for(int i = 0; i < 2; i++) {
-            TransactionInput input = tx.getInputs().get(i);
-            Script outputScript = scriptType.getOutputScript(PolicyType.SINGLE_HD, keys[i]);
-            if(scriptType != ScriptType.P2WPKH) {
-                input.setScriptBytes(scriptType.getScriptSig(PolicyType.SINGLE_HD, outputScript, keys[i], sigs[i]).getProgram());
+        String[] spentScripts = new String[2];
+        if(scriptType == ScriptType.P2TR) {
+            //Taproot signs through drongo's own wallet and PSBT path, so the bytes are exactly what the desktop produces
+            wallet.getNode(KeyPurpose.RECEIVE).fillToIndex(wallet, 2);
+            PSBT psbt = new PSBT(tx);
+            for(int i = 0; i < 2; i++) {
+                Script spentScript = spent[i].getOutputScript();
+                spentScripts[i] = Utils.bytesToHex(spentScript.getProgram());
+                psbt.getPsbtInputs().get(i).setWitnessUtxo(new TransactionOutput(null, INPUT_VALUES[i], spentScript));
             }
-            if(segwit) {
-                input.setWitness(new TransactionWitness(tx, keys[i], sigs[i]));
+            wallet.sign(psbt);
+            wallet.finalise(psbt);
+            tx = psbt.extractTransaction();
+        } else {
+            //Every legacy digest is taken before any scriptSig is set: a legacy sighash covers the other inputs' scripts
+            ECKey[] keys = new ECKey[2];
+            TransactionSignature[] sigs = new TransactionSignature[2];
+            for(int i = 0; i < 2; i++) {
+                keys[i] = keystore.getKey(spent[i]);
+                Script p2pkh = ScriptType.P2PKH.getOutputScript(keys[i].getPubKeyHash());
+                Sha256Hash sighash = segwit
+                        ? tx.hashForWitnessSignature(i, p2pkh, INPUT_VALUES[i], SigHash.ALL)
+                        : tx.hashForLegacySignature(i, p2pkh, SigHash.ALL);
+                sigs[i] = new TransactionSignature(keys[i].signEcdsa(sighash), SigHash.ALL);
+            }
+            for(int i = 0; i < 2; i++) {
+                TransactionInput input = tx.getInputs().get(i);
+                Script outputScript = scriptType.getOutputScript(PolicyType.SINGLE_HD, keys[i]);
+                if(scriptType != ScriptType.P2WPKH) {
+                    input.setScriptBytes(scriptType.getScriptSig(PolicyType.SINGLE_HD, outputScript, keys[i], sigs[i]).getProgram());
+                }
+                if(segwit) {
+                    input.setWitness(new TransactionWitness(tx, keys[i], sigs[i]));
+                }
+            }
+            for(int i = 0; i < 2; i++) {
+                spentScripts[i] = Utils.bytesToHex(scriptType.getOutputScript(PolicyType.SINGLE_HD, keys[i]).getProgram());
             }
         }
 
@@ -179,7 +199,8 @@ public class CoinVectorGeneratorTest {
         List<String> inputs = new ArrayList<>();
         for(int i = 0; i < 2; i++) {
             inputs.add("{\"prevTxid\": " + q(prevTxids[i]) + ", \"vout\": " + i + ", \"value\": " + INPUT_VALUES[i]
-                    + ", \"keyPath\": " + q(path + "/0/" + i) + ", \"sequence\": " + SEQUENCE + "}");
+                    + ", \"keyPath\": " + q(path + "/0/" + i) + ", \"sequence\": " + SEQUENCE
+                    + ", \"spentScript\": " + q(spentScripts[i]) + "}");
         }
         List<String> outputs = new ArrayList<>();
         for(var out : tx.getOutputs()) {
