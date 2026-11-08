@@ -40,9 +40,10 @@ fun externalSigningSupported(coin: Coin, network: Network, scriptType: String): 
 
 /**
  * Whether an unsigned transaction's txid is the one it will have: only when no input carries a
- * scriptSig, so Native Segwit. Legacy and Nested Segwit inputs get theirs when finalized.
+ * scriptSig, so Native Segwit and Taproot. Legacy and Nested Segwit inputs get theirs when finalized.
  */
-fun txidKnownBeforeSigning(scriptType: String): Boolean = scriptType == ScriptType.P2WPKH.name
+fun txidKnownBeforeSigning(scriptType: String): Boolean =
+    scriptType == ScriptType.P2WPKH.name || scriptType == ScriptType.P2TR.name
 
 /** A scanned coin as Send judges it: [height] 0 or below is unconfirmed; [coinbaseMaturity] only for a mined coin. */
 data class ScannedCoin(val value: Long, val height: Int, val coinbaseMaturity: Int? = null, val held: Boolean = false)

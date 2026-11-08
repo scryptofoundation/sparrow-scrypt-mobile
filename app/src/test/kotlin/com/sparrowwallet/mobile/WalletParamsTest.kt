@@ -116,8 +116,9 @@ class WalletParamsTest {
     }
 
     @Test
-    fun finalTxidIsKnownBeforeSigningOnlyForNativeSegwit() {
+    fun finalTxidIsKnownBeforeSigningOnlyWithoutScriptSigs() {
         assertTrue(txidKnownBeforeSigning("P2WPKH"))
+        assertTrue(txidKnownBeforeSigning("P2TR"))
         assertFalse(txidKnownBeforeSigning("P2SH_P2WPKH"))
         assertFalse(txidKnownBeforeSigning("P2PKH"))
     }

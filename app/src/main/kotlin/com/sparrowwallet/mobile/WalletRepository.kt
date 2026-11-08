@@ -781,11 +781,13 @@ class WalletRepository(context: Context) {
                 Scripts.outputScript(changeKey.pubKey, scriptType), sendMax, params
             )
             //every chosen coin carries the transaction that made it: Legacy signers need it, and a
-            //signer checks a multi-input fee against it (rawTransaction verifies each one's txid)
+            //signer checks a multi-input fee against it (rawTransaction verifies each one's txid).
+            //Taproot inputs skip it: the signature commits to the witness utxo, Psbt.create drops it
             val prevTxs = HashMap<String, ByteArray>()
             val withPrevTxs = selected.inputs.map {
                 SpendableInput(it.txid, it.vout, it.value, it.key, it.scriptType,
-                    prevTxs.getOrPut(it.txid) { client.rawTransaction(it.txid) })
+                    if(it.scriptType == ScriptType.P2TR) null
+                        else prevTxs.getOrPut(it.txid) { client.rawTransaction(it.txid) })
             }
             val unsigned = UnsignedBuild(selected.tx, withPrevTxs, selected.amount, selected.fee, selected.change, selected.coin)
             val psbt = Psbt.create(
