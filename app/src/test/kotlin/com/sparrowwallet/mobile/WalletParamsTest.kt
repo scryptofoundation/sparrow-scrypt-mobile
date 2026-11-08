@@ -57,12 +57,12 @@ class WalletParamsTest {
 
     @Test
     fun externalSigningCoversEveryPublicWallet() {
-        assertTrue(externalSigningSupported(Coin.LITECOIN, "P2WPKH"))
-        assertTrue(externalSigningSupported(Coin.BELLSCOIN, "P2WPKH"))
-        assertTrue(externalSigningSupported(Coin.LITECOIN, "P2SH_P2WPKH"))
-        assertTrue(externalSigningSupported(Coin.DOGECOIN, "P2PKH"))
-        assertFalse(externalSigningSupported(Coin.LITECOIN, "MWEB"))
-        assertFalse(externalSigningSupported(Coin.DOGECOIN, "P2WPKH")) // not a script type the coin has
+        assertTrue(externalSigningSupported(Coin.LITECOIN, Network.MAINNET, "P2WPKH"))
+        assertTrue(externalSigningSupported(Coin.BELLSCOIN, Network.MAINNET, "P2WPKH"))
+        assertTrue(externalSigningSupported(Coin.LITECOIN, Network.MAINNET, "P2SH_P2WPKH"))
+        assertTrue(externalSigningSupported(Coin.DOGECOIN, Network.MAINNET, "P2PKH"))
+        assertFalse(externalSigningSupported(Coin.LITECOIN, Network.MAINNET, "MWEB"))
+        assertFalse(externalSigningSupported(Coin.DOGECOIN, Network.MAINNET, "P2WPKH")) // not a script type the coin has
     }
 
     @Test

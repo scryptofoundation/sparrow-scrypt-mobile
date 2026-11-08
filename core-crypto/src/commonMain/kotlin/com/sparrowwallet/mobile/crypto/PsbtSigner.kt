@@ -96,6 +96,7 @@ object PsbtSigner {
                 ScriptType.P2PKH -> P2PKH_SCRIPTSIG_BYTES
                 ScriptType.P2SH_P2WPKH -> NESTED_SCRIPTSIG_BYTES
                 ScriptType.P2WPKH -> 0
+                ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 6")
             }
         }
         val segwit = types.count { it != ScriptType.P2PKH }
@@ -124,6 +125,7 @@ object PsbtSigner {
             val sighash = when(scriptType) {
                 ScriptType.P2PKH -> parsed.tx.legacySighashAll(i, spent.script)
                 ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH -> parsed.tx.bip143SighashAll(i, Scripts.p2pkhScriptCode(key.pubKey), spent.value)
+                ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 6")
             }
             mapOf(pubHex to Ecdsa.signForInput(sighash, key.privKey))
         }

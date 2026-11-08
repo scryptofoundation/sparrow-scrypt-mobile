@@ -121,6 +121,7 @@ object Psbt {
                 }
                 ScriptType.P2WPKH -> writeEntry(w, byteArrayOf(IN_WITNESS_UTXO.toByte()),
                     ByteWriter().u64le(input.value).varBytes(spentScript).toByteArray())
+                ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 6")
             }
             writeEntry(w, byteArrayOf(IN_BIP32_DERIVATION.toByte()) + pub,
                 derivationValue(masterFingerprint, pathFor(input)))
@@ -255,7 +256,8 @@ object Psbt {
             val spent = input.spentOutput(txIn.prevTxid, txIn.vout)?.script
                 ?: throw IllegalArgumentException("Input ${i + 1} has no witness utxo or previous transaction")
             val (pub, sig) = input.partialSigs.entries.map { it.key.hexToBytes() to it.value }
-                .firstOrNull { (pub, _) -> ScriptType.entries.any { Scripts.outputScript(pub, it).contentEquals(spent) } }
+                //P2TR joins when Task 6 adds Taproot PSBT finalization
+                .firstOrNull { (pub, _) -> ScriptType.entries.any { it != ScriptType.P2TR && Scripts.outputScript(pub, it).contentEquals(spent) } }
                 ?: throw IllegalArgumentException("Input ${i + 1}: the signature's key does not own the coin")
             when {
                 spent.contentEquals(Scripts.p2pkhOutput(pub)) -> {

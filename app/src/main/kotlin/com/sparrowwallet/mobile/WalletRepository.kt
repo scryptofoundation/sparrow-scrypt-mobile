@@ -147,7 +147,7 @@ class WalletRepository(context: Context) {
         if(vaultFile(clean).exists()) return "A wallet named \"$clean\" already exists"
         val publicType = ScriptType.entries.firstOrNull { it.name == scriptType }
         if(publicType == null && !(scriptType == "MWEB" && coin.mweb)) return "${coin.displayName} has no $scriptType wallets"
-        if(publicType != null && !coin.supports(publicType)) return "${coin.displayName} has no $scriptType wallets"
+        if(publicType != null && !ChainParams.of(coin, network).supports(publicType)) return "${coin.displayName} has no $scriptType wallets"
         val classified = classifySeed(mnemonic.trim(), coin, network, publicType ?: ScriptType.P2WPKH)
         val invalid = if(ElectrumSeed.isValid(mnemonic.trim()) && !WalletSetup.electrumSeedAllowed(coin))
             "Electrum seeds are Litecoin only" else "Not a valid BIP39 or Electrum seed"
@@ -757,7 +757,7 @@ class WalletRepository(context: Context) {
         if(coin == Coin.LITECOIN && isMwebAddress(toAddress, net)) {
             return preparePegInPsbt(data, account, toAddress, amountLitoshis, sendMax)
         }
-        require(externalSigningSupported(coin, data.scriptType)) {
+        require(externalSigningSupported(coin, net, data.scriptType)) {
             "Signing on another device is not available for this wallet"
         }
         val params = params(data)

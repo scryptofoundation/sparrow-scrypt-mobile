@@ -21,6 +21,7 @@ object InputSigner {
     private fun digest(tx: Tx, i: Int, key: HDKey, scriptType: ScriptType, value: Long): ByteArray = when(scriptType) {
         ScriptType.P2PKH -> tx.legacySighashAll(i, Scripts.p2pkhOutput(key.pubKey))
         ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH -> tx.bip143SighashAll(i, Scripts.p2pkhScriptCode(key.pubKey), value)
+        ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 4")
     }
 
     private fun apply(input: TxInput, key: HDKey, scriptType: ScriptType, sig: ByteArray) {
@@ -31,6 +32,7 @@ object InputSigner {
                 input.witness = listOf(sig, key.pubKey)
             }
             ScriptType.P2WPKH -> input.witness = listOf(sig, key.pubKey)
+            ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 4")
         }
     }
 

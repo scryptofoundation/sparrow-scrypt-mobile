@@ -10,7 +10,9 @@ enum class BackendKind { ELECTRUM, ESPLORA }
 enum class ScriptType(val purpose: Int) {
     P2PKH(44),
     P2SH_P2WPKH(49),
-    P2WPKH(84)
+    P2WPKH(84),
+    /** Taproot (BIP86). Whether a chain has it depends on the network: ask [ChainParams.supports], never [Coin.supports]. */
+    P2TR(86)
 }
 
 /**
@@ -48,7 +50,12 @@ enum class Coin(
 
     val uriScheme: String get() = id
 
-    fun supports(scriptType: ScriptType): Boolean = scriptType == ScriptType.P2PKH || segwit
+    /** Never true for P2TR: Taproot depends on the network, so it goes through [ChainParams.supports]. */
+    fun supports(scriptType: ScriptType): Boolean = when(scriptType) {
+        ScriptType.P2PKH -> true
+        ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH -> segwit
+        ScriptType.P2TR -> false
+    }
 
     /**
      * Blocks a coinbase waits before it can be spent: each chain's nCoinbaseMaturity as drongo has it,

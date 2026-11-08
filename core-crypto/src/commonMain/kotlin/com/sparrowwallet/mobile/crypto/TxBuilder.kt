@@ -88,7 +88,7 @@ object TxBuilder {
         require(sorted.isNotEmpty()) { "No spendable coins" }
         require(sorted.all { it.scriptType == sorted[0].scriptType }) { "All inputs must share the wallet's script type" }
         val inputType = sorted[0].scriptType
-        require(coin.supports(inputType)) { "${coin.displayName} has no $inputType inputs" }
+        require(params.supports(inputType)) { "${coin.displayName} has no $inputType inputs" }
         fun fee(inputs: Int, outputScriptSizes: List<Int>) =
             coin.feeSize(estimateVsize(List(inputs) { inputType }, outputScriptSizes)) * feeRatePerVb
 
@@ -153,6 +153,7 @@ object TxBuilder {
                 ScriptType.P2PKH -> 148
                 ScriptType.P2SH_P2WPKH -> 64
                 ScriptType.P2WPKH -> 41
+                ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 4")
             }.toInt()
         }
         val segwitInputs = inputTypes.count { it != ScriptType.P2PKH }

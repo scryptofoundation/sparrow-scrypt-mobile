@@ -57,9 +57,11 @@ class CoinParityTest {
 
     @Test fun witnessV1IsAcceptedOnlyWhereTaprootIsActive() {
         val program = ByteArray(32) { 7 }
-        assertFailsWith<IllegalArgumentException> {
-            Addresses.toScriptPubKey(Bech32.encodeWitness("bel", 1, program), ChainParams.of(Coin.BELLSCOIN, Network.MAINNET))
+        Addresses.toScriptPubKey(Bech32.encodeWitness("bel", 1, program), ChainParams.of(Coin.BELLSCOIN, Network.MAINNET))
+        val e = assertFailsWith<IllegalArgumentException> {
+            Addresses.toScriptPubKey(Bech32.encodeWitness("tbel", 1, program), ChainParams.of(Coin.BELLSCOIN, Network.TESTNET))
         }
+        assertEquals("Taproot is not active on Bellscoin Testnet", e.message)
         Addresses.toScriptPubKey(Bech32.encodeWitness("ltc", 1, program), ChainParams.of(Coin.LITECOIN, Network.MAINNET))
         Addresses.toScriptPubKey(Bech32.encodeWitness("tjc", 1, program), ChainParams.of(Coin.JUNKCOIN, Network.TESTNET))
     }

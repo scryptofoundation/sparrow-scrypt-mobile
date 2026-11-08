@@ -88,7 +88,7 @@ class PsbtScriptTypesTest {
 
     @Test
     fun finalizeBuildsTheScriptSigPerType() {
-        for(type in ScriptType.entries) {
+        for(type in ScriptType.entries.filter { it != ScriptType.P2TR }) {
             val w = wallet(type)
             val ins = inputs(w)
             val direct = TxBuilder.build(ins, dest(w), 60_000_000, 2, change(w), params = ltc).tx
@@ -101,6 +101,7 @@ class PsbtScriptTypesTest {
                 ScriptType.P2PKH -> assertTrue(final.inputs.all { it.witness.isEmpty() })
                 ScriptType.P2SH_P2WPKH -> assertTrue(final.inputs.all { it.scriptSig.size == 23 && it.witness.size == 2 })
                 ScriptType.P2WPKH -> assertTrue(final.inputs.all { it.scriptSig.isEmpty() && it.witness.size == 2 })
+                ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 6")
             }
         }
     }
@@ -116,7 +117,7 @@ class PsbtScriptTypesTest {
 
     @Test
     fun alreadyFinalizedInputIsKept() {
-        for(type in ScriptType.entries) {
+        for(type in ScriptType.entries.filter { it != ScriptType.P2TR }) {
             val w = wallet(type)
             val ins = inputs(w)
             val direct = TxBuilder.build(ins, dest(w), 60_000_000, 2, change(w), params = ltc).tx

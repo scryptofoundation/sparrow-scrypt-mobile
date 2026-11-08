@@ -16,12 +16,19 @@ data class ChainParams(
     /** Litecoin only. */
     val mwebHrp: String?
 ) {
+    /** Whether the phone makes Taproot (BIP86) wallets here: Litecoin, and Bellscoin mainnet. */
+    val taprootWallets: Boolean get() = coin == Coin.LITECOIN || (coin == Coin.BELLSCOIN && network == Network.MAINNET)
+
     /**
-     * Whether witness v1+ outputs (Taproot) are valid destinations: Litecoin, and Junkcoin's testnet
-     * (Taproot active from block 160000; the bridge custody is a tjc1p address). On any other chain an
-     * output to an inactive witness program is anyone-can-spend, so it is refused.
+     * Whether witness v1+ outputs (Taproot) are valid destinations: wherever [taprootWallets] holds, and
+     * Junkcoin's testnet (Taproot active from block 160000; the bridge custody is a tjc1p address). On any
+     * other chain an output to an inactive witness program is anyone-can-spend, so it is refused.
      */
-    val taproot: Boolean get() = coin == Coin.LITECOIN || (coin == Coin.JUNKCOIN && network == Network.TESTNET)
+    val taprootDestinations: Boolean get() = taprootWallets || (coin == Coin.JUNKCOIN && network == Network.TESTNET)
+
+    /** Whether wallets of [scriptType] exist here. P2TR follows the network; the rest follow the coin. */
+    fun supports(scriptType: ScriptType): Boolean =
+        if(scriptType == ScriptType.P2TR) taprootWallets else coin.supports(scriptType)
 
     val defaultScriptType: ScriptType get() = if(coin.segwit) ScriptType.P2WPKH else ScriptType.P2PKH
 

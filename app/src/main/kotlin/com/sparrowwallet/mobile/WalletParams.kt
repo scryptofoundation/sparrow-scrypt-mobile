@@ -35,8 +35,8 @@ fun feeUnit(coin: Coin): String = if(coin == Coin.LITECOIN) "lit/vB" else "sat/v
  * Whether the PSBT, external-signer and air-gapped paths support the wallet: every public script
  * type the coin has. MWEB wallets sign through mwebd and stay out.
  */
-fun externalSigningSupported(coin: Coin, scriptType: String): Boolean =
-    ScriptType.entries.firstOrNull { it.name == scriptType }?.let { coin.supports(it) } == true
+fun externalSigningSupported(coin: Coin, network: Network, scriptType: String): Boolean =
+    ScriptType.entries.firstOrNull { it.name == scriptType }?.let { ChainParams.of(coin, network).supports(it) } == true
 
 /**
  * Whether an unsigned transaction's txid is the one it will have: only when no input carries a

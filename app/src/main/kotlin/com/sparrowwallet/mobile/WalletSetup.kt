@@ -26,5 +26,6 @@ object WalletSetup {
         ScriptType.P2WPKH -> "Native Segwit"
         ScriptType.P2SH_P2WPKH -> "Nested Segwit"
         ScriptType.P2PKH -> "Legacy"
+        ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 7")
     }
 }

@@ -52,6 +52,7 @@ object Addresses {
         ScriptType.P2PKH -> p2pkh(pubKey, params.p2pkhVersion)
         ScriptType.P2SH_P2WPKH -> p2shP2wpkh(pubKey, params.p2shVersion)
         ScriptType.P2WPKH -> p2wpkh(pubKey, requireNotNull(params.bech32Hrp) { "${params.coin.displayName} has no segwit addresses" })
+        ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 3")
     }
 
     /** Litecoin decoding, kept for the call sites that predate the coin axis. */
@@ -86,7 +87,7 @@ object Addresses {
                     witness.version == 0 && (witness.program.size == 20 || witness.program.size == 32) ->
                         byteArrayOf(0x00, witness.program.size.toByte()) + witness.program
                     witness.version in 1..16 && witness.program.size in 2..40 -> {
-                        require(params.taproot) { "${params.coin.displayName} does not support Taproot addresses" }
+                        require(params.taprootDestinations) { "Taproot is not active on ${params.coin.displayName} ${params.network.displayName}" }
                         byteArrayOf((0x50 + witness.version).toByte(), witness.program.size.toByte()) + witness.program
                     }
                     else -> throw IllegalArgumentException("Invalid witness program length: ${witness.program.size}")

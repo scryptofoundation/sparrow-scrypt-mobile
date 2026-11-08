@@ -1208,7 +1208,7 @@ private fun HomeScreen(
             OutlinedButton(onClick = onSwitch, modifier = Modifier.weight(1f)) { Text("Wallets") }
         }
         if(!gapped) LabelSyncButton(onError = { status = it }, onPairing = onSyncLabels)
-        val externalOk = remember(data) { externalSigningSupported(repo.coin(data), data.scriptType) }
+        val externalOk = remember(data) { externalSigningSupported(repo.coin(data), repo.network(data), data.scriptType) }
         onSignPsbt?.takeIf { externalOk }?.let {
             OutlinedButton(onClick = it, modifier = Modifier.fillMaxWidth()) {
                 Text("Sign a transaction (PSBT)…")
@@ -1944,7 +1944,7 @@ private fun shortAddress(address: String): String =
  */
 private fun estimatePublicFee(utxosDesc: List<Long>, amount: Long, sendMax: Boolean, ratePerVb: Long,
                               coin: Coin = Coin.LITECOIN, inputType: ScriptType = ScriptType.P2WPKH): Long? {
-    val inputVbytes = when(inputType) { ScriptType.P2PKH -> 148L; ScriptType.P2SH_P2WPKH -> 91L; ScriptType.P2WPKH -> 68L }
+    val inputVbytes = when(inputType) { ScriptType.P2PKH -> 148L; ScriptType.P2SH_P2WPKH -> 91L; ScriptType.P2WPKH -> 68L; ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 7") }
     val outputVbytes = if(inputType == ScriptType.P2WPKH) 31L else 34L
     fun vsize(inputs: Int, outputs: Int): Long = coin.feeSize(11L + inputVbytes * inputs + outputVbytes * outputs)
     if(utxosDesc.isEmpty()) return null
@@ -2349,7 +2349,7 @@ private fun SendScreen(
             ) { Text(if(busy) "Broadcasting…" else "Confirm and send") }
             // external signer path: any public-funded send, peg-ins included
             if(preview is WalletRepository.SendPreview && publicData != null
-                && externalSigningSupported(sendCoin, publicData.scriptType)) {
+                && externalSigningSupported(sendCoin, network, publicData.scriptType)) {
                 OutlinedButton(
                     onClick = {
                         busy = true; error = null
@@ -2569,7 +2569,7 @@ private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData,
             }
             }
         }
-        if(externalSigningSupported(repo.coin(data), data.scriptType)) {
+        if(externalSigningSupported(repo.coin(data), repo.network(data), data.scriptType)) {
             OutlinedButton(onClick = onExport, modifier = Modifier.fillMaxWidth()) {
                 Text("Export to desktop (air-gapped)")
             }

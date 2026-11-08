@@ -43,6 +43,7 @@ object AirgapUr {
             ScriptType.P2PKH -> listOf(ScriptExpression.PUBLIC_KEY_HASH)
             ScriptType.P2SH_P2WPKH -> listOf(ScriptExpression.SCRIPT_HASH, ScriptExpression.WITNESS_PUBLIC_KEY_HASH)
             ScriptType.P2WPKH -> listOf(ScriptExpression.WITNESS_PUBLIC_KEY_HASH)
+            ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 6")
         }
         val output = CryptoOutput(expressions, key)
         return CryptoAccount(master.fingerprint, listOf(output)).toUR()

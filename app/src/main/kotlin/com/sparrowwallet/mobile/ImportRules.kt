@@ -10,7 +10,8 @@ object ImportRules {
         if(linkedMweb && coin != Coin.LITECOIN) return "Only Litecoin wallets have a linked MWEB wallet"
         val type = scriptType ?: ScriptType.P2WPKH.name
         if(type == "MWEB") return if(coin.mweb) null else "${coin.displayName} has no MWEB wallets"
-        val known = ScriptType.entries.firstOrNull { it.name == type } ?: return "Mobile does not support $type wallets yet"
+        //Taproot imports open up with the app UI (Task 7)
+        val known = ScriptType.entries.firstOrNull { it.name == type && it != ScriptType.P2TR } ?: return "Mobile does not support $type wallets yet"
         return if(coin.supports(known)) null else "${coin.displayName} has no $type wallets"
     }
 }

@@ -158,6 +158,7 @@ object Scripts {
         ScriptType.P2PKH -> p2pkhOutput(pubKey)
         ScriptType.P2SH_P2WPKH -> p2shP2wpkhOutput(pubKey)
         ScriptType.P2WPKH -> p2wpkhOutput(pubKey)
+        ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 3")
     }
 }
 
