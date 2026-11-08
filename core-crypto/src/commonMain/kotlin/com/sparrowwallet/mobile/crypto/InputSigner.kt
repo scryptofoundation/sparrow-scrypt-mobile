@@ -12,16 +12,20 @@ object InputSigner {
      */
     fun signAll(tx: Tx, keys: List<HDKey>, scriptType: ScriptType, values: List<Long>) {
         require(keys.size == tx.inputs.size && values.size == tx.inputs.size) { "One key and one value per input" }
-        val digests = keys.mapIndexed { i, key -> digest(tx, i, key, scriptType, values[i]) }
+        val spentScripts = if(scriptType == ScriptType.P2TR) keys.map { Scripts.p2trOutput(it.pubKey) } else emptyList()
+        val digests = keys.mapIndexed { i, key -> digest(tx, i, key, scriptType, values[i], values, spentScripts) }
         for((i, key) in keys.withIndex()) {
-            apply(tx.inputs[i], key, scriptType, Ecdsa.signForInput(digests[i], key.privKey))
+            val sig = if(scriptType == ScriptType.P2TR) Schnorr.signForInput(digests[i], key.privKey) else Ecdsa.signForInput(digests[i], key.privKey)
+            apply(tx.inputs[i], key, scriptType, sig)
         }
     }
 
-    private fun digest(tx: Tx, i: Int, key: HDKey, scriptType: ScriptType, value: Long): ByteArray = when(scriptType) {
+    private fun digest(
+        tx: Tx, i: Int, key: HDKey, scriptType: ScriptType, value: Long, values: List<Long>, spentScripts: List<ByteArray>
+    ): ByteArray = when(scriptType) {
         ScriptType.P2PKH -> tx.legacySighashAll(i, Scripts.p2pkhOutput(key.pubKey))
         ScriptType.P2SH_P2WPKH, ScriptType.P2WPKH -> tx.bip143SighashAll(i, Scripts.p2pkhScriptCode(key.pubKey), value)
-        ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 4")
+        ScriptType.P2TR -> tx.taprootKeyPathSighash(i, values, spentScripts)
     }
 
     private fun apply(input: TxInput, key: HDKey, scriptType: ScriptType, sig: ByteArray) {
@@ -32,7 +36,7 @@ object InputSigner {
                 input.witness = listOf(sig, key.pubKey)
             }
             ScriptType.P2WPKH -> input.witness = listOf(sig, key.pubKey)
-            ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 4")
+            ScriptType.P2TR -> input.witness = listOf(sig) // 64-byte BIP340 signature, SIGHASH_DEFAULT; empty scriptSig
         }
     }
 

@@ -137,6 +137,43 @@ class Tx(
             .u32le(1) // SIGHASH_ALL
         return sha256d(preimage.toByteArray())
     }
+
+    /**
+     * BIP341 signature hash for a Taproot key-path spend (ext_flag 0, no annex). [hashType] is
+     * 0 (DEFAULT) or 1 (ALL). [spentAmounts] and [spentScripts] cover every input, in order.
+     */
+    fun taprootKeyPathSighash(inputIndex: Int, spentAmounts: List<Long>, spentScripts: List<ByteArray>, hashType: Int = 0): ByteArray {
+        require(hashType == 0 || hashType == 1) { "Only SIGHASH_DEFAULT and SIGHASH_ALL are supported" }
+        require(inputIndex in inputs.indices) { "No input $inputIndex" }
+        require(spentAmounts.size == inputs.size && spentScripts.size == inputs.size) { "One spent amount and script per input" }
+        val prevouts = ByteWriter()
+        val amounts = ByteWriter()
+        val scripts = ByteWriter()
+        val sequences = ByteWriter()
+        for((i, input) in inputs.withIndex()) {
+            prevouts.bytes(input.outpoint())
+            amounts.u64le(spentAmounts[i])
+            scripts.varBytes(spentScripts[i])
+            sequences.u32le(input.sequence)
+        }
+        val outs = ByteWriter()
+        for(output in outputs) {
+            outs.bytes(output.serialize())
+        }
+        val msg = ByteWriter()
+            .u8(0x00) // epoch
+            .u8(hashType)
+            .u32le(version)
+            .u32le(locktime)
+            .bytes(sha256(prevouts.toByteArray()))
+            .bytes(sha256(amounts.toByteArray()))
+            .bytes(sha256(scripts.toByteArray()))
+            .bytes(sha256(sequences.toByteArray()))
+            .bytes(sha256(outs.toByteArray()))
+            .u8(0x00) // spend_type: key path, no annex
+            .u32le(inputIndex.toLong())
+        return Taproot.taggedHash("TapSighash", msg.toByteArray())
+    }
 }
 
 object Scripts {
@@ -184,6 +221,20 @@ object Ecdsa {
             v = byteArrayOf(0) + v // keep the integer positive
         }
         return byteArrayOf(0x02, v.size.toByte()) + v
+    }
+}
+
+object Schnorr {
+    /**
+     * BIP340 signature (64 bytes, zero aux) of [hash] with the BIP86-tweaked [privKey], checked
+     * against the output key before it is returned. SIGHASH_DEFAULT: no sighash byte appended.
+     */
+    fun signForInput(hash: ByteArray, privKey: ByteArray): ByteArray {
+        val tweaked = Taproot.tweakPrivKey(privKey)
+        val sig = secpSignSchnorr(hash, tweaked)
+        val outputKey = Taproot.xOnly(secpPublicKeyCreate(tweaked))
+        check(secpVerifySchnorr(sig, hash, outputKey)) { "Generated signature failed verification" }
+        return sig
     }
 }
 

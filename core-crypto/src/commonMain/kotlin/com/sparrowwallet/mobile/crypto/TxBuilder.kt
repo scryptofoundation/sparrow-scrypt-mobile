@@ -153,13 +153,15 @@ object TxBuilder {
                 ScriptType.P2PKH -> 148
                 ScriptType.P2SH_P2WPKH -> 64
                 ScriptType.P2WPKH -> 41
-                ScriptType.P2TR -> throw UnsupportedOperationException("Taproot: Task 4")
+                ScriptType.P2TR -> 41
             }.toInt()
         }
         val segwitInputs = inputTypes.count { it != ScriptType.P2PKH }
         val base = 4 + varIntSize(inputTypes.size) + inputBase +
             varIntSize(outputScriptSizes.size) + outputScriptSizes.sumOf { 8 + varIntSize(it) + it } + 4
-        val witness = if(segwitInputs > 0) 2 + segwitInputs * 108 else 0 // per input: count(1) + sig(1+72) + pubkey(1+33)
+        // per input: P2WPKH count(1) + sig(1+72) + pubkey(1+33); P2TR count(1) + sig(1+64)
+        val witnessInputs = inputTypes.sumOf { if(it == ScriptType.P2TR) 66 else if(it == ScriptType.P2PKH) 0 else 108 }
+        val witness = if(segwitInputs > 0) 2 + witnessInputs else 0
         return ((base * 4 + witness + 3) / 4).toLong()
     }
 
