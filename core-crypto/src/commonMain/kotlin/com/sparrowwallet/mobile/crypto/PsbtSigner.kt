@@ -255,6 +255,8 @@ object PsbtSigner {
      * so a PSBT that lies about any of them gets a signature the network rejects.
      */
     private fun prevTxRefusal(parsed: Psbt.Parsed, scriptType: ScriptType): String? {
+        //keyed on the wallet, not on each input: only our own BIP341 signature commits to the other inputs' amounts,
+        //so a segwit v0 wallet still needs every previous transaction, even beside another signer's Taproot input
         if(scriptType == ScriptType.P2TR) return null
         val missing = parsed.inputs.withIndex().filter { it.value.nonWitnessUtxo == null }.map { it.index + 1 }
         if(parsed.inputs.size < 2 || missing.isEmpty()) return null

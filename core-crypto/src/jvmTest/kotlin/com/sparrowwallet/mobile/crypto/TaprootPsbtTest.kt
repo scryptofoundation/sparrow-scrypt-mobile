@@ -115,6 +115,45 @@ class TaprootPsbtTest {
         assertEquals("Input 2 has no witness UTXO or previous transaction", review(psbt).refusal)
     }
 
+    /** A witness UTXO value for [value] paid to [script]. */
+    private fun witnessUtxo(value: Long, script: ByteArray) = ByteWriter().u64le(value).varBytes(script).toByteArray()
+
+    @Test
+    fun taprootWalletSignsBesideForeignV0InputWithoutPrevTx() {
+        //input 2 is another signer's Native Segwit coin, with its witness UTXO and no previous transaction
+        val foreign = Scripts.p2wpkhOutput(master.derivePath("m/84'/2'/5'/0/0").pubKey)
+        val foreignMap = listOf(byteArrayOf(0x01) to witnessUtxo(30_000_000, foreign))
+        val psbt = PsbtFixtures.edit(phonePsbt()) { maps -> maps[2].clear(); maps[2] += foreignMap }
+        val review = review(psbt)
+        assertNull(review.refusal)
+        assertEquals(listOf(true, false), review.inputs.map { it.ours })
+
+        val signed = sign(psbt)
+        assertEquals(64, signed.inputs[0].tapKeySig!!.size)
+        assertNull(signed.inputs[1].tapKeySig)
+        assertTrue(signed.inputs[1].partialSigs.isEmpty())
+        //the foreign input's map passes through as it was
+        val maps = PsbtFixtures.splitMaps(Psbt.serialize(signed))
+        assertEquals(foreignMap.map { it.first.toHex() to it.second.toHex() }, maps[2].map { it.first.toHex() to it.second.toHex() })
+    }
+
+    @Test
+    fun v0WalletKeepsPrevTxRuleBesideForeignTaprootInput() {
+        //our Native Segwit input carries its previous transaction; input 2 is another signer's Taproot coin with a witness UTXO only
+        val foreign = Scripts.p2trOutput(master.derivePath("m/86'/2'/5'/0/0").pubKey)
+        val psbt = PsbtFixtures.edit(PsbtFixtures.fixturePsbt()) { maps ->
+            maps[2].clear()
+            maps[2] += byteArrayOf(0x01) to witnessUtxo(30_000_000, foreign)
+        }
+        val parsed = Psbt.parse(psbt)
+        val accountPath = listOf(84L + h, 2L + h, 0L + h)
+        val expected = "Input 2 is missing the full previous transaction. When a PSBT has more than one input, the " +
+            "phone needs each one to check the fee. On the PC, import this wallet with the Sparrow Mobile option."
+        val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(parsed, master, mainnet, accountPath, ScriptType.P2WPKH) }
+        assertEquals(expected, e.message)
+        assertEquals(expected, PsbtSigner.review(parsed, master, mainnet, accountPath, ScriptType.P2WPKH).refusal)
+    }
+
     @Test
     fun otherSighashTypeIsRefused() {
         val psbt = PsbtFixtures.edit(phonePsbt()) { maps -> maps[1] += byteArrayOf(0x03) to byteArrayOf(0x83.toByte(), 0, 0, 0) }
