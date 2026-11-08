@@ -174,3 +174,22 @@ private class NonceKCalculator(private val counter: Long?) : DSAKCalculator {
         return value
     }
 }
+
+actual fun secpSignSchnorr(hash32: ByteArray, privKey32: ByteArray): ByteArray {
+    require(hash32.size == 32 && privKey32.size == 32) { "Hash and key must be 32 bytes" }
+    return secp { signSchnorr(hash32.copyOf(), privKey32.copyOf(), ByteArray(32)) }
+}
+
+actual fun secpVerifySchnorr(sig64: ByteArray, hash32: ByteArray, xOnlyPub32: ByteArray): Boolean {
+    require(sig64.size == 64 && hash32.size == 32 && xOnlyPub32.size == 32) { "Signature 64 bytes, hash and key 32 bytes" }
+    return try {
+        secp { verifySchnorr(sig64.copyOf(), hash32.copyOf(), xOnlyPub32.copyOf()) }
+    } catch(e: IllegalArgumentException) {
+        false //an x-only key not on the curve is an invalid signature, not an error
+    }
+}
+
+actual fun secpPrivKeyNegate(privKey32: ByteArray): ByteArray {
+    require(privKey32.size == 32) { "Private key must be 32 bytes" }
+    return secp { privKeyNegate(privKey32.copyOf()) }
+}

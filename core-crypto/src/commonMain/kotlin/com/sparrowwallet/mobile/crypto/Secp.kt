@@ -27,3 +27,15 @@ expect fun secpPubKeyTweakMul(pubKey: ByteArray, scalar: ByteArray): ByteArray
  * r||s.
  */
 expect fun secpSign(messageHash: ByteArray, privKey: ByteArray): ByteArray
+
+/**
+ * BIP340 Schnorr signature (64 bytes) over a 32-byte hash, with 32 zero bytes of auxiliary randomness, as
+ * drongo signs. The private key is used as given (the caller applies any BIP341 tweak and parity negation).
+ */
+expect fun secpSignSchnorr(hash32: ByteArray, privKey32: ByteArray): ByteArray
+
+/** True if sig64 is a valid BIP340 signature of hash32 under the 32-byte x-only public key. */
+expect fun secpVerifySchnorr(sig64: ByteArray, hash32: ByteArray, xOnlyPub32: ByteArray): Boolean
+
+/** n - privKey, as 32 bytes. Throws if the key is invalid. */
+expect fun secpPrivKeyNegate(privKey32: ByteArray): ByteArray
