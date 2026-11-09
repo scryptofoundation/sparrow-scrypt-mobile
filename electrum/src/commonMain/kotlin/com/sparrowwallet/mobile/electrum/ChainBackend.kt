@@ -1,5 +1,7 @@
 package com.sparrowwallet.mobile.electrum
 
+import com.sparrowwallet.mobile.crypto.track.BlockFee
+
 /** A transaction output: the paid script and its value in the coin's smallest unit. */
 data class TxOut(val scriptHex: String, val value: Long)
 
@@ -18,6 +20,12 @@ data class TxDetail(
     val time: Long?,
     val confirmations: Int
 )
+
+/**
+ * Where a transaction sits in the chain. [height] is 0 and [blockHash] null when it is unconfirmed or the
+ * server did not say where; [time] is the block time, 0 when unknown.
+ */
+data class TxAt(val height: Int, val blockHash: String?, val time: Long)
 
 /**
  * One coin's chain as seen through a server: an Electrum server or an Esplora REST API.
@@ -51,6 +59,24 @@ interface ChainBackend {
 
     /** Estimated fee rate in sats per vbyte to confirm within [targetBlocks], or null when the server has none. */
     suspend fun feeRate(targetBlocks: Int): Double?
+
+    /**
+     * The hash of the block at [height] on the server's chain, or null when the server cannot say (no such
+     * block, or no call for it). An answer that cannot be read throws.
+     */
+    suspend fun blockHash(height: Int): String? = null
+
+    /** The txid at [position] of the block at [height] (0 is the coinbase), or null past its end or when unsupported. */
+    suspend fun txidAt(height: Int, position: Int): String? = null
+
+    /**
+     * The fees of the block's non-coinbase transactions in block order, or null when the server cannot list
+     * them. A listing that is incomplete or lacks a fee throws, never a partial list.
+     */
+    suspend fun blockFees(blockHash: String): List<BlockFee>? = null
+
+    /** Where [txid] is mined, from the server. Unconfirmed gives height 0. */
+    suspend fun transactionAt(txid: String): TxAt = throw UnsupportedOperationException("This backend cannot place a transaction in a block")
 
     fun close()
 }

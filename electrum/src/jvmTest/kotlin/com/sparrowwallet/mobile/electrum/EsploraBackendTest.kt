@@ -405,4 +405,108 @@ class EsploraBackendTest {
         val e = assertFailsWith<IOException> { b.rawTransaction(txid) }
         assertTrue("HTTP 500" in e.message!! && "429" in e.message!!, e.message)
     }
+
+    private val H = "ab".repeat(32)
+    private fun blockTx(txid: String, fee: Long?, coinbase: Boolean = false) =
+        """{"txid":"$txid","vin":[{"is_coinbase":$coinbase}],"vout":[]${if(fee != null) ""","fee":$fee""" else ""}}"""
+    private fun id(n: Int) = n.toString(16).padStart(64, '0')
+    private fun fee(txid: String, fee: Long) = com.sparrowwallet.mobile.crypto.track.BlockFee(txid, fee)
+
+    @Test fun blockCallsReadHeightHashAndFees(): Unit = runBlocking {
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "110"
+                "/block-height/101" -> 200 to H
+                "/block-height/999" -> 404 to "Block not found"
+                "/block/$H/txs/0" -> 200 to "[${blockTx(id(9), null, true)},${blockTx(T1, 300)},${blockTx(T2, 500)}]"
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(H, b.blockHash(101))
+        assertNull(b.blockHash(999))
+        assertEquals(listOf(fee(T1, 300), fee(T2, 500)), b.blockFees(H))
+        assertNull(b.txidAt(101, 1))
+    }
+
+    @Test fun blockFeesPagesPastTwentyFive(): Unit = runBlocking {
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "110"
+                "/block/$H/txs/0" -> 200 to (0 until 25).joinToString(",", "[", "]") { blockTx(id(it), if(it == 0) null else 10L + it, it == 0) }
+                "/block/$H/txs/25" -> 200 to (25 until 30).joinToString(",", "[", "]") { blockTx(id(it), 10L + it) }
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        val fees = b.blockFees(H)!!
+        assertEquals(29, fees.size)
+        assertEquals(fee(id(1), 11), fees.first())
+        assertEquals(fee(id(29), 39), fees.last())
+        assertEquals(listOf("GET /blocks/tip/height", "GET /block/$H/txs/0", "GET /block/$H/txs/25"), requests.toList())
+    }
+
+    @Test fun blockFeesOfAnExactMultipleEndWhereTheCountSaysSo(): Unit = runBlocking {
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "110"
+                "/block/$H/txs/0" -> 200 to (0 until 25).joinToString(",", "[", "]") { blockTx(id(it), if(it == 0) null else 1L, it == 0) }
+                "/block/$H/txs/25" -> 400 to "start_index out of range"
+                "/block/$H" -> 200 to """{"id":"$H","tx_count":25}"""
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(24, b.blockFees(H)!!.size)
+    }
+
+    @Test fun blockFeesWithoutBlockRoutesAreUnknownButAMissingFeeThrows(): Unit = runBlocking {
+        val other = "cd".repeat(32)
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "110"
+                "/block/$H/txs/0" -> 404 to "not found"
+                "/block/$other/txs/0" -> 200 to "[${blockTx(id(9), null, true)},${blockTx(T1, 300)},${blockTx(T2, null)}]"
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertNull(b.blockFees(H))
+        assertFailsWith<IOException> { b.blockFees(other) }
+        assertFailsWith<IOException> { b.blockFees("../etc") }
+    }
+
+    @Test fun blockFeesPageThatCannotBeReadThrows(): Unit = runBlocking {
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "110"
+                "/block/$H/txs/0" -> 200 to "<html>oops</html>"
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertFailsWith<IOException> { b.blockFees(H) }
+    }
+
+    @Test fun transactionAtReadsStatus(): Unit = runBlocking {
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "110"
+                "/tx/$T1/status" -> 200 to """{"confirmed":true,"block_height":101,"block_hash":"$H","block_time":1761000000}"""
+                "/tx/$T2/status" -> 200 to """{"confirmed":false}"""
+                else -> 404 to "not found"
+            }
+        }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertEquals(TxAt(101, H, 1761000000L), b.transactionAt(T1))
+        assertEquals(TxAt(0, null, 0), b.transactionAt(T2))
+    }
+
+    @Test fun blockCallsRefuseWhenAirGapped(): Unit = runBlocking {
+        val b = EsploraBackend(base, params)
+        NetworkPolicy.blocked = true
+        assertFailsWith<AirGappedException> { b.blockHash(1) }
+        assertFailsWith<AirGappedException> { b.blockFees(H) }
+        assertFailsWith<AirGappedException> { b.transactionAt(T1) }
+    }
 }

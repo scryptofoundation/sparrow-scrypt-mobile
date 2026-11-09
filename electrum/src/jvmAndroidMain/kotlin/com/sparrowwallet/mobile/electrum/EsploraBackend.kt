@@ -6,6 +6,7 @@ import com.sparrowwallet.mobile.crypto.RawTx
 import com.sparrowwallet.mobile.crypto.hexToBytes
 import com.sparrowwallet.mobile.crypto.sha256
 import com.sparrowwallet.mobile.crypto.toHex
+import com.sparrowwallet.mobile.crypto.track.BlockFee
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -186,6 +187,80 @@ class EsploraBackend(
         throw IOException(failure(r))
     }
 
+    /** The hash of the block at [height] (/block-height/:h), null when the server has no block there. */
+    override suspend fun blockHash(height: Int): String? {
+        val r = get("/block-height/$height")
+        if(r.status == 404) return null
+        if(r.status != 200) throw IOException(failure(r))
+        return requireHash(r.body.trim().trim('"'), "block hash")
+    }
+
+    /** Where the transaction is mined, from /tx/:id/status. Unconfirmed is height 0. */
+    override suspend fun transactionAt(txid: String): TxAt {
+        val r = get("/tx/${requireTxid(txid)}/status")
+        if(r.status != 200) throw IOException(failure(r))
+        val status = json.parseToJsonElement(r.body).jsonObject
+        if(status["confirmed"]?.jsonPrimitive?.booleanOrNull != true) return TxAt(0, null, 0)
+        val hash = status["block_hash"]?.jsonPrimitive?.content?.let { requireHash(it, "block hash") }
+        val time = status["block_time"]?.jsonPrimitive?.longOrNull ?: 0L
+        val height = status["block_height"]?.jsonPrimitive?.intOrNull ?: return TxAt(0, null, 0)
+        return TxAt(height, hash, time)
+    }
+
+    /**
+     * The fees of the block's non-coinbase transactions in block order, read from /block/:hash/txs/:start in
+     * pages of 25 until a short page. Null when the server has no block routes (404 on the first page). The
+     * coinbase is the block's first transaction and is skipped; every other transaction must carry a fee,
+     * or the whole listing is refused, since a partial list would misplace the fees that follow.
+     */
+    override suspend fun blockFees(blockHash: String): List<BlockFee>? {
+        val hash = requireHash(blockHash, "block hash")
+        val fees = ArrayList<BlockFee>()
+        var index = 0
+        for(page in 0 until MAX_BLOCK_PAGES) {
+            val start = page * PAGE_SIZE
+            val r = get("/block/$hash/txs/$start")
+            if(r.status == 404 && page == 0) return null
+            if(r.status != 200) {
+                // a block of an exact multiple of 25 may answer its (empty) next page with an error: the count settles it
+                if(page > 0 && (r.status == 400 || r.status == 404) && blockTxCount(hash) == index) return fees
+                throw IOException(failure(r))
+            }
+            val txs = try {
+                json.parseToJsonElement(r.body).jsonArray
+            } catch(e: Exception) {
+                throw IOException("The block page at $start could not be read", e)
+            }
+            for(t in txs) {
+                val o = t as? JsonObject ?: throw IOException("A block transaction at $index is not an object")
+                val txid = requireTxid(o["txid"]?.jsonPrimitive?.content ?: throw IOException("A block transaction at $index has no txid"))
+                if(index == 0) {
+                    val coinbase = ((o["vin"] as? JsonArray)?.firstOrNull() as? JsonObject)?.get("is_coinbase")?.jsonPrimitive?.booleanOrNull
+                    if(coinbase == false) throw IOException("The first transaction of block $hash is not a coinbase")
+                } else {
+                    val fee = o["fee"]?.jsonPrimitive?.longOrNull
+                    if(fee == null || fee < 0) throw IOException("The server gave no fee for transaction $index of block $hash")
+                    fees += BlockFee(txid.lowercase(), fee)
+                }
+                index++
+            }
+            if(txs.size < PAGE_SIZE) return fees
+        }
+        throw IOException("Block $hash has more than ${MAX_BLOCK_PAGES * PAGE_SIZE} transactions")
+    }
+
+    private suspend fun blockTxCount(hash: String): Int? {
+        val r = get("/block/$hash")
+        if(r.status != 200) return null
+        return json.parseToJsonElement(r.body).jsonObject["tx_count"]?.jsonPrimitive?.intOrNull
+    }
+
+    private fun requireHash(value: String, what: String): String {
+        val v = value.trim().lowercase()
+        if(v.length != 64 || !v.all { it in '0'..'9' || it in 'a'..'f' }) throw IOException("The server's $what is not 64 hex characters: ${value.take(80)}")
+        return v
+    }
+
     override suspend fun broadcast(txHex: String): String {
         val r = withRateLimit { http.post("/tx", txHex) }
         if(r.status == 404 || r.status == 405) {
@@ -272,6 +347,8 @@ class EsploraBackend(
         private const val PAGE_SIZE = 25
         /** A wallet address with more than 1,000 confirmed transactions is cut off rather than paged forever. */
         private const val MAX_PAGES = 40
+        /** A block listing is cut off at this many pages (10,000 transactions) rather than paged forever. */
+        private const val MAX_BLOCK_PAGES = 400
         private val ALREADY = listOf("already known", "already-known", "already in", "already exists", "txn-already")
         private val MEMPOOL_TARGETS = listOf("fastestFee" to 1, "halfHourFee" to 3, "hourFee" to 6, "economyFee" to 25)
         private const val MAX_RATE_LIMIT_RETRIES = 3

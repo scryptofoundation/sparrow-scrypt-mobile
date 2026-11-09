@@ -29,6 +29,9 @@ import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.X509TrustManager
 
+/** An error answer from the server; [code] is its JSON-RPC code when it gave one. */
+class ElectrumRpcException(message: String, val code: Int?) : IllegalStateException(message)
+
 /** A SOCKS5 proxy endpoint — with Orbot/Tor this is 127.0.0.1:9050. */
 data class SocksProxy(val host: String, val port: Int)
 
@@ -134,6 +137,26 @@ class ElectrumClient(
     suspend fun estimateFee(targetBlocks: Int): Double =
         call("blockchain.estimatefee", listOf(JsonPrimitive(targetBlocks))).jsonPrimitive.content.toDouble()
 
+    /** The block header at [height] as hex (blockchain.block.header; 80 bytes, longer for an AuxPoW coin). */
+    suspend fun getBlockHeader(height: Int): String =
+        call("blockchain.block.header", listOf(JsonPrimitive(height))).jsonPrimitive.content
+
+    /**
+     * The txid at [position] of the block at [height] (blockchain.transaction.id_from_pos), or null past the
+     * block's end or when the server has no such call. Any other error throws.
+     */
+    suspend fun getTransactionIdAt(height: Int, position: Int): String? {
+        val result = try {
+            call("blockchain.transaction.id_from_pos", listOf(JsonPrimitive(height), JsonPrimitive(position)))
+        } catch(e: ElectrumRpcException) {
+            val lower = e.message.orEmpty().lowercase()
+            if(e.code == -32601 || lower.contains("unknown method") || lower.contains("method not found")) return null
+            if(lower.contains("no tx at position") || lower.contains("no transaction at position")) return null
+            throw e
+        }
+        return result.jsonPrimitive.content
+    }
+
     private suspend fun call(method: String, params: List<JsonElement>): JsonElement = withContext(Dispatchers.IO) {
         val out = writer ?: error("Not connected — call connect() first")
         NetworkPolicy.check("Electrum")
@@ -151,7 +174,10 @@ class ElectrumClient(
             val line = reader!!.readLine() ?: error("Connection closed by server")
             val response = json.parseToJsonElement(line).jsonObject
             if(response["id"]?.jsonPrimitive?.int != id) continue // skip subscription notifications
-            response["error"]?.let { error("Electrum error: $it") }
+            response["error"]?.let { e ->
+                val obj = e as? JsonObject
+                throw ElectrumRpcException("Electrum error: $e", obj?.get("code")?.jsonPrimitive?.content?.toIntOrNull())
+            }
             return@withContext response["result"] ?: error("No result in response")
         }
         @Suppress("UNREACHABLE_CODE") error("unreachable")
