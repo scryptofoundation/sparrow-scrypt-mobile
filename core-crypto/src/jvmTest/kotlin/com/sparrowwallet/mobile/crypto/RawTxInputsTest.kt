@@ -52,5 +52,25 @@ class RawTxInputsTest {
         assertEquals("11".repeat(32), mweb.inputs[0].prevTxid)
         assertEquals(7L, mweb.inputs[0].prevVout)
         assertEquals(0xFFFFFFFEL, mweb.inputs[0].sequence)
+        assertFalse(legacy.mwebNullExtension)
+        assertFalse(mweb.mwebNullExtension)
+    }
+
+    @Test
+    fun nullMwebExtensionIsTold() {
+        val body = "01" + "11".repeat(32) + "00000000" + "00" + "feffffff" +
+            "01" + "8813000000000000" + "03" + "51" + "5151"
+        // a HogEx's extension: the single byte 0 (no MWEB transaction)
+        val hogEx = RawTx.parse(("02000000" + "0008" + body + "00" + "63000000").hexToBytes())
+        assertTrue(hogEx.mweb)
+        assertTrue(hogEx.mwebNullExtension)
+        // a transaction carrying an MWEB transaction (such as a peg-in): 1 then its body
+        val pegIn = RawTx.parse(("02000000" + "0008" + body + "01aabbcc" + "63000000").hexToBytes())
+        assertTrue(pegIn.mweb)
+        assertFalse(pegIn.mwebNullExtension)
+        // an empty extension is not the null one either
+        val empty = RawTx.parse(("02000000" + "0008" + body + "63000000").hexToBytes())
+        assertTrue(empty.mweb)
+        assertFalse(empty.mwebNullExtension)
     }
 }

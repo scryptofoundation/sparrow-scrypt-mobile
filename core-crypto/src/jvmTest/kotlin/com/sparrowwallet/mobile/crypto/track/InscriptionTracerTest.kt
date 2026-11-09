@@ -14,10 +14,11 @@ import com.sparrowwallet.mobile.crypto.track.TrackFixtures.script
 import com.sparrowwallet.mobile.crypto.track.TrackFixtures.spend
 import com.sparrowwallet.mobile.crypto.track.TrackFixtures.tx
 import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
-import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -235,7 +236,6 @@ class InscriptionTracerTest {
         val resumed = trace(litecoin(), coin.txid, 0, cut.open)
         assertEquals(Verdict.UNCHECKED, resumed.verdict)
         assertEquals("Came through MWEB", resumed.reason)
-        assertNotEquals(Verdict.CLEAN, resumed.verdict)
     }
 
     /** The piece on an output KnownResults calls clean costs no lookup of its own: its parents are never fetched. */
@@ -252,19 +252,50 @@ class InscriptionTracerTest {
         assertEquals(2, chain.transactionCalls)
     }
 
-    /** A transaction with the MWEB flag is read as a HogEx, whatever its extension holds (the phone does not keep it). */
+    /**
+     * A transaction with the MWEB flag is a HogEx when its extension is the single byte 0, as drongo reads it; one that
+     * carries an MWEB transaction (a peg-in) is traced through like any other.
+     */
     @Test
     fun mwebFlaggedTxIsUnchecked() {
-        for((n, extension) in listOf(byteArrayOf(0), byteArrayOf(1, 2, 3)).withIndex()) {
-            //Output 0 pays an ordinary script and input 0 spends output 1: only the flag makes it a HogEx
-            val flagged = tx(listOf(hash(1 + n) to 1), listOf(10_000L), mwebExtension = extension)
-            assertTrue(flagged.mweb, "fixture has the MWEB flag")
-            assertTrue(InscriptionTracer.isHogEx(flagged))
-            chain.add(flagged, 2_500_000)
-            val coin = chain.add(spend(listOf(flagged.txid to 0), 9_000), 2_500_001)
-            val result = trace(litecoin(), coin.txid, 0)
-            assertEquals(Verdict.UNCHECKED, result.verdict)
-            assertEquals("Came through MWEB", result.reason)
+        //Output 0 pays an ordinary script: only the flag and the extension can make these a HogEx
+        val hogParent = old(1, 10_000)
+        val hogEx = tx(listOf(hogParent.txid to 0), listOf(10_000L), mwebExtension = byteArrayOf(0))
+        assertTrue(hogEx.mweb && hogEx.mwebNullExtension, "fixture has the null MWEB extension")
+        assertTrue(InscriptionTracer.isHogEx(hogEx))
+        chain.add(hogEx, 2_500_000)
+        val hogCoin = chain.add(spend(listOf(hogEx.txid to 0), 9_000), 2_500_001)
+        val stopped = trace(litecoin(), hogCoin.txid, 0)
+        assertEquals(Verdict.UNCHECKED, stopped.verdict)
+        assertEquals("Came through MWEB", stopped.reason)
+
+        val pegParent = old(2, 10_000)
+        val pegIn = tx(listOf(pegParent.txid to 0), listOf(10_000L), mwebExtension = byteArrayOf(1, 2, 3))
+        assertTrue(pegIn.mweb && !pegIn.mwebNullExtension, "fixture carries an MWEB transaction")
+        assertFalse(InscriptionTracer.isHogEx(pegIn))
+        chain.add(pegIn, 2_500_000)
+        val pegCoin = chain.add(spend(listOf(pegIn.txid to 0), 9_000), 2_500_001)
+        val traced = trace(litecoin(), pegCoin.txid, 0)
+        assertEquals(Verdict.CLEAN, traced.verdict, traced.reason)
+        assertEquals(3, traced.lookups)
+    }
+
+    /** A cancelled trace throws the cancellation, on the coin's own fetch and on a parent's, and returns no result. */
+    @Test
+    fun cancellationIsThrown() {
+        val parent = old(1, 10_000)
+        val coin = chain.add(spend(listOf(parent.txid to 0), 9_000), 2_500_000)
+        for(cancelAt in listOf(coin.txid, parent.txid)) {
+            val source = object : ChainSource by chain {
+                override suspend fun transaction(txid: String): ChainTx {
+                    if(txid == cancelAt) {
+                        throw CancellationException("cancelled")
+                    }
+                    return chain.transaction(txid)
+                }
+            }
+            val tracer = InscriptionTracer(Coin.LITECOIN, Network.MAINNET, source, knownResults, TxCache())
+            assertFailsWith<CancellationException>("cancelled at $cancelAt") { trace(tracer, coin.txid, 0) }
         }
     }
 

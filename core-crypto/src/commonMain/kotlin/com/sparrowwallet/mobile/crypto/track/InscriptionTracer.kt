@@ -46,13 +46,12 @@ class InscriptionTracer internal constructor(
         private fun serverError(message: String): String = SERVER_ERROR.replace("%s", message)
 
         /**
-         * drongo's Transaction.isHogEx. drongo reads a transaction with the MWEB flag and an extension of the single byte
-         * 0 as a HogEx; the phone's parser keeps only the flag, so any transaction with the MWEB flag counts (stricter:
-         * more pieces stop). Otherwise a HogEx is a transaction whose input 0 spends an output 0 and whose output 0 pays
-         * OP_8 and a 32 byte push.
+         * drongo's Transaction.isHogEx: a transaction with the MWEB flag and an extension of the single byte 0 (no MWEB
+         * transaction, which only a HogEx carries), or one whose input 0 spends an output 0 and whose output 0 pays OP_8
+         * and a 32 byte push. A peg-in carries its MWEB transaction and is traced through, as drongo does.
          */
         internal fun isHogEx(tx: RawTx.Parsed): Boolean {
-            if(tx.mweb) {
+            if(tx.mwebNullExtension) {
                 return true
             }
             if(tx.inputs.isEmpty() || tx.outputs.isEmpty()) {
@@ -70,8 +69,8 @@ class InscriptionTracer internal constructor(
 
         /**
          * An input with no ordinary outpoint: an MWEB id on the 0xFFFFFFFF index with a non-zero hash (drongo's
-         * Transaction.isMweb sentinel). drongo's tracer has no such check (fetching that "parent" fails as a server
-         * error); the phone stops the piece as MWEB instead.
+         * Transaction.isMweb sentinel). drongo's tracer has no such check: its Transaction.getInputs leaves such inputs
+         * out, so it would trace only the other inputs. The phone stops the piece as MWEB instead (stricter).
          */
         private fun hasMwebInput(tx: RawTx.Parsed): Boolean = tx.inputs.any { it.prevVout == NO_INDEX && !it.isCoinbase }
 
@@ -317,7 +316,7 @@ class InscriptionTracer internal constructor(
             return
         }
 
-        val fees = blockFees(run, coinbase)
+        val fees = blockFees(run, coinbase, coded != null)
         if(fees == null) {
             run.deadEnd(FEES_NEED_DEEPER)
             run.open.add(piece)
@@ -362,9 +361,10 @@ class InscriptionTracer internal constructor(
 
     /**
      * The fees of the coinbase's block in block order: from the server when it lists them (Esplora), otherwise, when
-     * walkBlocks allows, by fetching each block transaction and its inputs. Null when neither is possible.
+     * walkBlocks allows, by fetching each block transaction and its inputs. Null when neither is possible. rewardCoded
+     * says whether the reward is known without the fees.
      */
-    private suspend fun blockFees(run: Run, coinbase: ChainTx): List<BlockFee>? {
+    private suspend fun blockFees(run: Run, coinbase: ChainTx, rewardCoded: Boolean): List<BlockFee>? {
         var blockHash = coinbase.blockHash
         if(blockHash == null) {
             //The app's verbose answers carry no block hash: ask for the hash at the coinbase's height
@@ -389,6 +389,10 @@ class InscriptionTracer internal constructor(
             run.serverCall()
             val txid = source.txidAt(coinbase.height, position) ?: break
             val blockTx = run.fetch(txid).tx
+            if(!rewardCoded && (isHogEx(blockTx) || blockTx.mweb)) {
+                //Stricter than the desktop on purpose: with the reward read as total less fees, a skipped fee would count as clean reward
+                return null
+            }
             if(isHogEx(blockTx)) {
                 //Litecoin's MWEB fees are not a HogEx's input-output difference; a coinbase that needs them does not add up
                 position++

@@ -98,9 +98,9 @@ class MinedCoinTest {
         assertEquals(REWARD, result.found.first().offset)
     }
 
-    /** Review C3: a coinbase whose height the server did not give must not be read against the height-0 reward. */
+    /** Review C3: a coinbase whose height the server did not give must not be read against the height-0 reward (drongo's unknownHeightCoinbaseIsUnchecked). */
     @Test
-    fun unknownHeightCoinbaseIsUnchecked() {
+    fun minedCoinWithoutHeightIsUnchecked() {
         val tx = coinbaseTx(0x65, 1_000_000_000L)
         chain.add(tx, 0)
         val result = trace(tracer(Coin.LITECOIN, Network.MAINNET), tx.txid, 0)
@@ -160,6 +160,23 @@ class MinedCoinTest {
         val cb = coinbase(1_000_000, 5_000)
         val result = trace(tracer(Coin.PEPECOIN, Network.TESTNET), cb.txid, 0)
         assertEquals(Verdict.CLEAN, result.verdict, result.reason)
+    }
+
+    /**
+     * Phone hardening, beyond drongo: where the reward is not coded, a walked block holding a HogEx or any MWEB-flagged
+     * transaction leaves the fees unknown, so its fee cannot be read as clean reward.
+     */
+    @Test
+    fun walkWithMwebTxAndNoRewardStaysUnchecked() {
+        for((n, extension) in listOf(byteArrayOf(0), byteArrayOf(1, 2, 3)).withIndex()) {
+            val parent = chain.add(spend(listOf(hash(1 + n) to 0), 10_000), HEIGHT - 1)
+            val flagged = chain.add(tx(listOf(parent.txid to 0), listOf(5_000L), mwebExtension = extension), HEIGHT)
+            val cb = coinbase(1_000_000, 5_000)
+            chain.positions[HEIGHT] = listOf(cb.txid, flagged.txid)
+            val result = trace(tracer(Coin.PEPECOIN, Network.TESTNET), cb.txid, 0, InscriptionTracer.DEEPER_BUDGET, true)
+            assertEquals(Verdict.UNCHECKED, result.verdict, "extension ${extension.toList()}")
+            assertEquals("Mined coin fees need Check deeper", result.reason)
+        }
     }
 
     @Test

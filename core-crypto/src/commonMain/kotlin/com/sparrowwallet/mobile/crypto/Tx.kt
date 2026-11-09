@@ -258,6 +258,8 @@ object RawTx {
     /**
      * [scriptSigs] and [witnesses] are per input, for [CarrierScan]; a witness is empty for a legacy input.
      * [mweb] is true when the MWEB flag was set (the extension is skipped and is not part of the txid).
+     * [mwebNullExtension] is true when that extension is the single byte 0 (no MWEB transaction), Litecoin's encoding
+     * for a HogEx, as drongo's Transaction.isHogEx reads it.
      */
     class Parsed(
         val txid: String,
@@ -267,7 +269,8 @@ object RawTx {
         val inputs: List<Input> = emptyList(),
         val version: Int = 0,
         val locktime: Long = 0,
-        val mweb: Boolean = false
+        val mweb: Boolean = false,
+        val mwebNullExtension: Boolean = false
     )
 
     fun parse(bytes: ByteArray): Parsed {
@@ -305,9 +308,10 @@ object RawTx {
         } else {
             List(inputCount.toInt()) { emptyList() }
         }
+        var mwebExtension: ByteArray? = null
         if(flag and 0x08 != 0) {
             require(r.remaining() >= 4) { "Truncated transaction" }
-            r.bytes(r.remaining() - 4) // MWEB extension: not part of the txid
+            mwebExtension = r.bytes(r.remaining() - 4) // MWEB extension: not part of the txid
         }
         val locktime = r.bytes(4)
         require(r.remaining() == 0) { "Trailing bytes after transaction" }
@@ -317,7 +321,8 @@ object RawTx {
         val locktimeLong = (0 until 4).fold(0L) { acc, k -> acc or ((locktime[k].toLong() and 0xFF) shl (8 * k)) }
         return Parsed(
             sha256d(stripped).reversedArray().toHex(), outputs, scriptSigs, witnesses,
-            inputs, versionInt, locktimeLong, flag and 0x08 != 0
+            inputs, versionInt, locktimeLong, flag and 0x08 != 0,
+            mwebExtension != null && mwebExtension.size == 1 && mwebExtension[0] == 0.toByte()
         )
     }
 }
