@@ -10,6 +10,7 @@ import com.sparrowwallet.mobile.crypto.track.BlockFee
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
@@ -200,16 +201,20 @@ class EsploraBackend(
         val r = get("/tx/${requireTxid(txid)}/status")
         if(r.status != 200) throw IOException(failure(r))
         val status = json.parseToJsonElement(r.body).jsonObject
-        if(status["confirmed"]?.jsonPrimitive?.booleanOrNull != true) return TxAt(0, null, 0)
-        val hash = status["block_hash"]?.jsonPrimitive?.content?.let { requireHash(it, "block hash") }
+        val confirmed = (status["confirmed"] as? JsonPrimitive)?.booleanOrNull
+            ?: throw IOException("The server's status for $txid does not say whether it is confirmed")
+        if(!confirmed) return TxAt(0, null, 0)
+        val height = status["block_height"]?.jsonPrimitive?.intOrNull
+        if(height == null || height < 1) throw IOException("The server says $txid is confirmed but gives no block height")
+        val hash = requireHash(status["block_hash"]?.jsonPrimitive?.content
+            ?: throw IOException("The server says $txid is confirmed but gives no block hash"), "block hash")
         val time = status["block_time"]?.jsonPrimitive?.longOrNull ?: 0L
-        val height = status["block_height"]?.jsonPrimitive?.intOrNull ?: return TxAt(0, null, 0)
         return TxAt(height, hash, time)
     }
 
     /**
      * The fees of the block's non-coinbase transactions in block order, read from /block/:hash/txs/:start in
-     * pages of 25 until a short page. Null when the server has no block routes (404 on the first page). The
+     * pages of 25 until a short page, then checked against the block tx_count. Null when the server has no block routes (404 on the first page). The
      * coinbase is the block's first transaction and is skipped; every other transaction must carry a fee,
      * or the whole listing is refused, since a partial list would misplace the fees that follow.
      */
@@ -222,8 +227,8 @@ class EsploraBackend(
             val r = get("/block/$hash/txs/$start")
             if(r.status == 404 && page == 0) return null
             if(r.status != 200) {
-                // a block of an exact multiple of 25 may answer its (empty) next page with an error: the count settles it
-                if(page > 0 && (r.status == 400 || r.status == 404) && blockTxCount(hash) == index) return fees
+                // a block of an exact multiple of 25 may answer its (empty) next page with an error: the count check settles it
+                if(page > 0 && (r.status == 400 || r.status == 404)) return checkedAgainstCount(hash, index, fees)
                 throw IOException(failure(r))
             }
             val txs = try {
@@ -231,12 +236,13 @@ class EsploraBackend(
             } catch(e: Exception) {
                 throw IOException("The block page at $start could not be read", e)
             }
+            if(page == 0 && txs.isEmpty()) throw IOException("The server listed no transactions for block $hash")
             for(t in txs) {
                 val o = t as? JsonObject ?: throw IOException("A block transaction at $index is not an object")
                 val txid = requireTxid(o["txid"]?.jsonPrimitive?.content ?: throw IOException("A block transaction at $index has no txid"))
                 if(index == 0) {
                     val coinbase = ((o["vin"] as? JsonArray)?.firstOrNull() as? JsonObject)?.get("is_coinbase")?.jsonPrimitive?.booleanOrNull
-                    if(coinbase == false) throw IOException("The first transaction of block $hash is not a coinbase")
+                    if(coinbase != true) throw IOException("The first transaction of block $hash is not a coinbase")
                 } else {
                     val fee = o["fee"]?.jsonPrimitive?.longOrNull
                     if(fee == null || fee < 0) throw IOException("The server gave no fee for transaction $index of block $hash")
@@ -244,15 +250,22 @@ class EsploraBackend(
                 }
                 index++
             }
-            if(txs.size < PAGE_SIZE) return fees
+            if(txs.size < PAGE_SIZE) return checkedAgainstCount(hash, index, fees)
         }
         throw IOException("Block $hash has more than ${MAX_BLOCK_PAGES * PAGE_SIZE} transactions")
     }
 
-    private suspend fun blockTxCount(hash: String): Int? {
+    /** [fees] if the [read] transactions (coinbase included) are all the block has, per its tx_count; else an error. */
+    private suspend fun checkedAgainstCount(hash: String, read: Int, fees: List<BlockFee>): List<BlockFee> {
         val r = get("/block/$hash")
-        if(r.status != 200) return null
-        return json.parseToJsonElement(r.body).jsonObject["tx_count"]?.jsonPrimitive?.intOrNull
+        if(r.status != 200) throw IOException(failure(r))
+        val count = try {
+            json.parseToJsonElement(r.body).jsonObject["tx_count"]?.jsonPrimitive?.intOrNull
+        } catch(e: Exception) {
+            throw IOException("The block $hash could not be read", e)
+        } ?: throw IOException("The server gave no tx_count for block $hash")
+        if(count != read) throw IOException("The server listed $read of the block's $count transactions")
+        return fees
     }
 
     private fun requireHash(value: String, what: String): String {

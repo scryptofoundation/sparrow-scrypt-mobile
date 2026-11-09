@@ -89,39 +89,70 @@ class ElectrumBackendBlocksTest {
         }
     }
 
-    private fun tipAnd(verbose: String, tip: () -> Int = { 110 }): (String, String) -> Pair<String?, String> = { m, _ ->
-        if(m == "blockchain.headers.subscribe") "{\"height\":${tip()},\"hex\":\"00\"}" to "" else verbose to ""
-    }
+    /** A distinct 80-byte header per height, and the block hash it gives. */
+    private fun headerAt(height: Int) = height.toString(16).padStart(2, '0').repeat(80)
+    private fun hashAt(height: Int) = expectedHash(headerAt(height))
 
-    @Test fun transactionAtTakesHeightFromConfirmationsAndTip() {
-        val verbose = "{\"txid\":\"$txid\",\"confirmations\":11,\"blockhash\":\"$blockHash\",\"blocktime\":1761000000,\"vin\":[],\"vout\":[]}"
-        withBackend(tipAnd(verbose)) { b ->
-            assertEquals(TxAt(100, blockHash, 1761000000L), b.transactionAt(txid))
+    /** Answers tip, verbose and headers; [verbose] and [tip] are read per call. */
+    private fun chain(headerCalls: MutableList<Int> = ArrayList(), tip: () -> Int = { 110 }, verbose: () -> String): (String, String) -> Pair<String?, String> = { m, p ->
+        when(m) {
+            "blockchain.headers.subscribe" -> "{\"height\":${tip()},\"hex\":\"00\"}" to ""
+            "blockchain.block.header" -> { val h = p.trim('[', ']').toInt(); headerCalls += h; "\"${headerAt(h)}\"" to "" }
+            else -> verbose() to ""
         }
     }
 
-    @Test fun unconfirmedOrUnusableConfirmationsGiveHeightZero() {
-        for(verbose in listOf(
-            "{\"txid\":\"$txid\",\"vin\":[],\"vout\":[]}",
-            "{\"txid\":\"$txid\",\"confirmations\":0,\"vin\":[],\"vout\":[]}",
-            "{\"txid\":\"$txid\",\"blockhash\":\"$blockHash\",\"vin\":[],\"vout\":[]}"
-        )) {
-            withBackend(tipAnd(verbose)) { b ->
+    private fun verboseOf(confirmations: Int?, hash: String?) = "{\"txid\":\"$txid\"" +
+        (if(confirmations != null) ",\"confirmations\":$confirmations" else "") +
+        (if(hash != null) ",\"blockhash\":\"$hash\",\"blocktime\":1761000000" else "") + ",\"vin\":[],\"vout\":[]}"
+
+    @Test fun transactionAtTakesHeightFromConfirmationsAndTip() {
+        withBackend(chain { verboseOf(11, hashAt(100)) }) { b ->
+            assertEquals(TxAt(100, hashAt(100), 1761000000L), b.transactionAt(txid))
+        }
+    }
+
+    @Test fun unconfirmedGivesHeightZero() {
+        for(verbose in listOf(verboseOf(null, null), verboseOf(0, null), verboseOf(null, blockHash))) {
+            withBackend(chain { verbose }) { b ->
                 assertEquals(TxAt(0, null, 0), b.transactionAt(txid))
             }
         }
     }
 
-    @Test fun confirmationsBeyondTheTipThrow() {
-        withBackend(tipAnd("{\"txid\":\"$txid\",\"confirmations\":500,\"vin\":[],\"vout\":[]}")) { b ->
+    @Test fun confirmationsWithoutABlockHashThrow() {
+        withBackend(chain { verboseOf(11, null) }) { b ->
             assertFailsWith<IOException> { b.transactionAt(txid) }
         }
     }
 
-    @Test fun movingTipThrowsRatherThanGuessing() {
-        var tip = 110
-        withBackend(tipAnd("{\"txid\":\"$txid\",\"confirmations\":11,\"vin\":[],\"vout\":[]}") { tip++ }) { b ->
+    @Test fun confirmationsBeyondTheTipThrow() {
+        withBackend(chain { verboseOf(500, hashAt(100)) }) { b ->
             assertFailsWith<IOException> { b.transactionAt(txid) }
+        }
+    }
+
+    @Test fun blockHashThatDisagreesWithTheHeightThrows() {
+        // the daemon is one block ahead of the indexer: confirmations count a block the tip lacks
+        withBackend(chain { verboseOf(11, hashAt(101)) }) { b ->
+            assertFailsWith<IOException> { b.transactionAt(txid) }
+        }
+    }
+
+    @Test fun tipThatMovesOnceThenSettlesGivesTheRightHeight() {
+        var tips = 0
+        // first read: tip 110, 11 confirmations -> 100, but the block is at 101 (the tip had not caught up); then tip 111
+        withBackend(chain(tip = { if(tips++ == 0) 110 else 111 }) { verboseOf(11, hashAt(101)) }) { b ->
+            assertEquals(TxAt(101, hashAt(101), 1761000000L), b.transactionAt(txid))
+        }
+    }
+
+    @Test fun sameHeightTransactionsCostOneHeaderCall() {
+        val calls = ArrayList<Int>()
+        withBackend(chain(calls) { verboseOf(11, hashAt(100)) }) { b ->
+            b.transactionAt(txid)
+            b.transactionAt(txid)
+            assertEquals(listOf(100), calls)
         }
     }
 

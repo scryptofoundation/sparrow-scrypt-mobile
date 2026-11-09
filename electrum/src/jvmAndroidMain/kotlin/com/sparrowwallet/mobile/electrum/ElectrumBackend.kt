@@ -42,8 +42,12 @@ class ElectrumBackend(private val client: ElectrumClient) : ChainBackend {
 
     override suspend fun feeRate(targetBlocks: Int): Double? = feeRateFromCoinPerKb(client.estimateFee(targetBlocks))
 
+    /** Block hashes read so far by height, so several transactions of one block cost one header call. */
+    private val hashes = HashMap<Int, String>()
+
     /** The block hash from the header at [height]: the double SHA-256 of its first 80 bytes, reversed. */
-    override suspend fun blockHash(height: Int): String = blockHashOfHeader(client.getBlockHeader(height))
+    override suspend fun blockHash(height: Int): String =
+        hashes[height] ?: blockHashOfHeader(client.getBlockHeader(height)).also { hashes[height] = it }
 
     override suspend fun txidAt(height: Int, position: Int): String? {
         val txid = client.getTransactionIdAt(height, position) ?: return null
@@ -51,25 +55,25 @@ class ElectrumBackend(private val client: ElectrumClient) : ChainBackend {
     }
 
     /**
-     * Where the transaction is mined, from the verbose answer's confirmations: height is the tip minus
-     * confirmations plus one. The tip is read before and after, and the two must agree, or the height could be
-     * off by the blocks mined in between. Without usable confirmations the height is 0 and the block hash null.
+     * Where the transaction is mined: height is the tip minus confirmations plus one, and the verbose answer's
+     * blockhash must equal the hash of the header at that height, or the tip and the daemon disagree (a block
+     * one side has and the other lacks). One mismatch re-reads the tip and tries again, a second throws.
+     * Without confirmations the height is 0 and the block hash null; confirmations without a blockhash throw.
      */
     override suspend fun transactionAt(txid: String): TxAt {
         repeat(2) {
-            val before = client.tipHeight()
+            val tip = client.tipHeight()
             val json = client.getTransactionVerbose(txid)
             val confirmations = json["confirmations"]?.jsonPrimitive?.longOrNull ?: 0L
-            val time = (json["blocktime"] ?: json["time"])?.jsonPrimitive?.longOrNull ?: 0L
             if(confirmations <= 0L) return TxAt(0, null, 0)
-            val after = client.tipHeight()
-            if(before != after) return@repeat
-            val height = after - confirmations + 1
-            if(height < 1 || height > Int.MAX_VALUE) throw IOException("The server's confirmations ($confirmations) do not fit its tip ($after) for $txid")
-            val hash = json["blockhash"]?.jsonPrimitive?.content?.let { requireHash(it, "block hash") }
-            return TxAt(height.toInt(), hash, time)
+            val time = (json["blocktime"] ?: json["time"])?.jsonPrimitive?.longOrNull ?: 0L
+            val claimed = requireHash(json["blockhash"]?.jsonPrimitive?.content
+                ?: throw IOException("The server gives $txid $confirmations confirmations but no block hash"), "block hash")
+            val height = tip - confirmations + 1
+            if(height < 1 || height > Int.MAX_VALUE) throw IOException("The server's confirmations ($confirmations) do not fit its tip ($tip) for $txid")
+            if(blockHash(height.toInt()) == claimed) return TxAt(height.toInt(), claimed, time)
         }
-        throw IOException("The chain tip moved while placing $txid")
+        throw IOException("The height of $txid does not match its block hash")
     }
 
     override fun close() = client.close()

@@ -419,6 +419,7 @@ class EsploraBackendTest {
                 "/block-height/101" -> 200 to H
                 "/block-height/999" -> 404 to "Block not found"
                 "/block/$H/txs/0" -> 200 to "[${blockTx(id(9), null, true)},${blockTx(T1, 300)},${blockTx(T2, 500)}]"
+                "/block/$H" -> 200 to """{"id":"$H","tx_count":3}"""
                 else -> 404 to "not found"
             }
         }
@@ -435,6 +436,7 @@ class EsploraBackendTest {
                 "/blocks/tip/height" -> 200 to "110"
                 "/block/$H/txs/0" -> 200 to (0 until 25).joinToString(",", "[", "]") { blockTx(id(it), if(it == 0) null else 10L + it, it == 0) }
                 "/block/$H/txs/25" -> 200 to (25 until 30).joinToString(",", "[", "]") { blockTx(id(it), 10L + it) }
+                "/block/$H" -> 200 to """{"id":"$H","tx_count":30}"""
                 else -> 404 to "not found"
             }
         }
@@ -443,7 +445,57 @@ class EsploraBackendTest {
         assertEquals(29, fees.size)
         assertEquals(fee(id(1), 11), fees.first())
         assertEquals(fee(id(29), 39), fees.last())
-        assertEquals(listOf("GET /blocks/tip/height", "GET /block/$H/txs/0", "GET /block/$H/txs/25"), requests.toList())
+        assertEquals(listOf("GET /blocks/tip/height", "GET /block/$H/txs/0", "GET /block/$H/txs/25", "GET /block/$H"), requests.toList())
+    }
+
+    private fun serveBlock(txs: String, countBody: String?) {
+        routes = { _, path, _ ->
+            when(path) {
+                "/blocks/tip/height" -> 200 to "110"
+                "/block/$H/txs/0" -> 200 to txs
+                "/block/$H" -> if(countBody != null) 200 to countBody else 404 to "no"
+                else -> 404 to "not found"
+            }
+        }
+    }
+
+    @Test fun shortPageThatDisagreesWithTheCountThrows(): Unit = runBlocking {
+        val page = "[${blockTx(id(9), null, true)},${blockTx(T1, 300)}]"
+        serveBlock(page, """{"tx_count":3}""")
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertFailsWith<IOException> { b.blockFees(H) }
+        serveBlock(page, """{"id":"x"}""")
+        assertFailsWith<IOException> { b.blockFees(H) }
+        serveBlock(page, null)
+        assertFailsWith<IOException> { b.blockFees(H) }
+        serveBlock(page, """{"tx_count":2}""")
+        assertEquals(listOf(fee(T1, 300)), b.blockFees(H))
+    }
+
+    @Test fun emptyFirstPageThrows(): Unit = runBlocking {
+        serveBlock("[]", """{"tx_count":0}""")
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertFailsWith<IOException> { b.blockFees(H) }
+    }
+
+    @Test fun firstTransactionMustBeAnExplicitCoinbase(): Unit = runBlocking {
+        val noFlag = """{"txid":"${id(9)}","vin":[{}],"vout":[]}"""
+        serveBlock("[$noFlag,${blockTx(T1, 300)}]", """{"tx_count":2}""")
+        val b = EsploraBackend(base, params).also { it.connect() }
+        assertFailsWith<IOException> { b.blockFees(H) }
+    }
+
+    @Test fun transactionAtThrowsOnAnIncompleteStatus(): Unit = runBlocking {
+        for(status in listOf(
+            """{"confirmed":true,"block_hash":"$H"}""",
+            """{"confirmed":true,"block_height":101}""",
+            """{"block_height":101,"block_hash":"$H"}""",
+            """{"confirmed":"yes","block_height":101,"block_hash":"$H"}"""
+        )) {
+            routes = { _, path, _ -> if(path == "/blocks/tip/height") 200 to "110" else if(path == "/tx/$T1/status") 200 to status else 404 to "" }
+            val b = EsploraBackend(base, params).also { it.connect() }
+            assertFailsWith<IOException>(status) { b.transactionAt(T1) }
+        }
     }
 
     @Test fun blockFeesOfAnExactMultipleEndWhereTheCountSaysSo(): Unit = runBlocking {
