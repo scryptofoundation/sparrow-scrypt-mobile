@@ -19,8 +19,10 @@ object TrackFixtures {
     private fun le(value: Long, bytes: Int): ByteArray = ByteArray(bytes) { ((value shr (8 * it)) and 0xFF).toByte() }
 
     /**
-     * One input per entry of spends (txid, vout), paying the given output values to [PLAIN]. scriptSigs and witnesses are
-     * per input (null for none: empty scriptSig, no witness); any non-empty witness list makes the transaction segwit.
+     * One input per entry of spends (txid, vout), paying the given output values to [PLAIN] (or to outputScripts, one per
+     * output). scriptSigs and witnesses are per input (null for none: empty scriptSig, no witness); any non-empty witness
+     * list makes the transaction segwit. A non-null mwebExtension sets the MWEB flag (0x08) and writes those bytes before
+     * the locktime.
      */
     fun tx(
         spends: List<Pair<String, Int>>,
@@ -28,13 +30,16 @@ object TrackFixtures {
         scriptSigs: List<ByteArray>? = null,
         witnesses: List<List<ByteArray>>? = null,
         version: Int = 2,
-        locktime: Long = 0
+        locktime: Long = 0,
+        outputScripts: List<ByteArray>? = null,
+        mwebExtension: ByteArray? = null
     ): RawTx.Parsed {
         val segwit = witnesses != null && witnesses.any { it.isNotEmpty() }
+        val flag = (if(segwit) 0x01 else 0) or (if(mwebExtension != null) 0x08 else 0)
         val body = ArrayList<Byte>()
         fun add(b: ByteArray) = b.forEach { body.add(it) }
         add(le(version.toLong(), 4))
-        if(segwit) add(byteArrayOf(0, 1))
+        if(flag != 0) add(byteArrayOf(0, flag.toByte()))
         add(varInt(spends.size))
         spends.forEachIndexed { i, (txid, vout) ->
             add(txid.hexToBytes().reversedArray())
@@ -44,8 +49,9 @@ object TrackFixtures {
             add(le(0xFFFFFFFFL, 4))
         }
         add(varInt(outputs.size))
-        for(value in outputs) {
-            add(le(value, 8)); add(varInt(PLAIN.size)); add(PLAIN)
+        for((i, value) in outputs.withIndex()) {
+            val script = outputScripts?.get(i) ?: PLAIN
+            add(le(value, 8)); add(varInt(script.size)); add(script)
         }
         if(segwit) {
             for(i in spends.indices) {
@@ -54,6 +60,7 @@ object TrackFixtures {
                 items.forEach { add(varInt(it.size)); add(it) }
             }
         }
+        if(mwebExtension != null) add(mwebExtension)
         add(le(locktime, 4))
         return RawTx.parse(body.toByteArray())
     }

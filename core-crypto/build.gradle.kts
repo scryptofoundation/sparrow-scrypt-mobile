@@ -36,6 +36,7 @@ kotlin {
         }
         jvmTest.dependencies {
             implementation(libs.kotlinx.serialization.json)
+            implementation(libs.kotlinx.coroutines.core) // runBlocking for the tracer's suspend calls
         }
     }
 }
