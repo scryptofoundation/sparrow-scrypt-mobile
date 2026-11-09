@@ -61,6 +61,46 @@ class WalletScannerTest {
         assertTrue("fund" in backend.txRequests)
     }
 
+    /**
+     * A block lands while the wallet's addresses are read one by one: the server answers the spent
+     * address from its stale mempool and the change address from the new block. The balance must
+     * still be what the wallet's transactions add up to (seen live on Litecoin testnet 2026-11-08:
+     * 0.0012 confirmed, 0.00101704 sent, shown as -0.00101704 until a refresh).
+     */
+    @Test fun balanceComesFromTheTransactionsNotPerAddressServerBalances(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val backend = FakeBackend()
+        val receive0 = script(account, 0, 0, ScriptType.P2WPKH)
+        val change0 = script(account, 1, 0, ScriptType.P2WPKH)
+        val elsewhere = "0014" + "ee".repeat(20)
+        backend.txs["fund"] = TxDetail("fund", listOf(TxIn(null, null, null)), listOf(TxOut(receive0, 120_000)), 10, 1_000, 2)
+        backend.txs["spend"] = TxDetail("spend", listOf(TxIn("fund", 0, null)),
+            listOf(TxOut(elsewhere, 100_000), TxOut(change0, 18_296)), 11, 2_000, 1)
+        backend.histories[receive0] = listOf(HistoryEntry("fund", 10), HistoryEntry("spend", 0)) // stale mempool view
+        backend.histories[change0] = listOf(HistoryEntry("spend", 11))                           // the new block
+        backend.balances[receive0] = Balance(0, -120_000)
+        backend.balances[change0] = Balance(18_296, 0)
+        val snap = WalletScanner(backend).sync(account)
+        assertEquals(Balance(18_296, 0), snap.balance)
+        assertEquals(listOf(11, 10), snap.history.map { it.height }) // confirmed wherever any address saw it mined
+    }
+
+    /** An address whose history the server cut short: its transactions are not all known, so the server's balances stand. */
+    @Test fun truncatedHistoryFallsBackToServerBalances(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val backend = object : ChainBackend by FakeBackend() {
+            val inner = FakeBackend()
+            override suspend fun balance(script: ByteArray) = inner.balance(script)
+            override suspend fun history(script: ByteArray) = inner.history(script)
+            override suspend fun transaction(txid: String) = inner.transaction(txid)
+            override fun historyTruncated(script: ByteArray) = script.toHex() == script(account, 0, 0, ScriptType.P2WPKH)
+        }
+        fundAndSpend(backend.inner, account, ScriptType.P2WPKH, withPrevouts = true)
+        backend.inner.balances[script(account, 0, 0, ScriptType.P2WPKH)] = Balance(5_000_000, 0) // older coins the history did not reach
+        val snap = WalletScanner(backend).sync(account)
+        assertEquals(Balance(5_020_000, 0), snap.balance)
+    }
+
     @Test fun esploraStyleDeltasUsePrevouts(): Unit = runBlocking {
         val account = master.derivePath("m/84'/2'/0'")
         val backend = FakeBackend()

@@ -101,8 +101,7 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
      */
     suspend fun sync(accountKey: Bip32Pub, watchReceiveTo: Int = 0, onProgress: (checked: Int) -> Unit = {}): WalletSnapshot {
         val ourScripts = HashSet<String>()
-        var confirmed = 0L
-        var unconfirmed = 0L
+        val usedScripts = ArrayList<ByteArray>()
         var nextReceive = 0
         val heights = LinkedHashMap<String, Int>() // txid → height
         var checked = 0
@@ -110,13 +109,12 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
             val next = walk(accountKey, chain, if(chain == 0) watchReceiveTo else 0) { _, script, history ->
                 ourScripts.add(script.toHex())
                 if(history.isNotEmpty()) {
-                    val bal = backend.balance(script)
-                    confirmed += bal.confirmed
-                    unconfirmed += bal.unconfirmed
+                    usedScripts.add(script)
                 }
                 onProgress(++checked)
                 for(entry in history) {
-                    heights[entry.txHash] = entry.height
+                    //Addresses are read one at a time, so a block can land between two of them: mined in any view is mined
+                    heights[entry.txHash] = maxOf(heights[entry.txHash] ?: entry.height, entry.height)
                 }
             }
             if(chain == 0) {
@@ -152,6 +150,26 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
             )
         }.sortedWith(compareByDescending<TxSummary> { it.height <= 0 }.thenByDescending { it.height })
 
-        return WalletSnapshot(Balance(confirmed, unconfirmed), summaries, nextReceive)
+        return WalletSnapshot(snapshotBalance(summaries, usedScripts), summaries, nextReceive)
+    }
+
+    /**
+     * The wallet's balance as its transactions add up: each one's net delta counts once, so the total holds
+     * even when a block lands between two address reads, which per-address server balances do not (they once
+     * summed to a negative total right after a send). When the server cut an address's history short, not every
+     * transaction is known, and the server's per-address balances are used instead.
+     */
+    private suspend fun snapshotBalance(summaries: List<TxSummary>, usedScripts: List<ByteArray>): Balance {
+        if(usedScripts.none { backend.historyTruncated(it) }) {
+            return Balance(summaries.filter { it.height > 0 }.sumOf { it.delta }, summaries.filter { it.height <= 0 }.sumOf { it.delta })
+        }
+        var confirmed = 0L
+        var unconfirmed = 0L
+        for(script in usedScripts) {
+            val bal = backend.balance(script)
+            confirmed += bal.confirmed
+            unconfirmed += bal.unconfirmed
+        }
+        return Balance(confirmed, unconfirmed)
     }
 }

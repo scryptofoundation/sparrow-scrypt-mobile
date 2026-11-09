@@ -42,6 +42,8 @@ class EsploraBackend(
     private var tip: Long? = null
     /** Transactions per script from the last balance call, so an unused address costs one request, not two. */
     private val txCounts = HashMap<String, Long>()
+    /** Scripts whose last history stopped at [MAX_PAGES], before their oldest transaction. */
+    private val truncated = HashSet<String>()
 
     /**
      * One request, retried after a 429 as the server's Retry-After asks (capped), since public
@@ -103,6 +105,7 @@ class EsploraBackend(
         if(txCounts[script.toHex()] == 0L) return emptyList()
         val entries = ArrayList<HistoryEntry>()
         var route = "/txs"
+        truncated.remove(script.toHex())
         for(page in 0 until MAX_PAGES) {
             val txs = json.parseToJsonElement(scriptGet(script, route)).jsonArray
             var confirmed = 0
@@ -117,11 +120,14 @@ class EsploraBackend(
                     lastConfirmed = txid
                 }
             }
-            if(confirmed < PAGE_SIZE || lastConfirmed == null) break
+            if(confirmed < PAGE_SIZE || lastConfirmed == null) return entries
             route = "/txs/chain/$lastConfirmed"
         }
+        truncated.add(script.toHex())
         return entries
     }
+
+    override fun historyTruncated(script: ByteArray): Boolean = script.toHex() in truncated
 
     override suspend fun unspent(script: ByteArray): List<Utxo> =
         json.parseToJsonElement(scriptGet(script, "/utxo")).jsonArray.map {

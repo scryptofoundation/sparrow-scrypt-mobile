@@ -31,6 +31,9 @@ interface ChainBackend {
 
     suspend fun history(script: ByteArray): List<HistoryEntry>
 
+    /** True when the last [history] for [script] stopped before the address's oldest transaction. */
+    fun historyTruncated(script: ByteArray): Boolean = false
+
     suspend fun unspent(script: ByteArray): List<Utxo>
 
     suspend fun transaction(txid: String): TxDetail

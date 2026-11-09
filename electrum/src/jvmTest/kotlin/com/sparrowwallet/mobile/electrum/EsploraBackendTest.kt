@@ -23,6 +23,7 @@ import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -105,6 +106,7 @@ class EsploraBackendTest {
         }
         val b = EsploraBackend(base, params).also { it.connect() }
         assertEquals(listOf(HistoryEntry(T1, 3)), b.history(script))
+        assertFalse(b.historyTruncated(script))
     }
 
     @Test fun historyStopsAtThePageLimit(): Unit = runBlocking {
@@ -119,6 +121,7 @@ class EsploraBackendTest {
         val b = EsploraBackend(base, params).also { it.connect() }
         assertEquals(40 * 25, b.history(script).size)
         assertEquals(40, requests.count { it.contains("/txs") })
+        assertTrue(b.historyTruncated(script))
     }
 
     @Test fun alreadyKnownBroadcastReturnsTxid(): Unit = runBlocking {
