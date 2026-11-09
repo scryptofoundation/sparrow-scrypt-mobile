@@ -250,12 +250,24 @@ object Schnorr {
  * non-witness UTXO, so it does not go through [Tx], which assumes unsigned inputs.
  */
 object RawTx {
-    /** [scriptSigs] and [witnesses] are per input, for [CarrierScan]; a witness is empty for a legacy input. */
+    /** The outpoint an input spends, as txid in display order; a coinbase input has 64 zeros and vout 0xFFFFFFFF. */
+    class Input(val prevTxid: String, val prevVout: Long, val sequence: Long) {
+        val isCoinbase: Boolean get() = prevVout == 0xFFFFFFFFL && prevTxid.all { it == '0' }
+    }
+
+    /**
+     * [scriptSigs] and [witnesses] are per input, for [CarrierScan]; a witness is empty for a legacy input.
+     * [mweb] is true when the MWEB flag was set (the extension is skipped and is not part of the txid).
+     */
     class Parsed(
         val txid: String,
         val outputs: List<TxOutput>,
         val scriptSigs: List<ByteArray> = emptyList(),
-        val witnesses: List<List<ByteArray>> = emptyList()
+        val witnesses: List<List<ByteArray>> = emptyList(),
+        val inputs: List<Input> = emptyList(),
+        val version: Int = 0,
+        val locktime: Long = 0,
+        val mweb: Boolean = false
     )
 
     fun parse(bytes: ByteArray): Parsed {
@@ -271,10 +283,12 @@ object RawTx {
 
         val inputCount = r.varInt()
         require(inputCount in 0..100_000) { "Unreasonable input count" }
+        val inputs = ArrayList<Input>(inputCount.toInt())
         val scriptSigs = List(inputCount.toInt()) {
-            r.bytes(36)   // outpoint
+            val prevTxid = r.bytes(32).reversedArray().toHex()
+            val prevVout = r.u32le()
             val scriptSig = r.varBytes()
-            r.bytes(4)    // sequence
+            inputs.add(Input(prevTxid, prevVout, r.u32le()))
             scriptSig
         }
         val outputCount = r.varInt()
@@ -299,6 +313,11 @@ object RawTx {
         require(r.remaining() == 0) { "Trailing bytes after transaction" }
 
         val stripped = version + bytes.copyOfRange(bodyStart, bodyEnd) + locktime
-        return Parsed(sha256d(stripped).reversedArray().toHex(), outputs, scriptSigs, witnesses)
+        val versionInt = (0 until 4).fold(0) { acc, k -> acc or ((version[k].toInt() and 0xFF) shl (8 * k)) }
+        val locktimeLong = (0 until 4).fold(0L) { acc, k -> acc or ((locktime[k].toLong() and 0xFF) shl (8 * k)) }
+        return Parsed(
+            sha256d(stripped).reversedArray().toHex(), outputs, scriptSigs, witnesses,
+            inputs, versionInt, locktimeLong, flag and 0x08 != 0
+        )
     }
 }

@@ -48,7 +48,7 @@ object CarrierScan {
      * with the partial lock script, pubkey CHECKSIGVERIFY, OP_DROPs, OP_TRUE.
      */
     fun hasScriptSigEnvelope(tx: RawTx.Parsed): Boolean = tx.scriptSigs.any { scriptSig ->
-        val pushes = pushes(scriptSig) ?: return@any false
+        val pushes = ScriptReader.chunks(scriptSig)?.map { it.data } ?: return@any false
         pushes.isNotEmpty() && (pushes.first()?.contentEquals(ORD) == true || pushes.last()?.let(::isPartialLockScript) == true)
     }
 
@@ -64,34 +64,6 @@ object CarrierScan {
     }
 
     private fun isOpReturn(script: ByteArray): Boolean = script.isNotEmpty() && script[0] == 0x6a.toByte()
-
-    /** The script's chunks: the pushed data, or null for an opcode. Null overall when a push runs past the end. */
-    private fun pushes(script: ByteArray): List<ByteArray?>? {
-        val chunks = mutableListOf<ByteArray?>()
-        var i = 0
-        while(i < script.size) {
-            val op = script[i].toInt() and 0xFF
-            i++
-            val length = when {
-                op == 0x00 -> 0
-                op in 0x01..0x4b -> op
-                op == 0x4c -> { if(i + 1 > script.size) return null; (script[i].toInt() and 0xFF).also { i += 1 } }
-                op == 0x4d -> { if(i + 2 > script.size) return null; ((script[i].toInt() and 0xFF) or ((script[i + 1].toInt() and 0xFF) shl 8)).also { i += 2 } }
-                op == 0x4e -> {
-                    if(i + 4 > script.size) return null
-                    val n = (0 until 4).fold(0L) { acc, k -> acc or ((script[i + k].toLong() and 0xFF) shl (8 * k)) }
-                    i += 4
-                    if(n > script.size) return null
-                    n.toInt()
-                }
-                else -> { chunks.add(null); continue }
-            }
-            if(i + length > script.size) return null
-            chunks.add(script.copyOfRange(i, i + length))
-            i += length
-        }
-        return chunks
-    }
 
     private fun contains(data: ByteArray, pattern: ByteArray): Boolean {
         if(data.size < pattern.size) return false
