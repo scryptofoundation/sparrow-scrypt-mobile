@@ -283,6 +283,23 @@ class WalletParamsTest {
         assertEquals(listOf(30_000L, 50_000L), coins.pegInUsable(includeUnchecked = true))
     }
 
+    /**
+     * Sign externally re-selects the coins: the PSBT goes to the signer only if it spends exactly the previewed coins
+     * (any order, any case) for the previewed amount. The same count of other coins is not enough.
+     */
+    @Test
+    fun psbtGuardComparesTheCoinsNotTheirCount() {
+        val a = "aa".repeat(32) + ":0"
+        val b = "bb".repeat(32) + ":1"
+        val c = "cc".repeat(32) + ":0"
+        assertTrue(psbtMatchesPreview(listOf(a, b), 5_000, listOf(b.uppercase(), a), 5_000))
+        assertFalse(psbtMatchesPreview(listOf(a, b), 5_000, listOf(a, c), 5_000), "same count, another coin")
+        assertFalse(psbtMatchesPreview(listOf(a), 5_000, listOf(a, b), 5_000), "one more coin")
+        assertFalse(psbtMatchesPreview(listOf(a, b), 5_000, listOf(a), 5_000), "one fewer coin")
+        assertFalse(psbtMatchesPreview(listOf(a, b), 5_000, listOf(a, b), 4_900), "another send-max amount")
+        assertFalse(psbtMatchesPreview(emptyList(), 5_000, emptyList(), 5_000), "a preview without its coins never matches")
+    }
+
     @Test
     fun pegInUsesCleanCoinsOnly() {
         val (tiers, _) = tieredScan()

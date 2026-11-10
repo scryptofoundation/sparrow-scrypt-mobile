@@ -157,6 +157,17 @@ internal fun outpoint(input: SpendableInput): String = "${input.txid}:${input.vo
 
 internal fun outpoint(utxo: WalletScanner.ChainUtxo): String = "${utxo.utxo.txHash}:${utxo.utxo.txPos}"
 
+/**
+ * Whether a PSBT built to sign elsewhere (which selects its coins again, with the checks as they are now) spends what
+ * the review showed: the same coins, in any order, and the same amount (which a Send max can change). Otherwise the
+ * user previews again rather than hand the signer coins it did not see. A preview without its coins never matches.
+ */
+internal fun psbtMatchesPreview(previewInputs: List<String>, previewAmount: Long, psbtInputs: List<String>, psbtAmount: Long): Boolean {
+    val previewed = previewInputs.map { it.lowercase() }
+    val signing = psbtInputs.map { it.lowercase() }
+    return previewed.isNotEmpty() && previewed.size == signing.size && previewed.toSet() == signing.toSet() && previewAmount == psbtAmount
+}
+
 /** The outpoints a built transaction spends, for [SpendTiers.uncheckedIn]. */
 internal fun spentOutpoints(tx: Tx): List<String> = tx.inputs.map { "${it.prevTxid}:${it.vout}" }
 

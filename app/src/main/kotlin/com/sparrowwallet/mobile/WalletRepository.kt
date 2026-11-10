@@ -791,7 +791,9 @@ class WalletRepository(context: Context) {
         /** How many of the coins it spends have not been checked for inscriptions; the review warns about them. */
         val unchecked: Int = 0,
         /** How many held coins (included by the user) it spends; the review says so. */
-        val held: Int = 0
+        val held: Int = 0,
+        /** The coins it spends, as outpoints, so Sign externally can tell its PSBT spends the same ones. */
+        val inputs: List<String> = emptyList()
     )
 
     /** Returns a user-facing error for an unusable destination address, or null if it's fine. */
@@ -826,7 +828,7 @@ class WalletRepository(context: Context) {
                 amountLitoshis, feeRate, changeScript,
                 sendMax, params, keepOrder = true)
             val spent = spentOutpoints(built.tx)
-            SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex(), tiers.uncheckedIn(spent), tiers.heldIn(spent))
+            SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex(), tiers.uncheckedIn(spent), tiers.heldIn(spent), spent)
         }
     }
 
@@ -861,7 +863,9 @@ class WalletRepository(context: Context) {
         /** Peg-ins: the MWEB extension blob stays here and is re-attached on finalize. */
         val mwebBlob: ByteArray? = null,
         /** How many of the coins it spends have not been checked for inscriptions. */
-        val unchecked: Int = 0
+        val unchecked: Int = 0,
+        /** The coins it spends, as outpoints (see [psbtMatchesPreview]). */
+        val inputs: List<String> = emptyList()
     )
 
     /**
@@ -923,7 +927,7 @@ class WalletRepository(context: Context) {
             )
             UnsignedSendPreview(toAddress, unsigned.amount, unsigned.fee, unsigned.paidFeeRate,
                 unsigned.tx.txid().takeIf { txidKnownBeforeSigning(data.scriptType) }, Psbt.toBase64(psbt),
-                unchecked = tiers.uncheckedIn(selected.inputs.map { outpoint(it) }))
+                unchecked = tiers.uncheckedIn(selected.inputs.map { outpoint(it) }), inputs = selected.inputs.map { outpoint(it) })
         }
     }
 
@@ -1002,7 +1006,7 @@ class WalletRepository(context: Context) {
                 )
                 return UnsignedSendPreview(toAddress, amount, unsigned.fee + mwebFee, feeRate,
                     unsigned.tx.txid(), Psbt.toBase64(psbt), template.mwebBlob,
-                    unchecked = tiers.uncheckedIn(unsigned.inputs.map { outpoint(it) }))
+                    unchecked = tiers.uncheckedIn(unsigned.inputs.map { outpoint(it) }), inputs = unsigned.inputs.map { outpoint(it) })
             }
             effectiveRate += (requiredFee - (unsigned.fee + mwebFee) + canonicalVsize - 1) / canonicalVsize
         }
@@ -1299,7 +1303,7 @@ class WalletRepository(context: Context) {
                     toAddress, amount,
                     built.fee + mwebFee, // public fee (incl HogEx allowance) + mweb fee
                     feeRate, built.tx.txid(), built.hex(),
-                    unchecked = tiers.uncheckedIn(spentOutpoints(built.tx))
+                    unchecked = tiers.uncheckedIn(spentOutpoints(built.tx)), inputs = spentOutpoints(built.tx)
                 )
             }
             val shortfall = requiredFee - (built.fee + mwebFee)

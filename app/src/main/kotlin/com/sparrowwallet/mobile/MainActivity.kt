@@ -2416,10 +2416,11 @@ private fun SendScreen(
                                 val unsigned = repo.prepareSendPsbt(
                                     publicData!!, publicAccount!!, address.trim(),
                                     amountLitoshis ?: 0L, sendMax, heldIncluded, uncheckedIncluded)
-                                // the PSBT re-reads the checks: if it now takes more unchecked coins than the review
-                                // warned about, review again rather than hand them to the signer unseen
-                                val reviewed = (preview as? WalletRepository.SendPreview)?.unchecked ?: 0
-                                if(unsigned.unchecked > reviewed) {
+                                // the PSBT selects its coins again with the checks as they are now: unless it spends
+                                // exactly the reviewed coins for the reviewed amount, review again rather than hand
+                                // the signer coins the user did not see
+                                val reviewed = preview as? WalletRepository.SendPreview
+                                if(reviewed == null || !psbtMatchesPreview(reviewed.inputs, reviewed.amount, unsigned.inputs, unsigned.amount)) {
                                     preview = null
                                     error = "Coin checks changed since Preview. Preview again."
                                 } else {
