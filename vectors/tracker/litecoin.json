@@ -570,7 +570,7 @@
             "mintTime": 1793213142
           }
         ],
-        "reason": "Came through MWEB",
+        "reason": null,
         "open": [],
         "lookups": 3,
         "usedChain": true
@@ -593,7 +593,7 @@
             "mintTime": 1793213142
           }
         ],
-        "reason": "Came through MWEB",
+        "reason": null,
         "open": [],
         "lookups": 3,
         "usedChain": true
