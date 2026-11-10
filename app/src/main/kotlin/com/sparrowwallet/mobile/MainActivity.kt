@@ -2032,7 +2032,7 @@ private fun SendScreen(
         maturing = coins?.maturing ?: 0L
     }
     val heldCoins = scannedCoins?.held.orEmpty()
-    val utxos: List<Long>? = scannedCoins?.usable(includeHeld)
+    val uncheckedCoins = scannedCoins?.unchecked.orEmpty()
     val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
         result.contents?.let { text ->
             try {
@@ -2056,6 +2056,15 @@ private fun SendScreen(
     val amountLitoshis = if(amountIsUsd) usdRate?.let { usdToLitoshis(amountText, it) }
                          else parseAmount(amountText)
 
+    // the coins this send can use, in the order it takes them: a peg-in takes Clean coins only, Send max the Clean ones
+    // unless the user includes the rest, and a payment Clean first, then Unchecked, then held when included
+    val utxos: List<Long>? = scannedCoins?.let {
+        when {
+            isMwebDest -> it.spendable
+            sendMax -> it.sweepable(includeHeld)
+            else -> it.usable(includeHeld)
+        }
+    }
     val publicAvail = utxos?.sum() ?: publicData?.let { repo.cachedSnapshot(it)?.balance?.total }
     // spendable = 6+ confirmations, matching the builder's coin rule
     val privateAvail = privateData?.let { repo.cachedMwebSnapshot(it) }?.let { repo.mwebSpendableBalance(it) }
@@ -2285,15 +2294,27 @@ private fun SendScreen(
                 "(${repo.minConfirmations}, or longer for mined coins).", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if(heldCoins.isNotEmpty() && fundingPrivate != true && !isMwebDest) {
-            Text("${heldCoins.size} ${if(heldCoins.size == 1) "coin" else "coins"} (${formatAmountShort(sendCoin, heldCoins.sum())}) " +
-                (if(includeHeld) "that may carry an inscription or tokens can be spent. Anything they carry could be lost."
-                 else "held back: they may carry an inscription or tokens."),
+        val publicPays = fundingPrivate != true && !isMwebDest
+        if(heldCoins.isNotEmpty() && publicPays) {
+            Text(heldCopy(heldCoins.size, formatAmountShort(sendCoin, heldCoins.sum()), scannedCoins?.heldInscribed == true, includeHeld),
                 style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
+        }
+        // a sweep leaves Unchecked coins out unless included; a peg-in always does
+        val uncheckedLeftOut = uncheckedCoins.isNotEmpty() && fundingPrivate != true && (isMwebDest || (sendMax && !includeHeld))
+        if(uncheckedLeftOut) {
+            Text(uncheckedLeftOutCopy(uncheckedCoins.size, formatAmountShort(sendCoin, uncheckedCoins.sum())),
+                style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
+        }
+        val sweepOffersUnchecked = sendMax && uncheckedCoins.isNotEmpty()
+        if(publicPays && (heldCoins.isNotEmpty() || sweepOffersUnchecked)) {
             Row(verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().clickable { includeHeld = !includeHeld; preview = null }) {
                 Checkbox(checked = includeHeld, onCheckedChange = { includeHeld = it; preview = null })
-                Text("Include held coins", style = MaterialTheme.typography.bodySmall)
+                Text(when {
+                    heldCoins.isEmpty() -> "Include unchecked coins"
+                    sweepOffersUnchecked -> "Include held and unchecked coins"
+                    else -> "Include held coins"
+                }, style = MaterialTheme.typography.bodySmall)
             }
         }
         privateAvail?.let { avail ->
@@ -2344,6 +2365,9 @@ private fun SendScreen(
                 "Fee" to "${formatAmount(sendCoin, p.fee)} · ${formatUsd(p.fee, usdRate)}",
                 "Total" to "${formatAmount(sendCoin, p.amount + p.fee)} · ${formatUsd(p.amount + p.fee, usdRate)}"
             ))
+            if(p.unchecked > 0) {
+                Text(uncheckedWarning(p.unchecked), style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
+            }
         }
         (preview as? WalletRepository.MwebSendPreview)?.let { p ->
             ReviewCard(listOf(

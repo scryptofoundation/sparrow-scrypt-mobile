@@ -7,6 +7,7 @@ import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.ScriptType
 import com.sparrowwallet.mobile.crypto.Scripts
 import com.sparrowwallet.mobile.crypto.SpendableInput
+import com.sparrowwallet.mobile.crypto.Tx
 import com.sparrowwallet.mobile.electrum.WalletScanner
 import kotlin.math.ceil
 
@@ -45,8 +46,12 @@ fun externalSigningSupported(coin: Coin, network: Network, scriptType: String): 
 fun txidKnownBeforeSigning(scriptType: String): Boolean =
     scriptType == ScriptType.P2WPKH.name || scriptType == ScriptType.P2TR.name
 
-/** A scanned coin as Send judges it: [height] 0 or below is unconfirmed; [coinbaseMaturity] only for a mined coin. */
-data class ScannedCoin(val value: Long, val height: Int, val coinbaseMaturity: Int? = null, val held: Boolean = false)
+/**
+ * A scanned coin as Send judges it: [height] 0 or below is unconfirmed; [coinbaseMaturity] only for a mined coin; its
+ * [state] (see [coinState]), and [inscribed] when its check found inscriptions on it.
+ */
+data class ScannedCoin(val value: Long, val height: Int, val coinbaseMaturity: Int? = null,
+                       val state: CoinState = CoinState.CLEAN, val inscribed: Boolean = false)
 
 /**
  * Whether a coin at [height] can go in the next block: [minConfirmations] deep, and a coinbase also
@@ -63,16 +68,28 @@ fun spendableAt(tip: Long, height: Int, minConfirmations: Int, coinbaseMaturity:
  * unconfirmed, or a coinbase short of its maturity), which Send names so a fresh receive is not
  * read as "not enough funds".
  */
-data class SendCoins(val spendable: List<Long>, val maturing: Long, val held: List<Long> = emptyList()) {
-    /** The coins Send may use: [held] ones (which may carry an inscription) only when the user includes them. */
-    fun usable(includeHeld: Boolean): List<Long> = if(includeHeld) spendable + held else spendable
+data class SendCoins(val spendable: List<Long>, val maturing: Long, val held: List<Long> = emptyList(),
+                     val unchecked: List<Long> = emptyList(), val heldInscribed: Boolean = false) {
+    /**
+     * The coins a payment may use, in the order it takes them: the Clean [spendable] ones, then the [unchecked] ones,
+     * then the [held] ones (which may carry an inscription) only when the user includes them.
+     */
+    fun usable(includeHeld: Boolean): List<Long> = if(includeHeld) spendable + unchecked + held else spendable + unchecked
+
+    /** The coins Send max spends: the Clean ones only, unless the user includes the held (and so the unchecked) ones. */
+    fun sweepable(includeHeld: Boolean): List<Long> = if(includeHeld) spendable + unchecked + held else spendable
 
     companion object {
-        /** [held] lists ready coins that may carry an inscription; Send leaves them out by default. */
+        /**
+         * Ready coins by state: Clean ones are [spendable], [held] ones may carry an inscription (Send leaves them out by
+         * default), [unchecked] ones are used last. [heldInscribed] when every held coin has an Inscribed check.
+         */
         fun split(coins: List<ScannedCoin>, tip: Long, minConfirmations: Int): SendCoins {
             val (ready, young) = coins.partition { spendableAt(tip, it.height, minConfirmations, it.coinbaseMaturity) }
-            val (held, free) = ready.partition { it.held }
-            return SendCoins(free.map { it.value }, young.sumOf { it.value }, held.map { it.value })
+            val held = ready.filter { it.state == CoinState.HELD }
+            return SendCoins(ready.filter { it.state == CoinState.CLEAN }.map { it.value }, young.sumOf { it.value },
+                held.map { it.value }, ready.filter { it.state == CoinState.UNCHECKED }.map { it.value },
+                held.isNotEmpty() && held.all { it.inscribed })
         }
     }
 }
@@ -132,24 +149,65 @@ internal class ScanCache<K, S> {
     }
 }
 
+internal fun outpoint(input: SpendableInput): String = "${input.txid}:${input.vout}"
+
+internal fun outpoint(utxo: WalletScanner.ChainUtxo): String = "${utxo.utxo.txHash}:${utxo.utxo.txPos}"
+
+/** The outpoints a built transaction spends, for [SpendTiers.uncheckedIn]. */
+internal fun spentOutpoints(tx: Tx): List<String> = tx.inputs.map { "${it.prevTxid}:${it.vout}" }
+
+/**
+ * A wallet's ready inputs by [CoinState], each tier largest first. Every coin-selecting send path builds from
+ * [candidates], so a coin is spent freely only when its state is [CoinState.CLEAN].
+ */
+internal class SpendTiers(clean: List<SpendableInput>, unchecked: List<SpendableInput>, held: List<SpendableInput>) {
+    val clean = clean.sortedByDescending { it.value }
+    val unchecked = unchecked.sortedByDescending { it.value }
+    val held = held.sortedByDescending { it.value }
+    private val uncheckedOutpoints = this.unchecked.map { outpoint(it) }.toSet()
+
+    /**
+     * The coins a send may use, in the order it must take them (build with keepOrder): Clean first, then Unchecked, then
+     * Held when the user includes them. Send max spends the Clean ones only unless the user includes the others. A
+     * peg-in into MWEB takes Clean coins only: whatever a coin carries would be lost there.
+     */
+    fun candidates(includeHeld: Boolean, sendMax: Boolean, pegIn: Boolean = false): List<SpendableInput> = when {
+        pegIn -> clean
+        sendMax && !includeHeld -> clean
+        includeHeld -> clean + unchecked + held
+        else -> clean + unchecked
+    }
+
+    /** How many of the [selected] outpoints are Unchecked coins, for the review's warning. */
+    fun uncheckedIn(selected: List<String>): Int = selected.count { it in uncheckedOutpoints }
+
+    fun usesUnchecked(selected: List<String>): Boolean = uncheckedIn(selected) > 0
+
+    companion object {
+        fun of(coins: List<Pair<SpendableInput, CoinState>>): SpendTiers = SpendTiers(
+            coins.filter { it.second == CoinState.CLEAN }.map { it.first },
+            coins.filter { it.second == CoinState.UNCHECKED }.map { it.first },
+            coins.filter { it.second == CoinState.HELD }.map { it.first }
+        )
+    }
+}
+
 /**
  * The spendable inputs of a scan (at least [minConfirmations] deep at [tip], and a coinbase as deep
- * as [coinbaseMaturity] gives for its height) as the wallet's script type, and the change script at
- * the first unused change index.
+ * as [coinbaseMaturity] gives for its height) as the wallet's script type, split by [state] into tiers, and the change
+ * script at the first unused change index.
  */
 internal fun spendables(scan: WalletScanner.UtxoScan, tip: Long, account: HDKey, scriptType: ScriptType,
                         minConfirmations: Int, coinbaseMaturity: (Int) -> Int = { 100 },
-                        includeHeld: Boolean = false): Pair<List<SpendableInput>, ByteArray> {
-    //held coins may carry an inscription or tokens: only when the user includes them
+                        state: (WalletScanner.ChainUtxo) -> CoinState): Pair<SpendTiers, ByteArray> {
     val candidates = scan.utxos
         .filter { spendableAt(tip, it.utxo.height, minConfirmations, if(it.coinbase) coinbaseMaturity(it.utxo.height) else null) }
-        .filter { includeHeld || !it.held }
         .map {
             SpendableInput(
                 it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value,
                 account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong()), scriptType
-            )
+            ) to state(it)
         }
     val changePub = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong()).pubKey
-    return candidates to Scripts.outputScript(changePub, scriptType)
+    return SpendTiers.of(candidates) to Scripts.outputScript(changePub, scriptType)
 }

@@ -60,13 +60,17 @@ object TxBuilder {
         feeRatePerVb: Long,
         changeScript: ByteArray,
         sendMax: Boolean = false,
-        params: ChainParams
+        params: ChainParams,
+        keepOrder: Boolean = false
     ): BuiltTx {
-        val unsigned = buildUnsigned(candidates, destScript, amount, feeRatePerVb, changeScript, sendMax, params)
+        val unsigned = buildUnsigned(candidates, destScript, amount, feeRatePerVb, changeScript, sendMax, params, keepOrder)
         return sign(unsigned)
     }
 
-    /** Selection and transaction assembly without signing: the PSBT source. */
+    /**
+     * Selection and transaction assembly without signing: the PSBT source. With [keepOrder] the coins are taken in the
+     * order given instead of largest first, so a caller can spend its preferred coins before the others.
+     */
     fun buildUnsigned(
         candidates: List<SpendableInput>,
         destScript: ByteArray,
@@ -74,7 +78,8 @@ object TxBuilder {
         feeRatePerVb: Long,
         changeScript: ByteArray,
         sendMax: Boolean = false,
-        params: ChainParams
+        params: ChainParams,
+        keepOrder: Boolean = false
     ): UnsignedBuild {
         val coin = params.coin
         val floor = ceil(coin.recommendedFeeRate).toLong()
@@ -84,7 +89,7 @@ object TxBuilder {
         val unit = if(coin == Coin.LITECOIN) "litoshi" else coin.subunit
         val units = if(coin == Coin.LITECOIN) "litoshis" else coin.subunit
         val dust = params.dustLimit
-        val sorted = candidates.filter { it.value > 0 }.sortedByDescending { it.value }
+        val sorted = candidates.filter { it.value > 0 }.let { if(keepOrder) it else it.sortedByDescending { c -> c.value } }
         require(sorted.isNotEmpty()) { "No spendable coins" }
         require(sorted.all { it.scriptType == sorted[0].scriptType }) { "All inputs must share the wallet's script type" }
         val inputType = sorted[0].scriptType

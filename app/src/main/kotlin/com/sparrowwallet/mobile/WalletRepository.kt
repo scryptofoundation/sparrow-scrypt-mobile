@@ -34,6 +34,7 @@ import com.sparrowwallet.mobile.electrum.WalletScanner
 import com.sparrowwallet.mobile.electrum.WalletSnapshot
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.crypto.track.ChainRules
+import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.storage.MwebHistoryEntry
 import com.sparrowwallet.mobile.storage.SparrowExport
 import com.sparrowwallet.mobile.storage.SparrowImport
@@ -645,7 +646,7 @@ class WalletRepository(context: Context) {
     private suspend fun scanCoins(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType): Pair<WalletScanner.UtxoScan, Long> {
         lastScan.fresh(data, System.currentTimeMillis())?.let { return it }
         val tip = client.tipHeight()
-        val scan = WalletScanner(client, scriptType).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip), isHeld = heldCheck(coin(data), network(data), client))
+        val scan = WalletScanner(client, scriptType).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip))
         lastScan.put(data, scan, tip, System.currentTimeMillis())
         return scan to tip
     }
@@ -676,17 +677,38 @@ class WalletRepository(context: Context) {
         return answer
     }
 
+    /** What Send may do with each ready coin of a scan, from [classifyCoins]. */
+    private class CoinStates(private val states: Map<String, CoinState>, private val inscribed: Set<String>) {
+        /** A coin that was not classified (not ready to spend) reads as held, never as clean. */
+        fun state(u: WalletScanner.ChainUtxo): CoinState = states[outpoint(u)] ?: CoinState.HELD
+
+        fun inscribed(u: WalletScanner.ChainUtxo): Boolean = outpoint(u) in inscribed
+    }
+
     /**
-     * Whether a scanned coin is held because it may carry an inscription or tokens. The coin's indexer decides when
-     * one is set and answers; otherwise [CarrierScan]: its value is the coin's usual postage, or the transaction that
-     * made it writes one (a transaction the server cannot give leaves the value rule).
+     * Decides each ready coin of [scan] by [coinState]: from the wallet's stored checks (awaited, so results on disk count
+     * after a cold start), today's indexer setting when it names one (the indexer decides a coin it says carries, and an
+     * inscriptions-only indexer cannot clear a coin whose transaction writes a runestone or dunestone), and, only when
+     * the wallet has no results at all, [CarrierScan]: its value is the coin's usual postage, or the transaction that
+     * made it writes one (a transaction the server cannot give leaves the value rule). Run for every send rather than
+     * kept with a reused scan, so a check that finished since counts. Coins the check does not cover never have results.
      */
-    private fun heldCheck(coin: Coin, network: Network, client: ChainBackend): suspend (com.sparrowwallet.mobile.electrum.Utxo) -> Boolean = { utxo ->
+    private suspend fun classifyCoins(client: ChainBackend, data: VaultData, scan: WalletScanner.UtxoScan, tip: Long): CoinStates {
+        val coin = coin(data)
+        val network = network(data)
+        val checks = if(ChainRules.covers(coin)) loadInscriptionChecks(data).values.associateBy { it.outpoint } else emptyMap()
         val url = inscriptionSetting(coin, network).url(coin, network)
-        heldFrom(indexerAnswer(coin, network, utxo), tokensIndexed = url == null || !InscriptionIndex.isNintondo(url),
-            writesTokens = { creatingTx(client, utxo.txHash)?.let { CarrierScan.hasRunestone(it) || CarrierScan.hasDunestone(it) } == true }) {
-            localMayCarry(coin, client, utxo)
+        val tokensIndexed = url == null || !InscriptionIndex.isNintondo(url)
+        val states = HashMap<String, CoinState>()
+        for(u in scan.utxos) {
+            if(!spendable(data, tip, u)) continue
+            val utxo = u.utxo
+            val carries = indexerCarries(indexerAnswer(coin, network, utxo), tokensIndexed) {
+                creatingTx(client, utxo.txHash)?.let { CarrierScan.hasRunestone(it) || CarrierScan.hasDunestone(it) } == true
+            }
+            states[outpoint(u)] = coinState(checks[outpoint(u)], carries, { localMayCarry(coin, client, utxo) }, checks.isNotEmpty())
         }
+        return CoinStates(states, checks.values.filter { it.verdict == Verdict.INSCRIBED }.map { it.outpoint }.toSet())
     }
 
     private suspend fun localMayCarry(coin: Coin, client: ChainBackend, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean {
@@ -745,7 +767,9 @@ class WalletRepository(context: Context) {
         val fee: Long,          // litoshis
         val feeRatePerVb: Long, // litoshis per vbyte used
         val txid: String,
-        val txHex: String
+        val txHex: String,
+        /** How many of the coins it spends have not been checked for inscriptions; the review warns about them. */
+        val unchecked: Int = 0
     )
 
     /** Returns a user-facing error for an unusable destination address, or null if it's fine. */
@@ -760,7 +784,8 @@ class WalletRepository(context: Context) {
     /**
      * Scans utxos, selects coins, and builds a fully signed transaction — without
      * broadcasting. The UI shows the resulting fee/amount and only then calls [broadcast].
-     * With [sendMax] the whole spendable balance minus fee goes to the destination.
+     * With [sendMax] the whole spendable balance minus fee goes to the destination. Clean coins go first and Unchecked
+     * ones only when the Clean ones cannot cover it; held coins only with [includeHeld] (see [SpendTiers.candidates]).
      */
     suspend fun prepareSend(data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean,
                             includeHeld: Boolean = false): SendPreview {
@@ -773,9 +798,10 @@ class WalletRepository(context: Context) {
         val destScript = Addresses.toScriptPubKey(toAddress, params)
         return withBackend(coin, net) { client ->
             val feeRate = clampFeeRate(coin, client.feeRate(2))
-            val (candidates, changeScript) = collectSpendables(client, data, account, scriptType(data), includeHeld)
-            val built = TxBuilder.build(candidates, destScript, amountLitoshis, feeRate, changeScript, sendMax, params)
-            SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex())
+            val (tiers, changeScript) = collectSpendables(client, data, account, scriptType(data))
+            val built = TxBuilder.build(tiers.candidates(includeHeld, sendMax), destScript, amountLitoshis, feeRate, changeScript,
+                sendMax, params, keepOrder = true)
+            SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex(), tiers.uncheckedIn(spentOutpoints(built.tx)))
         }
     }
 
@@ -790,13 +816,14 @@ class WalletRepository(context: Context) {
         snap.utxos.filter { !it.spent && confirmedEnough(snap.status.blockHeaderHeight.toLong(), it.height) }
             .sumOf { it.value }
 
-    /** Held coins (which may carry an inscription) only with [includeHeld]; never into MWEB, where they would be lost. */
-    private suspend fun collectSpendables(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType,
-                                          includeHeld: Boolean = false): Pair<List<SpendableInput>, ByteArray> {
+    /** The wallet's ready coins by state (see [classifyCoins]); callers pick from them with [SpendTiers.candidates]. */
+    private suspend fun collectSpendables(client: ChainBackend, data: VaultData, account: HDKey,
+                                          scriptType: ScriptType): Pair<SpendTiers, ByteArray> {
         val (scan, tip) = scanCoins(client, data, account, scriptType)
         val coin = coin(data)
         val network = network(data)
-        return spendables(scan, tip, account, scriptType, minConfirmations, { coin.coinbaseMaturity(network, it) }, includeHeld)
+        val states = classifyCoins(client, data, scan, tip)
+        return spendables(scan, tip, account, scriptType, minConfirmations, { coin.coinbaseMaturity(network, it) }) { states.state(it) }
     }
 
     class UnsignedSendPreview(
@@ -807,7 +834,9 @@ class WalletRepository(context: Context) {
         val txid: String?, // null when signing will change it (see txidKnownBeforeSigning)
         val psbtBase64: String,
         /** Peg-ins: the MWEB extension blob stays here and is re-attached on finalize. */
-        val mwebBlob: ByteArray? = null
+        val mwebBlob: ByteArray? = null,
+        /** How many of the coins it spends have not been checked for inscriptions. */
+        val unchecked: Int = 0
     )
 
     /**
@@ -833,19 +862,21 @@ class WalletRepository(context: Context) {
         return withBackend(coin, net) { client ->
             val feeRate = clampFeeRate(coin, client.feeRate(2))
             val (scan, tip) = scanCoins(client, data, account, scriptType)
+            val states = classifyCoins(client, data, scan, tip)
             val accountPath = parsePathChildren(data.derivationPath)
             val pathByKey = HashMap<HDKey, List<Long>>()
-            val candidates = scan.utxos
-                .filter { spendable(data, tip, it) && (includeHeld || !it.held) }
+            //the same tiers as prepareSend: Clean first, Unchecked on shortfall, held only when included
+            val tiers = SpendTiers.of(scan.utxos
+                .filter { spendable(data, tip, it) }
                 .map {
                     val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                     pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
-                    SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key, scriptType)
-                }
+                    SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key, scriptType) to states.state(it)
+                })
             val changeKey = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong())
             val selected = TxBuilder.buildUnsigned(
-                candidates, destScript, amountLitoshis, feeRate,
-                Scripts.outputScript(changeKey.pubKey, scriptType), sendMax, params
+                tiers.candidates(includeHeld, sendMax), destScript, amountLitoshis, feeRate,
+                Scripts.outputScript(changeKey.pubKey, scriptType), sendMax, params, keepOrder = true
             )
             //every chosen coin carries the transaction that made it: Legacy signers need it, and a
             //signer checks a multi-input fee against it (rawTransaction verifies each one's txid).
@@ -865,7 +896,8 @@ class WalletRepository(context: Context) {
                 changePath = accountPath + listOf(1L, scan.nextChangeIndex.toLong())
             )
             UnsignedSendPreview(toAddress, unsigned.amount, unsigned.fee, unsigned.paidFeeRate,
-                unsigned.tx.txid().takeIf { txidKnownBeforeSigning(data.scriptType) }, Psbt.toBase64(psbt))
+                unsigned.tx.txid().takeIf { txidKnownBeforeSigning(data.scriptType) }, Psbt.toBase64(psbt),
+                unchecked = tiers.uncheckedIn(selected.inputs.map { outpoint(it) }))
         }
     }
 
@@ -881,16 +913,16 @@ class WalletRepository(context: Context) {
         val feeRate = withBackend(Coin.LITECOIN, net) { clampFeeRate(Coin.LITECOIN, it.feeRate(2)) }
         val service = mwebd(data)
 
-        val (scan, tip) = withBackend(Coin.LITECOIN, net) {
+        val (scan, tip, states) = withBackend(Coin.LITECOIN, net) {
             val tip = it.tipHeight()
-            WalletScanner(it, ScriptType.P2WPKH).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip),
-                isHeld = heldCheck(Coin.LITECOIN, net, it)) to tip
+            val scan = WalletScanner(it, ScriptType.P2WPKH).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip))
+            Triple(scan, tip, classifyCoins(it, data, scan, tip))
         }
         val accountPath = parsePathChildren(data.derivationPath)
         val pathByKey = HashMap<HDKey, List<Long>>()
-        //a held coin may carry an inscription, which ord cannot follow into MWEB
+        //Clean coins only: whatever a held or unchecked coin carries, ord cannot follow it into MWEB
         val candidates = scan.utxos
-            .filter { spendable(data, tip, it) && !it.held }
+            .filter { spendable(data, tip, it) && states.state(it) == CoinState.CLEAN }
             .map {
                 val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                 pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
@@ -990,13 +1022,17 @@ class WalletRepository(context: Context) {
         withBackend(coin(data), network(data)) { client ->
             val tip = client.tipHeight()
             val coin = coin(data)
-            val scan = WalletScanner(client, scriptType(data)).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip), isHeld = heldCheck(coin, network(data), client))
+            val scan = WalletScanner(client, scriptType(data)).utxos(account, checkCoinbaseAbove = coinbaseCheckAbove(data, tip))
             lastScan.put(data, scan, tip, System.currentTimeMillis())
             val network = network(data)
+            val states = classifyCoins(client, data, scan, tip)
             SendCoins.split(scan.utxos.map {
-                ScannedCoin(it.utxo.value, it.utxo.height, if(it.coinbase) coin.coinbaseMaturity(network, it.utxo.height) else null, it.held)
+                ScannedCoin(it.utxo.value, it.utxo.height, if(it.coinbase) coin.coinbaseMaturity(network, it.utxo.height) else null,
+                    states.state(it), states.inscribed(it))
             }, tip, minConfirmations)
-        }.let { it.copy(spendable = it.spendable.sortedDescending(), held = it.held.sortedDescending()) }
+        }.let {
+            it.copy(spendable = it.spendable.sortedDescending(), held = it.held.sortedDescending(), unchecked = it.unchecked.sortedDescending())
+        }
 
     // ---- Sparrow Link (desktop ↔ mobile transfer) ----
 
@@ -1182,7 +1218,9 @@ class WalletRepository(context: Context) {
 
         requirePegInWallet(data)
         val feeRate = withBackend(Coin.LITECOIN, net) { clampFeeRate(Coin.LITECOIN, it.feeRate(2)) }
+        //Clean coins only: whatever a held or unchecked coin carries, ord cannot follow it into MWEB
         val (candidates, changeScript) = withBackend(Coin.LITECOIN, net) { collectSpendables(it, data, account, ScriptType.P2WPKH) }
+            .let { (tiers, change) -> tiers.candidates(includeHeld = false, sendMax = sendMax, pegIn = true) to change }
         val service = mwebd(data)
 
         // Relay rules charge fee on the MWEB blob's bytes too (min relay = size × rate),

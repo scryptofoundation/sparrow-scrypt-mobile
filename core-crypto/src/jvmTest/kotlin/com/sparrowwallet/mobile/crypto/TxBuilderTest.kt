@@ -77,6 +77,19 @@ class TxBuilderTest {
         assertConservation(built, 80_000)
     }
 
+    /** keepOrder takes the coins as given, so a caller's preferred coins go first whatever their value. */
+    @Test
+    fun keepOrderTakesCoinsInTheGivenOrder() {
+        val preferred = candidates.reversed() // 20k, 30k, 50k
+        val built = TxBuilder.buildUnsigned(preferred, destScript, 40_000, 2, changeScript, params = Network.MAINNET.litecoin, keepOrder = true)
+        assertEquals(listOf(20_000L, 30_000L), built.inputs.map { it.value })
+        val signed = TxBuilder.build(preferred, destScript, 40_000, 2, changeScript, params = Network.MAINNET.litecoin, keepOrder = true)
+        assertEquals(listOf(fakeTxid(3), fakeTxid(2)), signed.tx.inputs.map { it.prevTxid })
+        //without it, largest first
+        assertEquals(listOf(50_000L), TxBuilder.buildUnsigned(preferred, destScript, 40_000, 2, changeScript,
+            params = Network.MAINNET.litecoin).inputs.map { it.value })
+    }
+
     @Test
     fun insufficientFundsThrows() {
         val error = assertFailsWith<IllegalArgumentException> {

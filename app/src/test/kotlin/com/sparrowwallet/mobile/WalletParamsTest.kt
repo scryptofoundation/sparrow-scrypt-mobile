@@ -76,7 +76,8 @@ class WalletParamsTest {
             WalletScanner.ChainUtxo(Utxo("22".repeat(32), 1, 100, 300_000_000), 0, 3),
             WalletScanner.ChainUtxo(Utxo("33".repeat(32), 0, 200, 900_000_000), 0, 4) // 1 confirmation: not spendable
         ), nextChangeIndex = 2)
-        val (inputs, change) = spendables(scan, tip = 200, account = account, scriptType = ScriptType.P2PKH, minConfirmations = 6)
+        val (tiers, change) = spendables(scan, tip = 200, account = account, scriptType = ScriptType.P2PKH, minConfirmations = 6) { CoinState.CLEAN }
+        val inputs = tiers.clean
         assertEquals(2, inputs.size)
         assertTrue(inputs.all { it.scriptType == ScriptType.P2PKH })
         val expectedChange = Scripts.outputScript(account.deriveChild(1).deriveChild(2).pubKey, ScriptType.P2PKH)
@@ -154,8 +155,8 @@ class WalletParamsTest {
     /** A coin that may carry an inscription is held: left out of Send unless the user includes held coins. */
     @Test
     fun heldCoinsAreLeftOutUnlessIncluded() {
-        val coins = SendCoins.split(listOf(ScannedCoin(100_000, 40, held = true), ScannedCoin(5_000_000, 40), ScannedCoin(100_000, 45, held = true)),
-            tip = 45, minConfirmations = 6)
+        val coins = SendCoins.split(listOf(ScannedCoin(100_000, 40, state = CoinState.HELD), ScannedCoin(5_000_000, 40),
+            ScannedCoin(100_000, 45, state = CoinState.HELD)), tip = 45, minConfirmations = 6)
         assertEquals(listOf(5_000_000L), coins.spendable)
         assertEquals(listOf(100_000L), coins.held)
         assertEquals(100_000L, coins.maturing)
@@ -166,12 +167,109 @@ class WalletParamsTest {
             "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ""))
         val account = master.derivePath("m/44'/3'/0'")
         val scan = WalletScanner.UtxoScan(listOf(
-            WalletScanner.ChainUtxo(Utxo("11".repeat(32), 0, 100, 100_000), 0, 0, held = true),
+            WalletScanner.ChainUtxo(Utxo("11".repeat(32), 0, 100, 100_000), 0, 0),
             WalletScanner.ChainUtxo(Utxo("22".repeat(32), 1, 100, 300_000_000), 0, 3)
         ), nextChangeIndex = 2)
-        assertEquals(listOf(300_000_000L), spendables(scan, 200, account, ScriptType.P2PKH, 6).first.map { it.value })
-        assertEquals(setOf(100_000L, 300_000_000L),
-            spendables(scan, 200, account, ScriptType.P2PKH, 6, includeHeld = true).first.map { it.value }.toSet())
+        val (tiers, _) = spendables(scan, 200, account, ScriptType.P2PKH, 6) {
+            if(it.utxo.txHash == "11".repeat(32)) CoinState.HELD else CoinState.CLEAN
+        }
+        assertEquals(listOf(300_000_000L), tiers.candidates(includeHeld = false, sendMax = false).map { it.value })
+        assertEquals(listOf(300_000_000L), tiers.candidates(includeHeld = false, sendMax = true).map { it.value })
+        assertEquals(listOf(300_000_000L, 100_000L), tiers.candidates(includeHeld = true, sendMax = false).map { it.value })
+        assertEquals(listOf(300_000_000L, 100_000L), tiers.candidates(includeHeld = true, sendMax = true).map { it.value })
+    }
+
+    private val ltcAccount = HDKey.fromSeed(Bip39.seed(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", "")).derivePath("m/84'/2'/0'")
+
+    /** Clean 30,000 and 10,000, Unchecked 50,000 and 20,000, Held 80,000, all P2WPKH and deep enough. */
+    private fun tieredScan(): Pair<SpendTiers, ByteArray> {
+        val coins = listOf(
+            "11" to 30_000L to CoinState.CLEAN, "22" to 50_000L to CoinState.UNCHECKED, "33" to 10_000L to CoinState.CLEAN,
+            "44" to 20_000L to CoinState.UNCHECKED, "55" to 80_000L to CoinState.HELD
+        )
+        val scan = WalletScanner.UtxoScan(coins.mapIndexed { i, (c, _) ->
+            WalletScanner.ChainUtxo(Utxo(c.first.repeat(32), 0, 100, c.second), 0, i)
+        }, nextChangeIndex = 0)
+        val states = coins.associate { (c, s) -> c.first.repeat(32) to s }
+        return spendables(scan, 200, ltcAccount, ScriptType.P2WPKH, 6) { states.getValue(it.utxo.txHash) }
+    }
+
+    private fun pay(amount: Long, includeHeld: Boolean = false, sendMax: Boolean = false, pegIn: Boolean = false): Pair<SpendTiers, List<String>> {
+        val (tiers, change) = tieredScan()
+        val dest = Scripts.p2wpkhOutput(ltcAccount.deriveChild(0).deriveChild(9).pubKey)
+        val built = TxBuilder.buildUnsigned(tiers.candidates(includeHeld, sendMax, pegIn), dest, amount, 2, change, sendMax,
+            ChainParams.of(Coin.LITECOIN, Network.MAINNET), keepOrder = true)
+        return tiers to built.inputs.map { outpoint(it) }
+    }
+
+    @Test
+    fun uncheckedCoinsAreUsedLast() {
+        val (tiers, small) = pay(20_000)
+        assertEquals(listOf("11".repeat(32) + ":0"), small) // the Clean 30,000, not the larger Unchecked 50,000
+        assertFalse(tiers.usesUnchecked(small))
+        assertEquals(0, tiers.uncheckedIn(small))
+
+        val (_, cleanOnly) = pay(39_000)
+        assertEquals(setOf("11", "33").map { it.repeat(32) + ":0" }.toSet(), cleanOnly.toSet())
+        assertFalse(tiers.usesUnchecked(cleanOnly))
+
+        val (_, both) = pay(60_000)
+        assertEquals(listOf("11", "33", "22").map { it.repeat(32) + ":0" }, both) // every Clean coin, then the largest Unchecked
+        assertTrue(tiers.usesUnchecked(both))
+        assertEquals(1, tiers.uncheckedIn(both))
+
+        //Held coins stay out of a payment the other coins cannot cover
+        assertFailsWith<IllegalArgumentException> { pay(150_000) }
+        assertEquals("55".repeat(32) + ":0", pay(150_000, includeHeld = true).second.last())
+    }
+
+    /** Send max spends Clean coins only, unless the user ticks the include box. */
+    @Test
+    fun sendMaxLeavesUncheckedCoinsOut() {
+        val (tiers, swept) = pay(0, sendMax = true)
+        assertEquals(setOf("11", "33").map { it.repeat(32) + ":0" }.toSet(), swept.toSet())
+        assertEquals(5, pay(0, includeHeld = true, sendMax = true).second.size)
+        assertEquals(2, tiers.uncheckedIn(pay(0, includeHeld = true, sendMax = true).second))
+    }
+
+    @Test
+    fun pegInUsesCleanCoinsOnly() {
+        val (tiers, _) = tieredScan()
+        for(includeHeld in listOf(false, true)) {
+            for(sendMax in listOf(false, true)) {
+                assertEquals(listOf(30_000L, 10_000L), tiers.candidates(includeHeld, sendMax, pegIn = true).map { it.value })
+            }
+        }
+        assertFailsWith<IllegalArgumentException> { pay(45_000, includeHeld = true, pegIn = true) }
+    }
+
+    @Test
+    fun sendCoinsListCleanThenUncheckedThenIncludedHeld() {
+        val coins = SendCoins.split(listOf(
+            ScannedCoin(30_000, 40), ScannedCoin(50_000, 40, state = CoinState.UNCHECKED), ScannedCoin(80_000, 40, state = CoinState.HELD),
+            ScannedCoin(10_000, 40, state = CoinState.UNCHECKED)
+        ), tip = 50, minConfirmations = 6)
+        assertEquals(listOf(30_000L), coins.spendable)
+        assertEquals(listOf(50_000L, 10_000L), coins.unchecked)
+        assertEquals(listOf(30_000L, 50_000L, 10_000L), coins.usable(includeHeld = false))
+        assertEquals(listOf(30_000L, 50_000L, 10_000L, 80_000L), coins.usable(includeHeld = true))
+        assertEquals(listOf(30_000L), coins.sweepable(includeHeld = false))
+        assertEquals(listOf(30_000L, 50_000L, 10_000L, 80_000L), coins.sweepable(includeHeld = true))
+        assertFalse(coins.heldInscribed)
+    }
+
+    @Test
+    fun heldCoinsAreNamedInscribedOnlyWhenEveryOneIs() {
+        val all = SendCoins.split(listOf(ScannedCoin(10_000, 40, state = CoinState.HELD, inscribed = true),
+            ScannedCoin(20_000, 40, state = CoinState.HELD, inscribed = true)), tip = 50, minConfirmations = 6)
+        assertTrue(all.heldInscribed)
+        val some = SendCoins.split(listOf(ScannedCoin(10_000, 40, state = CoinState.HELD, inscribed = true),
+            ScannedCoin(20_000, 40, state = CoinState.HELD)), tip = 50, minConfirmations = 6)
+        assertFalse(some.heldInscribed)
+        //a maturing inscribed coin does not count: only the ready held ones are named
+        val none = SendCoins.split(listOf(ScannedCoin(10_000, 49, state = CoinState.HELD, inscribed = true)), tip = 50, minConfirmations = 6)
+        assertFalse(none.heldInscribed)
     }
 
     @Test
