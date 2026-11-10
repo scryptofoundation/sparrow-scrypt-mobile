@@ -29,10 +29,12 @@ import kotlin.test.assertTrue
 
 /**
  * Opt-in (LIVE_TRACE=1), read only: the phone's own trace, with no indexer, against inscriptions that exist now on
- * Bellscoin mainnet (Esplora backend, Nintondo indexer) and Litecoin mainnet (Electrum backend, ordinalslite). The
- * outpoints are looked up from the public indexers at test time (a recent inscription's current location), so nothing
- * is hard-coded that may move. A 429 or an unreachable public server skips the case with a message: it says nothing
- * about the port. Nothing is written to any chain.
+ * Bellscoin and Pepecoin mainnet (Esplora backends, Nintondo indexers) and Litecoin mainnet (Electrum backend,
+ * ordinalslite). The outpoints are looked up from the public indexers at test time (a recent inscription's current
+ * location), so nothing is hard-coded that may move. Junkcoin has no public indexer: its leg traces a recent mined coin
+ * and reports what comes back. Each Esplora leg also reports whether the server's block listing carries fees. A 429 or
+ * an unreachable public server skips the case with a message: it says nothing about the port. Nothing is written to any
+ * chain.
  */
 class LiveTraceTest {
     private val enabled = System.getenv("LIVE_TRACE") == "1"
@@ -41,10 +43,32 @@ class LiveTraceTest {
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    private suspend fun getJson(http: HttpEndpoint, path: String) = http.get(path, "application/json").let {
+    private suspend fun getJson(http: HttpEndpoint, path: String) = getJsonOrNone(http, path)
+        ?: throw Skip("HTTP 404 from ${http.url}$path")
+
+    /** The answer, or null for a 404 (nothing there); a 429 or any other failure skips the leg, never reads as "none". */
+    private suspend fun getJsonOrNone(http: HttpEndpoint, path: String) = http.get(path, "application/json").let {
         if(it.status == 429) throw Skip("429 from ${http.url}$path")
+        if(it.status == 404) return@let null
         if(it.status != 200) throw Skip("HTTP ${it.status} from ${http.url}$path")
         json.parseToJsonElement(it.body)
+    }
+
+    /** A trace that did not reach a verdict is inconclusive, not a pass: say so and why. */
+    private fun reportNegative(label: String, outpoint: String, r: TraceResult) {
+        report(label, outpoint, emptyList(), r)
+        if(r.verdict == Verdict.UNCHECKED) {
+            println("LIVETRACE $label INCONCLUSIVE: the trace left $outpoint Unchecked (${r.reason})")
+        }
+    }
+
+    /** Review M3: whether the Esplora server's /block/:hash/txs answers carry each transaction's fee. */
+    private suspend fun reportFees(label: String, esplora: HttpEndpoint) {
+        val tip = esplora.get("/blocks/tip/hash").let { if(it.status == 200) it.body.trim() else throw Skip("HTTP ${it.status} for the tip hash") }
+        val txs = getJson(esplora, "/block/$tip/txs/0").jsonArray
+        val nonCoinbase = txs.drop(1).map { it.jsonObject }
+        val withFee = nonCoinbase.count { "fee" in it }
+        println("LIVETRACE $label block-fees ${esplora.url}/block/$tip/txs/0: ${txs.size} txs, $withFee of ${nonCoinbase.size} non-coinbase carry fee")
     }
 
     private suspend fun trace(coin: Coin, backend: ChainBackend, txid: String, vout: Int): TraceResult {
@@ -65,61 +89,112 @@ class LiveTraceTest {
         }
     }
 
-    @Test fun bellscoinInscriptionIsTraced() {
-        if(!enabled) return
-        guarded("bellscoin") {
-            val indexUrl = InscriptionIndex.publicUrl("bellscoin", "mainnet")!!
-            val index = HttpEndpoint(indexUrl)
-            val backend = EsploraBackend("https://api.nintondo.io", ChainParams.of(Coin.BELLSCOIN, Network.MAINNET))
-            try {
-                //Walk back from the tip until an output the indexer says carries inscriptions, and keep one that carries none
-                var height = (getJson(index, "/status").jsonObject["tip_height"]!!.jsonPrimitive.content).toInt()
-                var hit: Triple<String, Int, List<String>>? = null
-                var clean: Pair<String, Int>? = null
-                var scanned = 0
-                while(height > 0 && (hit == null || clean == null) && scanned < 4000) {
-                    val blocks = getJson(index, "/blocks/$height").jsonArray
-                    if(blocks.isEmpty()) break
-                    for(b in blocks) {
-                        val block = b.jsonObject
-                        height = block["height"]!!.jsonPrimitive.content.toInt() - 1
-                        scanned++
-                        val count = block["tx_count"]!!.jsonPrimitive.content.toInt()
-                        if(count < 2) continue
-                        for(start in 0 until count step 25) {
-                            for(t in getJson(index, "/block/${block["id"]!!.jsonPrimitive.content}/txs/$start").jsonArray) {
-                                val tx = t.jsonObject
-                                val txid = tx["txid"]!!.jsonPrimitive.content
-                                for(vout in 0 until tx["vout"]!!.jsonArray.size) {
-                                    val metas = runCatching { getJson(index, "/find_meta/${txid}i$vout") }.getOrNull() as? JsonArray ?: continue
-                                    //An output holding a dozen inscriptions is a collector's coin with a long history; a small holder is the useful probe
-                                    if(metas.isNotEmpty() && metas.size <= 3 && hit == null) {
-                                        hit = Triple(txid, vout, metas.map { it.jsonObject["genesis"]!!.jsonPrimitive.content })
-                                    } else if(metas.isEmpty() && clean == null && hit?.first == txid) {
-                                        clean = txid to vout
-                                    }
+    /**
+     * Walks back from the indexer's tip until an output it says carries a few inscriptions, and keeps a sibling it says
+     * carries none; traces both through the coin's Esplora backend.
+     */
+    private fun nintondoLeg(label: String, coin: Coin, esploraUrl: String) = guarded(label) {
+        val index = HttpEndpoint(InscriptionIndex.publicUrl(coin.id, "mainnet")!!)
+        val backend = EsploraBackend(esploraUrl, ChainParams.of(coin, Network.MAINNET))
+        try {
+            var height = (getJson(index, "/status").jsonObject["tip_height"]!!.jsonPrimitive.content).toInt()
+            var hit: Triple<String, Int, List<String>>? = null
+            var clean: Pair<String, Int>? = null
+            var scanned = 0
+            while(height > 0 && (hit == null || clean == null) && scanned < 4000) {
+                val blocks = getJson(index, "/blocks/$height").jsonArray
+                if(blocks.isEmpty()) break
+                for(b in blocks) {
+                    val block = b.jsonObject
+                    height = block["height"]!!.jsonPrimitive.content.toInt() - 1
+                    scanned++
+                    val count = block["tx_count"]!!.jsonPrimitive.content.toInt()
+                    if(count < 2) continue
+                    for(start in 0 until count step 25) {
+                        for(t in getJson(index, "/block/${block["id"]!!.jsonPrimitive.content}/txs/$start").jsonArray) {
+                            val tx = t.jsonObject
+                            val txid = tx["txid"]!!.jsonPrimitive.content
+                            for(vout in 0 until tx["vout"]!!.jsonArray.size) {
+                                //Only a 404 means "nothing there"; a 429 skips the leg rather than reading as clean
+                                val metas = getJsonOrNone(index, "/find_meta/${txid}i$vout") as? JsonArray ?: continue
+                                //An output holding a dozen inscriptions is a collector's coin with a long history; a small holder is the useful probe
+                                if(metas.isNotEmpty() && metas.size <= 3 && hit == null) {
+                                    hit = Triple(txid, vout, metas.map { it.jsonObject["genesis"]!!.jsonPrimitive.content })
+                                } else if(metas.isEmpty() && clean == null && hit?.first == txid) {
+                                    clean = txid to vout
                                 }
                             }
                         }
                     }
                 }
-                val found = hit ?: throw Skip("no inscribed output found in the last $scanned blocks")
-                val result = trace(Coin.BELLSCOIN, backend, found.first, found.second)
-                report("bellscoin inscribed", "${found.first}:${found.second}", found.third, result)
-                if(result.reason?.startsWith(InscriptionTracer.SERVER_ERROR_PREFIX) == true && result.reason!!.contains("429")) {
-                    throw Skip("429 while tracing: ${result.reason}")
-                }
-                assertEquals(Verdict.INSCRIBED, result.verdict)
-                assertTrue(result.found.any { it.inscriptionId in found.third }, "found ${result.found.map { it.inscriptionId }} vs indexer ${found.third}")
+            }
+            val found = hit ?: throw Skip("no inscribed output found in the last $scanned blocks")
+            val result = trace(coin, backend, found.first, found.second)
+            report("$label inscribed", "${found.first}:${found.second}", found.third, result)
+            if(result.reason?.startsWith(InscriptionTracer.SERVER_ERROR_PREFIX) == true && result.reason!!.contains("429")) {
+                throw Skip("429 while tracing: ${result.reason}")
+            }
+            assertEquals(Verdict.INSCRIBED, result.verdict)
+            assertTrue(result.found.any { it.inscriptionId in found.third }, "found ${result.found.map { it.inscriptionId }} vs indexer ${found.third}")
 
-                clean?.let {
-                    val neg = trace(Coin.BELLSCOIN, backend, it.first, it.second)
-                    report("bellscoin indexer-clean", "${it.first}:${it.second}", emptyList(), neg)
-                    assertNotEquals(Verdict.INSCRIBED, neg.verdict)
-                } ?: println("LIVETRACE bellscoin no indexer-clean output seen in the same transaction")
+            clean?.let {
+                val neg = trace(coin, backend, it.first, it.second)
+                reportNegative("$label indexer-clean", "${it.first}:${it.second}", neg)
+                assertNotEquals(Verdict.INSCRIBED, neg.verdict)
+            } ?: println("LIVETRACE $label no indexer-clean output seen in the same transaction")
+        } finally {
+            backend.close()
+            index.close()
+        }
+    }
+
+    @Test fun bellscoinInscriptionIsTraced() {
+        if(!enabled) return
+        nintondoLeg("bellscoin", Coin.BELLSCOIN, "https://api.nintondo.io")
+    }
+
+    @Test fun pepecoinInscriptionIsTraced() {
+        if(!enabled) return
+        nintondoLeg("pepecoin", Coin.PEPECOIN, "https://peppool.space/api")
+    }
+
+    /**
+     * Junkcoin has no public indexer, so nothing is asserted: a mined coin from a recent block (its coinbase output 0,
+     * so the trace must place the block's fees) is traced through the Esplora backend and its verdict reported.
+     */
+    @Test fun junkcoinMinedCoinIsReported() {
+        if(!enabled) return
+        guarded("junkcoin") {
+            val esplora = HttpEndpoint("https://junk-api.s3na.xyz")
+            val backend = EsploraBackend("https://junk-api.s3na.xyz", ChainParams.of(Coin.JUNKCOIN, Network.MAINNET))
+            try {
+                val tip = esplora.get("/blocks/tip/height").let { if(it.status == 200) it.body.trim().toInt() else throw Skip("HTTP ${it.status} for the tip") }
+                val hash = esplora.get("/block-height/${tip - 120}").let { if(it.status == 200) it.body.trim() else throw Skip("HTTP ${it.status} for a block hash") }
+                val coinbase = getJson(esplora, "/block/$hash/txs/0").jsonArray.first().jsonObject["txid"]!!.jsonPrimitive.content
+                val result = trace(Coin.JUNKCOIN, backend, coinbase, 0)
+                report("junkcoin mined", "$coinbase:0 (block ${tip - 120})", emptyList(), result)
+                if(result.verdict == Verdict.UNCHECKED) {
+                    println("LIVETRACE junkcoin INCONCLUSIVE: ${result.reason}")
+                }
             } finally {
                 backend.close()
-                index.close()
+                esplora.close()
+            }
+        }
+    }
+
+    /** Review M3: whether each Esplora server's block listing carries fees (the tracer needs them for mined coins). */
+    @Test fun esploraBlockListingsReportFees() {
+        if(!enabled) return
+        for((label, url) in listOf("bellscoin" to "https://api.nintondo.io", "pepecoin" to "https://peppool.space/api",
+                                   "junkcoin" to "https://junk-api.s3na.xyz")) {
+            guarded("$label fees") {
+                val esplora = HttpEndpoint(url)
+                try {
+                    reportFees(label, esplora)
+                } finally {
+                    esplora.close()
+                }
             }
         }
     }
@@ -166,7 +241,7 @@ class LiveTraceTest {
 
                 clean?.let {
                     val neg = trace(Coin.LITECOIN, client, it.first, it.second)
-                    report("litecoin indexer-clean", "${it.first}:${it.second}", emptyList(), neg)
+                    reportNegative("litecoin indexer-clean", "${it.first}:${it.second}", neg)
                     assertNotEquals(Verdict.INSCRIBED, neg.verdict)
                 } ?: println("LIVETRACE litecoin no indexer-clean sibling output among the newest inscription transactions")
             } finally {
