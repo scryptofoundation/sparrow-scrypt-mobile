@@ -64,11 +64,16 @@ class LiveTraceTest {
 
     /** Review M3: whether the Esplora server's /block/:hash/txs answers carry each transaction's fee. */
     private suspend fun reportFees(label: String, esplora: HttpEndpoint) {
-        val tip = esplora.get("/blocks/tip/hash").let { if(it.status == 200) it.body.trim() else throw Skip("HTTP ${it.status} for the tip hash") }
-        val txs = getJson(esplora, "/block/$tip/txs/0").jsonArray
+        //a recent block with more than its coinbase (/blocks lists the latest ten), so the answer says something
+        val block = getJson(esplora, "/blocks").jsonArray.map { it.jsonObject }
+            .firstOrNull { (it["tx_count"]?.jsonPrimitive?.content?.toIntOrNull() ?: 0) >= 2 }
+            ?: throw Skip("none of the latest blocks holds more than its coinbase")
+        val hash = block["id"]!!.jsonPrimitive.content
+        val txs = getJson(esplora, "/block/$hash/txs/0").jsonArray
         val nonCoinbase = txs.drop(1).map { it.jsonObject }
         val withFee = nonCoinbase.count { "fee" in it }
-        println("LIVETRACE $label block-fees ${esplora.url}/block/$tip/txs/0: ${txs.size} txs, $withFee of ${nonCoinbase.size} non-coinbase carry fee")
+        println("LIVETRACE $label block-fees ${esplora.url}/block/$hash/txs/0 (height ${block["height"]}): ${txs.size} txs, " +
+            "$withFee of ${nonCoinbase.size} non-coinbase carry fee")
     }
 
     private suspend fun trace(coin: Coin, backend: ChainBackend, txid: String, vout: Int): TraceResult {

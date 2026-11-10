@@ -298,6 +298,13 @@ class WalletParamsTest {
         assertFalse(psbtMatchesPreview(listOf(a, b), 5_000, listOf(a), 5_000), "one fewer coin")
         assertFalse(psbtMatchesPreview(listOf(a, b), 5_000, listOf(a, b), 4_900), "another send-max amount")
         assertFalse(psbtMatchesPreview(emptyList(), 5_000, emptyList(), 5_000), "a preview without its coins never matches")
+
+        //the two sides name their coins two ways (the built transaction's inputs, the selected coins): they must agree
+        val (tiers, change) = tieredScan()
+        val built = TxBuilder.buildUnsigned(tiers.candidates(false, sendMax = false), Scripts.p2wpkhOutput(ltcAccount.deriveChild(0).deriveChild(9).pubKey),
+            60_000, 2, change, false, ChainParams.of(Coin.LITECOIN, Network.MAINNET), keepOrder = true)
+        assertEquals(built.inputs.map { outpoint(it) }, spentOutpoints(built.tx))
+        assertTrue(psbtMatchesPreview(spentOutpoints(built.tx), built.amount, built.inputs.map { outpoint(it) }, built.amount))
     }
 
     @Test
