@@ -54,6 +54,22 @@ class InscriptionStoreTest {
         assertEquals(checks, store.load("My Wallet"))
     }
 
+    /** Review I3: the file also keeps block hashes by height; a file written before that loads with none. */
+    @Test
+    fun blockHashesRoundTripAndOldFilesLoadWithout() {
+        val dir = java.nio.file.Files.createTempDirectory("insc").toFile()
+        val cipher = MemoryCipher()
+        val store = InscriptionStore(dir, cipher)
+        val checks = mapOf(check(0).outpoint to check(0))
+        store.save("w", checks, mapOf(100 to "cd".repeat(32)))
+        assertEquals(checks, store.load("w"))
+        assertEquals(mapOf(100 to "cd".repeat(32)), store.loadBlocks("w"))
+        File(dir, "old.bin").writeBytes(cipher.seal("""{"v":1,"checks":{}}""".encodeToByteArray()))
+        assertEquals(emptyMap(), store.loadOrNull("old"))
+        assertEquals(emptyMap(), store.loadBlocks("old"))
+        assertEquals(emptyMap(), store.loadBlocks("none"))
+    }
+
     @Test
     fun missingAndUnreadableLoadEmpty() {
         val (store, dir) = newStore()

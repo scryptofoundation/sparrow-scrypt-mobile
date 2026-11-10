@@ -47,8 +47,12 @@ class KeystoreCipher(private val alias: String) : StoreCipher {
     }
 }
 
+/**
+ * [blocks] (block hashes by height, deep enough not to change) was added in version 1 without a version bump: a file
+ * without it loads with none, and an older reader (ignoreUnknownKeys) skips it.
+ */
 @Serializable
-private data class InscriptionFile(val v: Int, val checks: Map<String, InscriptionCheck>)
+private data class InscriptionFile(val v: Int, val checks: Map<String, InscriptionCheck>, val blocks: Map<Int, String> = emptyMap())
 
 /**
  * One encrypted file per wallet holding its inscription checks, by outpoint. Holds only check results: no keys, no xpub.
@@ -65,12 +69,21 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
      * The wallet's stored checks, possibly empty (a run that found no coins), or null when there is no readable file:
      * missing, undecryptable, unparseable, or an unknown version.
      */
-    fun loadOrNull(walletName: String): Map<String, InscriptionCheck>? {
+    fun loadOrNull(walletName: String): Map<String, InscriptionCheck>? = loadFile(walletName)?.checks
+
+    /** The block hashes kept with the wallet's checks, by height; empty when none or no readable file. */
+    fun loadBlocks(walletName: String): Map<Int, String> = loadFile(walletName)?.blocks ?: emptyMap()
+
+    /** The checks and the block hashes in one read, or null when there is no readable file (see [loadOrNull]). */
+    fun loadWithBlocks(walletName: String): Pair<Map<String, InscriptionCheck>, Map<Int, String>>? =
+        loadFile(walletName)?.let { it.checks to it.blocks }
+
+    private fun loadFile(walletName: String): InscriptionFile? {
         val file = fileFor(walletName)
         if(!file.exists()) return null
         return try {
             val parsed = json.decodeFromString(InscriptionFile.serializer(), cipher.open(file.readBytes()).decodeToString())
-            if(parsed.v == VERSION) parsed.checks else null
+            if(parsed.v == VERSION) parsed else null
         } catch(e: Exception) {
             null
         }
@@ -78,12 +91,13 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
 
     /**
      * Replaces the wallet's file. Callers pass only unspent coins, which is how spent ones drop out. Each write goes
-     * through its own temp file, so two writers (even through two stores) never mix; the last one wins.
+     * through its own temp file, so two writers (even through two stores) never mix; the last one wins. [blocks] are
+     * block hashes by height the checker keeps with the checks (see [InscriptionChecker]).
      */
     @Synchronized
-    fun save(walletName: String, checks: Map<String, InscriptionCheck>) {
+    fun save(walletName: String, checks: Map<String, InscriptionCheck>, blocks: Map<Int, String> = emptyMap()) {
         dir.mkdirs()
-        val sealed = cipher.seal(json.encodeToString(InscriptionFile.serializer(), InscriptionFile(VERSION, checks)).encodeToByteArray())
+        val sealed = cipher.seal(json.encodeToString(InscriptionFile.serializer(), InscriptionFile(VERSION, checks, blocks)).encodeToByteArray())
         val target = fileFor(walletName)
         val temp = File.createTempFile(target.name + ".", ".tmp", dir)
         try {

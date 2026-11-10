@@ -46,7 +46,7 @@ class InscriptionChecker(val store: InscriptionStore) {
     private val caches = ConcurrentHashMap<String, TxCache>()
     private val locks = ConcurrentHashMap<String, Mutex>()
     /** A wallet's results, and whether they come from a readable file or a finished run (so an empty map counts as checked). */
-    private class Stored(val checks: Map<String, InscriptionCheck>, val checked: Boolean)
+    private class Stored(val checks: Map<String, InscriptionCheck>, val checked: Boolean, val blocks: Map<Int, String> = emptyMap())
 
     /** Stored results by wallet file name, loaded once and replaced after each run. */
     private val memory = ConcurrentHashMap<String, Stored>()
@@ -72,7 +72,7 @@ class InscriptionChecker(val store: InscriptionStore) {
     fun storedResults(walletName: String): Map<String, InscriptionCheck>? = entry(walletName).takeIf { it.checked }?.checks
 
     private fun entry(walletName: String): Stored = memory.computeIfAbsent(key(walletName)) {
-        store.loadOrNull(stored(walletName)).let { Stored(it ?: emptyMap(), it != null) }
+        store.loadWithBlocks(stored(walletName)).let { Stored(it?.first ?: emptyMap(), it != null, it?.second ?: emptyMap()) }
     }
 
     /** The wallet's results if already in memory, else null; never reads the file, so it is cheap on the main thread. */
@@ -150,17 +150,21 @@ class InscriptionChecker(val store: InscriptionStore) {
         if(NetworkPolicy.blocked) {
             return results(walletName)
         }
+        //Block hashes kept from earlier runs answer heights deep below the tip at no cost; others are asked once each
+        val kept = entry(walletName).blocks
         val blocks = HashMap<Int, String?>()
+        val asked = HashMap<Int, String>()
         val coins = utxos.map { utxo ->
             val block = if(utxo.height <= 0) {
                 null
             } else if(blocks.containsKey(utxo.height)) {
                 blocks[utxo.height]
             } else {
-                confirmingBlock(backend, utxo.height).also { blocks[utxo.height] = it }
+                (kept[utxo.height] ?: confirmingBlock(backend, utxo.height)?.also { asked[utxo.height] = it }).also { blocks[utxo.height] = it }
             }
             TrackerRun.Coin(utxo.txHash, utxo.txPos, block)
         }
+        val keep = keptBlocks(backend, kept, asked, utxos.map { it.height }.toSet())
 
         val chain = "${coin.id}:${network.id}"
         val key = key(walletName)
@@ -180,13 +184,13 @@ class InscriptionChecker(val store: InscriptionStore) {
                     emptyMap(), null, deeper, TrackerRun.RUN_BUDGET, timeUp, { outpoint, check ->
                         if(saved[outpoint] != check) {
                             saved[outpoint] = check
-                            persist(walletName, key, epoch, HashMap(saved))
+                            persist(walletName, key, epoch, HashMap(saved), keep)
                         }
                     }, report
                 )
                 //The final save drops spent coins
-                if(checks != saved || memory[key]?.checked != true) {
-                    persist(walletName, key, epoch, checks)
+                if(checks != saved || memory[key]?.checked != true || memory[key]?.blocks != keep) {
+                    persist(walletName, key, epoch, checks, keep)
                 }
                 checks
             } finally {
@@ -199,14 +203,47 @@ class InscriptionChecker(val store: InscriptionStore) {
      * Writes the wallet's file, then its copy in memory, unless the wallet was forgotten (deleted) since the run began.
      * Each write is atomic (see [InscriptionStore.save]).
      */
-    private fun persist(walletName: String, key: String, epoch: Int, checks: Map<String, InscriptionCheck>) {
+    private fun persist(walletName: String, key: String, epoch: Int, checks: Map<String, InscriptionCheck>, blocks: Map<Int, String>) {
         synchronized(saveLock) {
             if((epochs[key] ?: 0) != epoch) {
                 return
             }
-            store.save(stored(walletName), checks)
-            memory[key] = Stored(checks, true)
+            store.save(stored(walletName), checks, blocks)
+            memory[key] = Stored(checks, true, blocks)
         }
+    }
+
+    /**
+     * The block hashes to keep with the results: those of [heights] still in use that were kept before, plus the ones
+     * [asked] this run at heights more than [DEEP_BLOCKS] below the tip (a reorg that deep is not expected). The tip is
+     * read only when there is a newly asked height to judge; if it cannot be read none is added. A rate limit there
+     * ends the run like any other.
+     */
+    private suspend fun keptBlocks(backend: ChainBackend, kept: Map<Int, String>, asked: Map<Int, String>, heights: Set<Int>): Map<Int, String> {
+        val keep = HashMap(kept.filterKeys { it in heights })
+        if(asked.isEmpty()) {
+            return keep
+        }
+        val tip = try {
+            withContext(NoRateLimitWait) { backend.tipHeight() }
+        } catch(e: CancellationException) {
+            throw e
+        } catch(e: RateLimitedException) {
+            throw e
+        } catch(e: Exception) {
+            return keep
+        }
+        for((height, hash) in asked) {
+            if(height < tip - DEEP_BLOCKS) {
+                keep[height] = hash
+            }
+        }
+        return keep
+    }
+
+    companion object {
+        /** How far below the tip a block must be for its hash to be kept with the results. */
+        const val DEEP_BLOCKS = 100
     }
 
     /**

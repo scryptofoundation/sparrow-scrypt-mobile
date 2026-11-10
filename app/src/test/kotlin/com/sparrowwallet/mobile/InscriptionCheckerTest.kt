@@ -80,7 +80,9 @@ private class FakeChain : ChainBackend {
     override suspend fun unspent(script: ByteArray): List<Utxo> { calls++; error("not used") }
     override suspend fun transaction(txid: String): TxDetail { calls++; error("not used") }
     override suspend fun broadcast(txHex: String): String { calls++; error("not used") }
-    override suspend fun tipHeight(): Long { calls++; error("not used") }
+    var tip = 1_000L
+    var tipCalls = 0
+    override suspend fun tipHeight(): Long { calls++; tipCalls++; return tip }
     override suspend fun feeRate(targetBlocks: Int): Double? { calls++; error("not used") }
 
     override suspend fun rawTransaction(txid: String): ByteArray {
@@ -396,17 +398,50 @@ class InscriptionCheckerTest {
      */
     @Test fun aRateLimitedBlockHashEndsTheRunBeforeAnythingIsSaved(): Unit = runBlocking {
         val chain = FakeChain()
-        val a = oldCoin(chain, 50_000)
+        //near the tip, so its block is asked every run (a deep one is kept with the results)
+        val a = chain.add(tx(listOf("aa".repeat(32) to 0), listOf(50_000)), 950)
+        val utxos = listOf(Utxo(a, 0, 950, 50_000))
         val dir = newDir()
         val cipher = CheckerCipher()
-        checker(dir, cipher).ltc(chain, listOf(Utxo(a, 0, 100, 50_000)))
+        checker(dir, cipher).ltc(chain, utxos)
         val bytes = File(dir, "My Wallet.bin").readBytes()
         chain.blockHashRateLimited = true
         chain.rawCalls = 0
         val checker = checker(dir, cipher)
-        assertFailsWith<com.sparrowwallet.mobile.electrum.RateLimitedException> { checker.ltc(chain, listOf(Utxo(a, 0, 100, 50_000))) }
+        assertFailsWith<com.sparrowwallet.mobile.electrum.RateLimitedException> { checker.ltc(chain, utxos) }
         assertEquals(0, chain.rawCalls)
         assertTrue(bytes.contentEquals(File(dir, "My Wallet.bin").readBytes()))
+    }
+
+    /**
+     * Review I3: a block more than 100 below the tip is kept with the results, so a later run whose rows all stand asks
+     * the server nothing for it. A shallower one is asked again each run.
+     */
+    @Test fun deepBlockHashesAreKeptWithTheResults(): Unit = runBlocking {
+        val chain = FakeChain()
+        val deep = oldCoin(chain, 50_000)
+        val shallow = chain.add(tx(listOf("bb".repeat(32) to 0), listOf(60_000)), 950)
+        chain.heights[shallow] = 950
+        val utxos = listOf(Utxo(deep, 0, 100, 50_000), Utxo(shallow, 0, 950, 60_000))
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        checker(dir, cipher).ltc(chain, utxos)
+        assertEquals(2, chain.blockCalls)
+        assertEquals(mapOf(100 to FakeChain.block(100)), InscriptionStore(dir, cipher).loadBlocks(wallet))
+
+        chain.blockCalls = 0
+        chain.rawCalls = 0
+        checker(dir, cipher).ltc(chain, utxos)
+        assertEquals(1, chain.blockCalls, "only the shallow block")
+        assertEquals(0, chain.rawCalls)
+
+        //only the deep coin left: no block call at all, and no tip read
+        chain.blockCalls = 0
+        chain.tipCalls = 0
+        checker(dir, cipher).ltc(chain, utxos.take(1))
+        assertEquals(0, chain.blockCalls)
+        assertEquals(0, chain.tipCalls)
+        assertEquals(0, chain.rawCalls)
     }
 
     @Test fun aRunThatThrowsSavesNothing(): Unit = runBlocking {
