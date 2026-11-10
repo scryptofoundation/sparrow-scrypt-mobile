@@ -34,7 +34,6 @@ import com.sparrowwallet.mobile.electrum.WalletScanner
 import com.sparrowwallet.mobile.electrum.WalletSnapshot
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.crypto.track.ChainRules
-import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.storage.MwebHistoryEntry
 import com.sparrowwallet.mobile.storage.SparrowExport
 import com.sparrowwallet.mobile.storage.SparrowImport
@@ -301,15 +300,18 @@ class WalletRepository(context: Context) {
 
     /**
      * The wallet's stored inscription checks by outpoint, as held in memory: cheap, never reads the file, so it is safe
-     * from composition. Empty until [loadInscriptionChecks] or a check has loaded them (empty reads as not checked).
+     * from composition. Empty until [loadInscriptionChecks] or a check has loaded them; Send asks [loadInscriptionChecks].
      */
     fun inscriptionChecks(data: VaultData): Map<String, InscriptionCheck> =
         sessionNames[data]?.let { inscriptionChecker.cached(it) } ?: emptyMap()
 
-    /** Loads the wallet's stored inscription checks into memory, off the main thread; returns them. */
-    suspend fun loadInscriptionChecks(data: VaultData): Map<String, InscriptionCheck> {
-        val name = sessionNames[data] ?: return emptyMap()
-        return withContext(Dispatchers.IO) { inscriptionChecker.results(name) }
+    /**
+     * Loads the wallet's stored inscription checks into memory, off the main thread; returns them, possibly empty when a
+     * run found nothing to store, or null when the wallet has no readable results file (never checked, or it was lost).
+     */
+    suspend fun loadInscriptionChecks(data: VaultData): Map<String, InscriptionCheck>? {
+        val name = sessionNames[data] ?: return null
+        return withContext(Dispatchers.IO) { inscriptionChecker.storedResults(name) }
     }
 
     /**
@@ -677,38 +679,28 @@ class WalletRepository(context: Context) {
         return answer
     }
 
-    /** What Send may do with each ready coin of a scan, from [classifyCoins]. */
-    private class CoinStates(private val states: Map<String, CoinState>, private val inscribed: Set<String>) {
-        /** A coin that was not classified (not ready to spend) reads as held, never as clean. */
-        fun state(u: WalletScanner.ChainUtxo): CoinState = states[outpoint(u)] ?: CoinState.HELD
-
-        fun inscribed(u: WalletScanner.ChainUtxo): Boolean = outpoint(u) in inscribed
-    }
-
     /**
-     * Decides each ready coin of [scan] by [coinState]: from the wallet's stored checks (awaited, so results on disk count
-     * after a cold start), today's indexer setting when it names one (the indexer decides a coin it says carries, and an
-     * inscriptions-only indexer cannot clear a coin whose transaction writes a runestone or dunestone), and, only when
-     * the wallet has no results at all, [CarrierScan]: its value is the coin's usual postage, or the transaction that
-     * made it writes one (a transaction the server cannot give leaves the value rule). Run for every send rather than
-     * kept with a reused scan, so a check that finished since counts. Coins the check does not cover never have results.
+     * Decides each ready coin of [scan] (see the pure [classifyCoins]): from the wallet's stored checks (awaited, so a
+     * results file on disk counts after a cold start, and a file holding no results still counts as checked), today's
+     * indexer setting when it names one (an inscriptions-only indexer cannot clear a coin whose transaction writes a
+     * runestone or dunestone), and [CarrierScan] when nothing else decides: its value is the coin's usual postage, or
+     * the transaction that made it writes one (a transaction the server cannot give leaves the value rule). Run for
+     * every send rather than kept with a reused scan, so a check that finished since counts.
      */
     private suspend fun classifyCoins(client: ChainBackend, data: VaultData, scan: WalletScanner.UtxoScan, tip: Long): CoinStates {
         val coin = coin(data)
         val network = network(data)
-        val checks = if(ChainRules.covers(coin)) loadInscriptionChecks(data).values.associateBy { it.outpoint } else emptyMap()
+        val covered = ChainRules.covers(coin)
+        val results = if(covered) loadInscriptionChecks(data) else null
         val url = inscriptionSetting(coin, network).url(coin, network)
         val tokensIndexed = url == null || !InscriptionIndex.isNintondo(url)
-        val states = HashMap<String, CoinState>()
-        for(u in scan.utxos) {
-            if(!spendable(data, tip, u)) continue
-            val utxo = u.utxo
-            val carries = indexerCarries(indexerAnswer(coin, network, utxo), tokensIndexed) {
+        val ready = scan.utxos.filter { spendable(data, tip, it) }.associateBy { outpoint(it) }
+        return com.sparrowwallet.mobile.classifyCoins(ready.keys.toList(), results, covered, { op ->
+            val utxo = ready.getValue(op).utxo
+            indexerCarries(indexerAnswer(coin, network, utxo), tokensIndexed) {
                 creatingTx(client, utxo.txHash)?.let { CarrierScan.hasRunestone(it) || CarrierScan.hasDunestone(it) } == true
             }
-            states[outpoint(u)] = coinState(checks[outpoint(u)], carries, { localMayCarry(coin, client, utxo) }, checks.isNotEmpty())
-        }
-        return CoinStates(states, checks.values.filter { it.verdict == Verdict.INSCRIBED }.map { it.outpoint }.toSet())
+        }) { op -> localMayCarry(coin, client, ready.getValue(op).utxo) }
     }
 
     private suspend fun localMayCarry(coin: Coin, client: ChainBackend, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean {
@@ -769,7 +761,9 @@ class WalletRepository(context: Context) {
         val txid: String,
         val txHex: String,
         /** How many of the coins it spends have not been checked for inscriptions; the review warns about them. */
-        val unchecked: Int = 0
+        val unchecked: Int = 0,
+        /** How many held coins (included by the user) it spends; the review says so. */
+        val held: Int = 0
     )
 
     /** Returns a user-facing error for an unusable destination address, or null if it's fine. */
@@ -803,7 +797,8 @@ class WalletRepository(context: Context) {
             val built = TxBuilder.build(tiers.candidates(includeHeld, sendMax, includeUnchecked = includeUnchecked), destScript,
                 amountLitoshis, feeRate, changeScript,
                 sendMax, params, keepOrder = true)
-            SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex(), tiers.uncheckedIn(spentOutpoints(built.tx)))
+            val spent = spentOutpoints(built.tx)
+            SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex(), tiers.uncheckedIn(spent), tiers.heldIn(spent))
         }
     }
 
@@ -923,14 +918,15 @@ class WalletRepository(context: Context) {
         }
         val accountPath = parsePathChildren(data.derivationPath)
         val pathByKey = HashMap<HDKey, List<Long>>()
-        //Clean coins only: whatever a held or unchecked coin carries, ord cannot follow it into MWEB
-        val candidates = scan.utxos
-            .filter { spendable(data, tip, it) && states.state(it) == CoinState.CLEAN }
+        //Clean coins only, through the same tiers as preparePegIn: whatever a held or unchecked coin carries, ord
+        //cannot follow it into MWEB
+        val candidates = SpendTiers.of(scan.utxos
+            .filter { spendable(data, tip, it) }
             .map {
                 val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                 pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
-                SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key, ScriptType.P2WPKH)
-            }
+                SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key, ScriptType.P2WPKH) to states.state(it)
+            }).candidates(includeHeld = false, sendMax = sendMax, pegIn = true)
         val changeKey = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong())
         val changeScript = Scripts.p2wpkhOutput(changeKey.pubKey)
 

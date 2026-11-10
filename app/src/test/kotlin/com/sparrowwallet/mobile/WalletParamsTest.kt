@@ -208,21 +208,22 @@ class WalletParamsTest {
     fun uncheckedCoinsAreUsedLast() {
         val (tiers, small) = pay(20_000)
         assertEquals(listOf("11".repeat(32) + ":0"), small) // the Clean 30,000, not the larger Unchecked 50,000
-        assertFalse(tiers.usesUnchecked(small))
         assertEquals(0, tiers.uncheckedIn(small))
 
         val (_, cleanOnly) = pay(39_000)
         assertEquals(setOf("11", "33").map { it.repeat(32) + ":0" }.toSet(), cleanOnly.toSet())
-        assertFalse(tiers.usesUnchecked(cleanOnly))
+        assertEquals(0, tiers.uncheckedIn(cleanOnly))
 
         val (_, both) = pay(60_000)
         assertEquals(listOf("11", "33", "22").map { it.repeat(32) + ":0" }, both) // every Clean coin, then the largest Unchecked
-        assertTrue(tiers.usesUnchecked(both))
         assertEquals(1, tiers.uncheckedIn(both))
+        assertEquals(0, tiers.heldIn(both))
 
         //Held coins stay out of a payment the other coins cannot cover
         assertFailsWith<IllegalArgumentException> { pay(150_000) }
-        assertEquals("55".repeat(32) + ":0", pay(150_000, includeHeld = true).second.last())
+        val withHeld = pay(150_000, includeHeld = true).second
+        assertEquals("55".repeat(32) + ":0", withHeld.last())
+        assertEquals(1, tiers.heldIn(withHeld))
     }
 
     /** Send max spends Clean coins only, unless the user ticks the include box. */
@@ -272,10 +273,6 @@ class WalletParamsTest {
         assertEquals(listOf(30_000L, 80_000L), coins.sweepable(includeHeld = true, includeUnchecked = false))
         assertEquals(listOf(30_000L, 50_000L, 10_000L, 80_000L), coins.sweepable(includeHeld = true, includeUnchecked = true))
         assertFalse(coins.heldInscribed)
-        //a payment taking the first coin stays Clean; one taking two reaches the Unchecked
-        assertFalse(coins.usesUnchecked(1))
-        assertTrue(coins.usesUnchecked(2))
-        assertFalse(SendCoins(listOf(30_000L), 0).usesUnchecked(2))
     }
 
     @Test

@@ -80,9 +80,6 @@ data class SendCoins(val spendable: List<Long>, val maturing: Long, val held: Li
     fun sweepable(includeHeld: Boolean, includeUnchecked: Boolean): List<Long> =
         spendable + (if(includeUnchecked) unchecked else emptyList()) + (if(includeHeld) held else emptyList())
 
-    /** Whether a payment that takes the first [selected] coins of [usable] reaches past the Clean ones into the Unchecked. */
-    fun usesUnchecked(selected: Int): Boolean = unchecked.isNotEmpty() && selected > spendable.size
-
     companion object {
         /**
          * Ready coins by state: Clean ones are [spendable], [held] ones may carry an inscription (Send leaves them out by
@@ -169,6 +166,7 @@ internal class SpendTiers(clean: List<SpendableInput>, unchecked: List<Spendable
     val unchecked = unchecked.sortedByDescending { it.value }
     val held = held.sortedByDescending { it.value }
     private val uncheckedOutpoints = this.unchecked.map { outpoint(it) }.toSet()
+    private val heldOutpoints = this.held.map { outpoint(it) }.toSet()
 
     /**
      * The coins a send may use, in the order it must take them (build with keepOrder): Clean first, then Unchecked, then
@@ -186,7 +184,8 @@ internal class SpendTiers(clean: List<SpendableInput>, unchecked: List<Spendable
     /** How many of the [selected] outpoints are Unchecked coins, for the review's warning. */
     fun uncheckedIn(selected: List<String>): Int = selected.count { it in uncheckedOutpoints }
 
-    fun usesUnchecked(selected: List<String>): Boolean = uncheckedIn(selected) > 0
+    /** How many of the [selected] outpoints are held coins the user included, for the review's note. */
+    fun heldIn(selected: List<String>): Int = selected.count { it in heldOutpoints }
 
     companion object {
         fun of(coins: List<Pair<SpendableInput, CoinState>>): SpendTiers = SpendTiers(

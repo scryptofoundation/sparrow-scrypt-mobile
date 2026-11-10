@@ -6,6 +6,7 @@ import com.sparrowwallet.mobile.crypto.track.Piece
 import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -32,21 +33,24 @@ class InscriptionChecksTest {
         assertEquals("http://10.0.0.2:8085", InscriptionSetting.Custom("http://10.0.0.2:8085/").url(Coin.JUNKCOIN, Network.MAINNET))
     }
 
-    /** The indexer's answer decides; without one (off, unknown or unreachable) the local rule holds the coin. */
+    /** In a wallet never checked, the indexer's answer decides; without one (off, unknown or unreachable) the local rule holds the coin. */
     @Test
     fun indexerAnswerDecides() {
-        assertTrue(heldFrom(serverAnswer = true) { false })
-        assertFalse(heldFrom(serverAnswer = false) { true })
-        assertTrue(heldFrom(serverAnswer = null) { true })
-        assertFalse(heldFrom(serverAnswer = null) { false })
+        fun state(answer: Boolean?, local: Boolean) = coinState(null, indexerCarries(answer), local, hasAnyResults = false)
+        assertEquals(CoinState.HELD, state(true, local = false))
+        assertEquals(CoinState.CLEAN, state(false, local = true))
+        assertEquals(CoinState.HELD, state(null, local = true))
+        assertEquals(CoinState.CLEAN, state(null, local = false))
     }
 
     /** Nintondo indexes inscriptions only: its "clean" cannot clear a coin made by a runestone or dunestone transaction. */
     @Test
     fun inscriptionOnlyIndexerCannotClearTokenCoins() {
-        assertTrue(heldFrom(serverAnswer = false, tokensIndexed = false, writesTokens = { true }) { false })
-        assertFalse(heldFrom(serverAnswer = false, tokensIndexed = false, writesTokens = { false }) { true })
-        assertFalse(heldFrom(serverAnswer = false, tokensIndexed = true, writesTokens = { true }) { true })
+        fun state(tokensIndexed: Boolean, writesTokens: Boolean, local: Boolean) =
+            coinState(null, indexerCarries(false, tokensIndexed) { writesTokens }, local, hasAnyResults = false)
+        assertEquals(CoinState.HELD, state(tokensIndexed = false, writesTokens = true, local = false))
+        assertEquals(CoinState.CLEAN, state(tokensIndexed = false, writesTokens = false, local = true))
+        assertEquals(CoinState.CLEAN, state(tokensIndexed = true, writesTokens = true, local = true))
     }
 
     private fun check(verdict: Verdict, runes: Boolean = false, reason: String? = null, blockHash: String? = "ab".repeat(32),
@@ -115,18 +119,85 @@ class InscriptionChecksTest {
         assertEquals(CoinState.CLEAN, coinState(null, indexerSaysCarries = false, localMayCarry = true, hasAnyResults = false))
     }
 
+    /** The local guess is asked only when nothing better decides: no indexer answer and no Clean, Inscribed or runes check. */
     @Test
-    fun localRuleIsAskedOnlyWithoutResults() {
+    fun localRuleIsAskedOnlyWhenNothingElseDecides() {
         var asked = 0
         coinState(clean, null, { asked++; true }, hasAnyResults = true)
-        coinState(null, null, { asked++; true }, hasAnyResults = true)
+        coinState(check(Verdict.INSCRIBED), null, { asked++; true }, hasAnyResults = true)
+        coinState(null, true, { asked++; true }, hasAnyResults = true)
+        coinState(null, false, { asked++; true }, hasAnyResults = true)
+        coinState(check(Verdict.UNCHECKED), false, { asked++; true }, hasAnyResults = true)
         coinState(null, false, { asked++; true }, hasAnyResults = false)
         assertEquals(0, asked)
+        coinState(check(Verdict.UNCHECKED), null, { asked++; true }, hasAnyResults = true)
+        coinState(null, null, { asked++; true }, hasAnyResults = true)
         coinState(null, null, { asked++; true }, hasAnyResults = false)
-        assertEquals(1, asked)
+        assertEquals(3, asked)
     }
 
-    /** heldFrom's Nintondo caveat survives a Clean check: an inscriptions-only indexer cannot clear a token coin. */
+    /** Rule 4: an Unchecked check does not release a coin the local rule flags, unless the indexer cleared it. */
+    @Test
+    fun uncheckedCoinTheLocalRuleFlagsStaysHeld() {
+        assertEquals(CoinState.HELD, coinState(check(Verdict.UNCHECKED, reason = "budget"), null, localMayCarry = true, hasAnyResults = true))
+        assertEquals(CoinState.HELD, coinState(check(Verdict.CLEAN, blockHash = null), null, localMayCarry = true, hasAnyResults = true))
+    }
+
+    @Test
+    fun uncheckedCoinTheIndexerClearedIsUnchecked() {
+        assertEquals(CoinState.UNCHECKED, coinState(check(Verdict.UNCHECKED, reason = "budget"), false, localMayCarry = true, hasAnyResults = true))
+    }
+
+    /** Rule 5: a coin newer than the last run that the local rule flags stays held until a check clears it. */
+    @Test
+    fun newCoinTheLocalRuleFlagsStaysHeld() {
+        assertEquals(CoinState.HELD, coinState(null, null, localMayCarry = true, hasAnyResults = true))
+    }
+
+    @Test
+    fun newCoinTheIndexerClearedIsUnchecked() {
+        assertEquals(CoinState.UNCHECKED, coinState(null, false, localMayCarry = true, hasAnyResults = true))
+    }
+
+    /** What the Send paths decide for a wallet's ready coins, from its stored results (null: no readable file). */
+    @Test
+    fun aWalletCheckedWhileEmptyCountsAsChecked(): Unit = runBlocking {
+        val new = "cc".repeat(32) + ":0"
+        //a readable file holding no results: a new coin is Unchecked, or held when the local rule flags it
+        assertEquals(CoinState.UNCHECKED, classifyCoins(listOf(new), emptyMap(), covered = true, { null }, { false }).state(new))
+        assertEquals(CoinState.HELD, classifyCoins(listOf(new), emptyMap(), covered = true, { null }, { true }).state(new))
+        //no readable file (never checked, or lost): today's rule
+        assertEquals(CoinState.CLEAN, classifyCoins(listOf(new), null, covered = true, { null }, { false }).state(new))
+        assertEquals(CoinState.HELD, classifyCoins(listOf(new), null, covered = true, { null }, { true }).state(new))
+    }
+
+    @Test
+    fun classificationReadsResultsByOutpoint(): Unit = runBlocking {
+        val a = clean.outpoint
+        val b = "dd".repeat(32) + ":1"
+        val inscribed = check(Verdict.INSCRIBED).copy(txid = "dd".repeat(32), vout = 1)
+        //keyed oddly on purpose: the results are matched by each check's own outpoint
+        val results = mapOf("x" to clean, "y" to inscribed)
+        val states = classifyCoins(listOf(a, b), results, covered = true, { null }, { true })
+        assertEquals(CoinState.CLEAN, states.state(a))
+        assertEquals(CoinState.HELD, states.state(b))
+        assertTrue(states.inscribed(b))
+        assertFalse(states.inscribed(a))
+        //a coin that was not classified (not ready to spend) reads as held, never clean
+        assertEquals(CoinState.HELD, states.state("ee".repeat(32) + ":0"))
+    }
+
+    /** Luckycoin and Dingocoin have no check: any results are ignored and today's rule decides. */
+    @Test
+    fun uncoveredCoinKeepsTodaysRule(): Unit = runBlocking {
+        val a = clean.outpoint
+        val states = classifyCoins(listOf(a), mapOf(a to check(Verdict.INSCRIBED)), covered = false, { null }, { false })
+        assertEquals(CoinState.CLEAN, states.state(a))
+        assertFalse(states.inscribed(a))
+        assertEquals(CoinState.HELD, classifyCoins(listOf(a), emptyMap(), covered = false, { true }, { false }).state(a))
+    }
+
+    /** The Nintondo caveat survives a Clean check: an inscriptions-only indexer cannot clear a token coin. */
     @Test
     fun tokenCaveatHoldsDespiteACleanCheck() {
         val carries = indexerCarries(serverAnswer = false, tokensIndexed = false) { true }
@@ -149,5 +220,7 @@ class InscriptionChecksTest {
         assertEquals("3 coins (0.5 LTC) not yet checked for inscriptions are left out.", uncheckedLeftOutCopy(3, "0.5 LTC"))
         assertEquals("This payment uses 2 coins that have not been checked for inscriptions.", uncheckedWarning(2))
         assertEquals("This payment uses 1 coin that has not been checked for inscriptions.", uncheckedWarning(1))
+        assertEquals("This payment uses 1 held coin.", heldWarning(1))
+        assertEquals("This payment uses 3 held coins.", heldWarning(3))
     }
 }

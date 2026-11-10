@@ -13,6 +13,7 @@ import javax.crypto.spec.SecretKeySpec
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** An AES-256-GCM cipher over an in-memory key, laid out like [KeystoreCipher] (12-byte IV in front). */
@@ -74,6 +75,38 @@ class InscriptionStoreTest {
         assertTrue(store.load("a").isEmpty())
         File(dir, "b.bin").writeBytes(cipher.seal("""{"v":2,"checks":{}}""".encodeToByteArray()))
         assertTrue(store.load("b").isEmpty())
+    }
+
+    /** loadOrNull tells "checked, nothing stored" (an empty map) from "no readable results" (null). */
+    @Test
+    fun loadOrNullTellsACheckedEmptyWalletFromNoFile() {
+        val dir = java.nio.file.Files.createTempDirectory("insc").toFile()
+        val cipher = MemoryCipher()
+        val store = InscriptionStore(dir, cipher)
+        assertNull(store.loadOrNull("missing"))
+        store.save("empty", emptyMap())
+        assertEquals(emptyMap(), store.loadOrNull("empty"))
+        store.save("w", mapOf(check(0).outpoint to check(0)))
+        assertEquals(mapOf(check(0).outpoint to check(0)), store.loadOrNull("w"))
+        val f = File(dir, "w.bin")
+        f.writeBytes(f.readBytes().also { it[it.size - 1] = (it[it.size - 1].toInt() xor 1).toByte() })
+        assertNull(store.loadOrNull("w"), "undecryptable")
+        File(dir, "a.bin").writeBytes(cipher.seal("not json".encodeToByteArray()))
+        assertNull(store.loadOrNull("a"), "unparseable")
+        File(dir, "b.bin").writeBytes(cipher.seal("""{"v":2,"checks":{}}""".encodeToByteArray()))
+        assertNull(store.loadOrNull("b"), "unknown version")
+    }
+
+    /** The checker carries the same distinction: a wallet whose run stored nothing still counts as checked. */
+    @Test
+    fun checkerTellsACheckedEmptyWalletFromAnUncheckedOne() {
+        val dir = java.nio.file.Files.createTempDirectory("insc").toFile()
+        val cipher = MemoryCipher()
+        InscriptionStore(dir, cipher).save(walletFileName("Checked"), emptyMap())
+        val checker = InscriptionChecker(InscriptionStore(dir, cipher))
+        assertEquals(emptyMap(), checker.storedResults("Checked"))
+        assertNull(checker.storedResults("Never"))
+        assertEquals(emptyMap(), checker.results("Never"))
     }
 
     @Test

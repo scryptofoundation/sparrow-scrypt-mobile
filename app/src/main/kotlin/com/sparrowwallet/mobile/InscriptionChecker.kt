@@ -25,8 +25,11 @@ class InscriptionChecker(val store: InscriptionStore) {
     /** Transactions the traces read, one cache per coin and network; a cache is used under its lock only. */
     private val caches = ConcurrentHashMap<String, TxCache>()
     private val locks = ConcurrentHashMap<String, Mutex>()
+    /** A wallet's results, and whether they come from a readable file or a finished run (so an empty map counts as checked). */
+    private class Stored(val checks: Map<String, InscriptionCheck>, val checked: Boolean)
+
     /** Stored results by wallet file name, loaded once and replaced after each run. */
-    private val memory = ConcurrentHashMap<String, Map<String, InscriptionCheck>>()
+    private val memory = ConcurrentHashMap<String, Stored>()
     /** Wallets with a run going. */
     private val running = ConcurrentHashMap.newKeySet<String>()
 
@@ -40,11 +43,20 @@ class InscriptionChecker(val store: InscriptionStore) {
     private fun key(walletName: String) = safeFileName(stored(walletName))
 
     /** The wallet's stored results, by outpoint (empty when never checked). Reads the file the first time: call it off the main thread. */
-    fun results(walletName: String): Map<String, InscriptionCheck> =
-        memory.computeIfAbsent(key(walletName)) { store.load(stored(walletName)) }
+    fun results(walletName: String): Map<String, InscriptionCheck> = entry(walletName).checks
+
+    /**
+     * The wallet's stored results, possibly empty when a run found nothing to store, or null when the wallet has no
+     * readable results file and no finished run (never checked, or the file was lost). Reads the file the first time.
+     */
+    fun storedResults(walletName: String): Map<String, InscriptionCheck>? = entry(walletName).takeIf { it.checked }?.checks
+
+    private fun entry(walletName: String): Stored = memory.computeIfAbsent(key(walletName)) {
+        store.loadOrNull(stored(walletName)).let { Stored(it ?: emptyMap(), it != null) }
+    }
 
     /** The wallet's results if already in memory, else null; never reads the file, so it is cheap on the main thread. */
-    fun cached(walletName: String): Map<String, InscriptionCheck>? = memory[key(walletName)]
+    fun cached(walletName: String): Map<String, InscriptionCheck>? = memory[key(walletName)]?.checks
 
     /** Drops the wallet's results from memory, after the wallet is deleted. */
     fun forget(walletName: String) {
@@ -95,7 +107,7 @@ class InscriptionChecker(val store: InscriptionStore) {
                 emptyMap(), null, deeper, TrackerRun.RUN_BUDGET, progress
             )
             store.save(stored(walletName), checks)
-            memory[key(walletName)] = checks
+            memory[key(walletName)] = Stored(checks, true)
             checks
         }
     }

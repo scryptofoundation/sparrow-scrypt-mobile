@@ -4,6 +4,7 @@ import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.electrum.InscriptionIndex
+import com.sparrowwallet.mobile.electrum.WalletScanner
 import com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 
@@ -44,17 +45,9 @@ sealed interface InscriptionSetting {
 }
 
 /**
- * Whether a coin is held: the indexer's answer when it has one, otherwise the local rule. An indexer that does not
- * index tokens (Nintondo: inscriptions only) cannot clear a coin whose transaction [writesTokens] (a runestone or
- * dunestone).
- */
-inline fun heldFrom(serverAnswer: Boolean?, tokensIndexed: Boolean = true, writesTokens: () -> Boolean = { false },
-                    localMayCarry: () -> Boolean): Boolean =
-    indexerCarries(serverAnswer, tokensIndexed, writesTokens) ?: localMayCarry()
-
-/**
- * The indexer's part of [heldFrom]: carries (true, also for a coin it says is clean but cannot vouch for because it does
- * not index the tokens its transaction [writesTokens]), clean (false), or no answer (null).
+ * What the coin's indexer (today's setting, Public or Custom) says: carries (true), clean (false), or no answer (null:
+ * checks off, not indexed, unreachable). An indexer that does not index tokens (Nintondo: inscriptions only) cannot
+ * clear a coin whose transaction [writesTokens] (a runestone or dunestone), so that "clean" reads as carries.
  */
 inline fun indexerCarries(serverAnswer: Boolean?, tokensIndexed: Boolean = true, writesTokens: () -> Boolean = { false }): Boolean? =
     when(serverAnswer) {
@@ -71,18 +64,20 @@ enum class CoinState { CLEAN, HELD, UNCHECKED }
  * 1. The indexer (today's setting, Public or Custom) says it carries, its tokens caveat included: HELD.
  * 2. Its check is Inscribed, or it may carry runes: HELD.
  * 3. Its check is Clean, complete and proven against a mined block: CLEAN, whatever the local rule says.
- * 4. Any other check for it (Unchecked, cut short, or a provisional Clean): UNCHECKED.
- * 5. No check for it but the wallet has results (a coin newer than the last run): UNCHECKED.
+ * 4. Any other check for it (Unchecked, cut short, or a provisional Clean): HELD when no indexer answered and
+ *    [localMayCarry] flags it, else UNCHECKED.
+ * 5. No check for it but the wallet has results (a coin newer than the last run): the same as rule 4.
  * 6. The wallet has no results at all (never checked, or a coin the check does not cover): today's rule, the
- *    indexer's clean answer or else [localMayCarry], asked only here.
+ *    indexer's clean answer or else [localMayCarry].
+ * So a coin the local rule flags stays held until a proven check or the indexer clears it. [localMayCarry] is asked
+ * only when nothing else decides.
  */
 inline fun coinState(check: InscriptionCheck?, indexerSaysCarries: Boolean?, localMayCarry: () -> Boolean,
                      hasAnyResults: Boolean): CoinState = when {
     indexerSaysCarries == true -> CoinState.HELD
     check != null && (check.verdict == Verdict.INSCRIBED || check.runes || check.reason == CheckPolicy.MAY_CARRY_RUNES) -> CoinState.HELD
     check != null && check.verdict == Verdict.CLEAN && CheckPolicy.complete(check) && check.proven -> CoinState.CLEAN
-    check != null -> CoinState.UNCHECKED
-    hasAnyResults -> CoinState.UNCHECKED
+    check != null || hasAnyResults -> if(indexerSaysCarries == null && localMayCarry()) CoinState.HELD else CoinState.UNCHECKED
     indexerSaysCarries == false -> CoinState.CLEAN
     localMayCarry() -> CoinState.HELD
     else -> CoinState.CLEAN
@@ -90,6 +85,35 @@ inline fun coinState(check: InscriptionCheck?, indexerSaysCarries: Boolean?, loc
 
 fun coinState(check: InscriptionCheck?, indexerSaysCarries: Boolean?, localMayCarry: Boolean, hasAnyResults: Boolean): CoinState =
     coinState(check, indexerSaysCarries, { localMayCarry }, hasAnyResults)
+
+/** What Send may do with each ready coin, by outpoint, from [classifyCoins]. */
+internal class CoinStates(private val states: Map<String, CoinState>, private val inscribed: Set<String>) {
+    /** A coin that was not classified (not ready to spend) reads as held, never as clean. */
+    fun state(outpoint: String): CoinState = states[outpoint] ?: CoinState.HELD
+
+    fun state(u: WalletScanner.ChainUtxo): CoinState = state(outpoint(u))
+
+    /** Whether the coin's check found inscriptions on it. */
+    fun inscribed(outpoint: String): Boolean = outpoint in inscribed
+
+    fun inscribed(u: WalletScanner.ChainUtxo): Boolean = inscribed(outpoint(u))
+}
+
+/**
+ * Decides each of the ready [coins] (outpoints) by [coinState]. [results] are the wallet's stored checks, or null when it
+ * has no readable results file (never checked): an empty map still counts as checked. A coin the check does not
+ * [covered] (Luckycoin, Dingocoin) ignores any results and keeps today's rule. [indexer] is the old setting's answer
+ * (see [indexerCarries]); [localMayCarry] the local guess, asked only when nothing else decides.
+ */
+internal suspend fun classifyCoins(coins: List<String>, results: Map<String, InscriptionCheck>?, covered: Boolean,
+                                   indexer: suspend (String) -> Boolean?, localMayCarry: suspend (String) -> Boolean): CoinStates {
+    val checks = if(covered) results?.values?.associateBy { it.outpoint } else null
+    val states = HashMap<String, CoinState>()
+    for(coin in coins) {
+        states[coin] = coinState(checks?.get(coin), indexer(coin), { localMayCarry(coin) }, checks != null)
+    }
+    return CoinStates(states, checks.orEmpty().values.filter { it.verdict == Verdict.INSCRIBED }.map { it.outpoint }.toSet())
+}
 
 private fun coins(count: Int): String = "$count ${if(count == 1) "coin" else "coins"}"
 
@@ -105,6 +129,9 @@ fun heldCopy(count: Int, amount: String, inscribed: Boolean, included: Boolean):
 /** The Send screen's line when a sweep (or a peg-in) leaves the Unchecked coins out. */
 fun uncheckedLeftOutCopy(count: Int, amount: String): String =
     "${coins(count)} ($amount) not yet checked for inscriptions ${if(count == 1) "is" else "are"} left out."
+
+/** The review's note for a payment that spends held coins the user included. */
+fun heldWarning(count: Int): String = "This payment uses $count held ${if(count == 1) "coin" else "coins"}."
 
 /** The review's warning for a payment that spends Unchecked coins. */
 fun uncheckedWarning(count: Int): String =

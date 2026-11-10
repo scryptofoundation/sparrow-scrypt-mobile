@@ -52,21 +52,27 @@ private data class InscriptionFile(val v: Int, val checks: Map<String, Inscripti
 
 /**
  * One encrypted file per wallet holding its inscription checks, by outpoint. Holds only check results: no keys, no xpub.
- * Anything that cannot be read loads as empty, which the app treats as "not checked".
+ * A wallet whose file cannot be read (missing, undecryptable, unparseable, unknown version) counts as never checked.
  */
 class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
     private val json = Json { ignoreUnknownKeys = true }
 
     private fun fileFor(walletName: String) = File(dir, safeFileName(walletName) + ".bin")
 
-    fun load(walletName: String): Map<String, InscriptionCheck> {
+    fun load(walletName: String): Map<String, InscriptionCheck> = loadOrNull(walletName) ?: emptyMap()
+
+    /**
+     * The wallet's stored checks, possibly empty (a run that found no coins), or null when there is no readable file:
+     * missing, undecryptable, unparseable, or an unknown version.
+     */
+    fun loadOrNull(walletName: String): Map<String, InscriptionCheck>? {
         val file = fileFor(walletName)
-        if(!file.exists()) return emptyMap()
+        if(!file.exists()) return null
         return try {
             val parsed = json.decodeFromString(InscriptionFile.serializer(), cipher.open(file.readBytes()).decodeToString())
-            if(parsed.v == VERSION) parsed.checks else emptyMap()
+            if(parsed.v == VERSION) parsed.checks else null
         } catch(e: Exception) {
-            emptyMap()
+            null
         }
     }
 

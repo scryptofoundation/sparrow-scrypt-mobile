@@ -2370,6 +2370,9 @@ private fun SendScreen(
                 "Fee" to "${formatAmount(sendCoin, p.fee)} · ${formatUsd(p.fee, usdRate)}",
                 "Total" to "${formatAmount(sendCoin, p.amount + p.fee)} · ${formatUsd(p.amount + p.fee, usdRate)}"
             ))
+            if(p.held > 0) {
+                Text(heldWarning(p.held), style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
+            }
             if(p.unchecked > 0) {
                 Text(uncheckedWarning(p.unchecked), style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
             }
