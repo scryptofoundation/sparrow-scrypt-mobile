@@ -2023,6 +2023,8 @@ private fun SendScreen(
     var maturing by remember { mutableStateOf(0L) }
     // coins that may carry an inscription or tokens are held back unless the user includes them
     var includeHeld by remember { mutableStateOf(false) }
+    // a sweep leaves coins not yet checked for inscriptions out unless the user includes them
+    var includeUnchecked by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if(NetworkPolicy.blocked) return@LaunchedEffect
         usdRate = PriceService.currentUsd(sendCoin)
@@ -2056,13 +2058,16 @@ private fun SendScreen(
     val amountLitoshis = if(amountIsUsd) usdRate?.let { usdToLitoshis(amountText, it) }
                          else parseAmount(amountText)
 
+    // each box counts only while it is shown, so a coin that turns held or unchecked later is never released unseen
+    val heldIncluded = includeHeld && heldCoins.isNotEmpty()
+    val uncheckedIncluded = includeUnchecked && sendMax && uncheckedCoins.isNotEmpty()
     // the coins this send can use, in the order it takes them: a peg-in takes Clean coins only, Send max the Clean ones
-    // unless the user includes the rest, and a payment Clean first, then Unchecked, then held when included
+    // plus whatever the user includes, and a payment Clean first, then Unchecked, then held when included
     val utxos: List<Long>? = scannedCoins?.let {
         when {
             isMwebDest -> it.spendable
-            sendMax -> it.sweepable(includeHeld)
-            else -> it.usable(includeHeld)
+            sendMax -> it.sweepable(heldIncluded, uncheckedIncluded)
+            else -> it.usable(heldIncluded)
         }
     }
     val publicAvail = utxos?.sum() ?: publicData?.let { repo.cachedSnapshot(it)?.balance?.total }
@@ -2137,7 +2142,8 @@ private fun SendScreen(
                 preview = if(fundingPrivate == true) {
                     repo.prepareMwebSend(privateData!!, address.trim(), amountLitoshis ?: 0L, sendMax)
                 } else {
-                    repo.prepareSend(publicData!!, publicAccount!!, address.trim(), amountLitoshis ?: 0L, sendMax, includeHeld)
+                    repo.prepareSend(publicData!!, publicAccount!!, address.trim(), amountLitoshis ?: 0L, sendMax,
+                        heldIncluded, uncheckedIncluded)
                 }
             } catch(t: Throwable) {
                 error = t.message ?: "Could not build the transaction"
@@ -2296,25 +2302,24 @@ private fun SendScreen(
         }
         val publicPays = fundingPrivate != true && !isMwebDest
         if(heldCoins.isNotEmpty() && publicPays) {
-            Text(heldCopy(heldCoins.size, formatAmountShort(sendCoin, heldCoins.sum()), scannedCoins?.heldInscribed == true, includeHeld),
+            Text(heldCopy(heldCoins.size, formatAmountShort(sendCoin, heldCoins.sum()), scannedCoins?.heldInscribed == true, heldIncluded),
                 style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
-        }
-        // a sweep leaves Unchecked coins out unless included; a peg-in always does
-        val uncheckedLeftOut = uncheckedCoins.isNotEmpty() && fundingPrivate != true && (isMwebDest || (sendMax && !includeHeld))
-        if(uncheckedLeftOut) {
-            Text(uncheckedLeftOutCopy(uncheckedCoins.size, formatAmountShort(sendCoin, uncheckedCoins.sum())),
-                style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
-        }
-        val sweepOffersUnchecked = sendMax && uncheckedCoins.isNotEmpty()
-        if(publicPays && (heldCoins.isNotEmpty() || sweepOffersUnchecked)) {
             Row(verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().clickable { includeHeld = !includeHeld; preview = null }) {
                 Checkbox(checked = includeHeld, onCheckedChange = { includeHeld = it; preview = null })
-                Text(when {
-                    heldCoins.isEmpty() -> "Include unchecked coins"
-                    sweepOffersUnchecked -> "Include held and unchecked coins"
-                    else -> "Include held coins"
-                }, style = MaterialTheme.typography.bodySmall)
+                Text("Include held coins", style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        // a sweep leaves Unchecked coins out unless included; a peg-in always does
+        if(uncheckedCoins.isNotEmpty() && fundingPrivate != true && (isMwebDest || (sendMax && !uncheckedIncluded))) {
+            Text(uncheckedLeftOutCopy(uncheckedCoins.size, formatAmountShort(sendCoin, uncheckedCoins.sum())),
+                style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
+        }
+        if(publicPays && sendMax && uncheckedCoins.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { includeUnchecked = !includeUnchecked; preview = null }) {
+                Checkbox(checked = includeUnchecked, onCheckedChange = { includeUnchecked = it; preview = null })
+                Text("Include unchecked coins", style = MaterialTheme.typography.bodySmall)
             }
         }
         privateAvail?.let { avail ->
@@ -2409,9 +2414,18 @@ private fun SendScreen(
                         busy = true; error = null
                         scope.launch {
                             try {
-                                onSignExternally(repo.prepareSendPsbt(
+                                val unsigned = repo.prepareSendPsbt(
                                     publicData!!, publicAccount!!, address.trim(),
-                                    amountLitoshis ?: 0L, sendMax, includeHeld))
+                                    amountLitoshis ?: 0L, sendMax, heldIncluded, uncheckedIncluded)
+                                // the PSBT re-reads the checks: if it now takes more unchecked coins than the review
+                                // warned about, review again rather than hand them to the signer unseen
+                                val reviewed = (preview as? WalletRepository.SendPreview)?.unchecked ?: 0
+                                if(unsigned.unchecked > reviewed) {
+                                    preview = null
+                                    error = "Coin checks changed since Preview. Preview again."
+                                } else {
+                                    onSignExternally(unsigned)
+                                }
                             } catch(t: Throwable) {
                                 error = t.message ?: "Could not build the PSBT"
                             } finally {

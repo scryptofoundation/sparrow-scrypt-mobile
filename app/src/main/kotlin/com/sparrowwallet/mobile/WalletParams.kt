@@ -76,8 +76,12 @@ data class SendCoins(val spendable: List<Long>, val maturing: Long, val held: Li
      */
     fun usable(includeHeld: Boolean): List<Long> = if(includeHeld) spendable + unchecked + held else spendable + unchecked
 
-    /** The coins Send max spends: the Clean ones only, unless the user includes the held (and so the unchecked) ones. */
-    fun sweepable(includeHeld: Boolean): List<Long> = if(includeHeld) spendable + unchecked + held else spendable
+    /** The coins Send max spends: the Clean ones, plus the unchecked and the held ones only when the user includes each. */
+    fun sweepable(includeHeld: Boolean, includeUnchecked: Boolean): List<Long> =
+        spendable + (if(includeUnchecked) unchecked else emptyList()) + (if(includeHeld) held else emptyList())
+
+    /** Whether a payment that takes the first [selected] coins of [usable] reaches past the Clean ones into the Unchecked. */
+    fun usesUnchecked(selected: Int): Boolean = unchecked.isNotEmpty() && selected > spendable.size
 
     companion object {
         /**
@@ -168,15 +172,16 @@ internal class SpendTiers(clean: List<SpendableInput>, unchecked: List<Spendable
 
     /**
      * The coins a send may use, in the order it must take them (build with keepOrder): Clean first, then Unchecked, then
-     * Held when the user includes them. Send max spends the Clean ones only unless the user includes the others. A
-     * peg-in into MWEB takes Clean coins only: whatever a coin carries would be lost there.
+     * Held when the user includes them. Send max spends the Clean ones, plus the Unchecked ones only with
+     * [includeUnchecked] and the held ones only with [includeHeld]. A peg-in into MWEB takes Clean coins only: whatever a
+     * coin carries would be lost there.
      */
-    fun candidates(includeHeld: Boolean, sendMax: Boolean, pegIn: Boolean = false): List<SpendableInput> = when {
-        pegIn -> clean
-        sendMax && !includeHeld -> clean
-        includeHeld -> clean + unchecked + held
-        else -> clean + unchecked
-    }
+    fun candidates(includeHeld: Boolean, sendMax: Boolean, pegIn: Boolean = false, includeUnchecked: Boolean = false): List<SpendableInput> =
+        when {
+            pegIn -> clean
+            sendMax -> clean + (if(includeUnchecked) unchecked else emptyList()) + (if(includeHeld) held else emptyList())
+            else -> clean + unchecked + (if(includeHeld) held else emptyList())
+        }
 
     /** How many of the [selected] outpoints are Unchecked coins, for the review's warning. */
     fun uncheckedIn(selected: List<String>): Int = selected.count { it in uncheckedOutpoints }

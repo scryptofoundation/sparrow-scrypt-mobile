@@ -785,10 +785,11 @@ class WalletRepository(context: Context) {
      * Scans utxos, selects coins, and builds a fully signed transaction — without
      * broadcasting. The UI shows the resulting fee/amount and only then calls [broadcast].
      * With [sendMax] the whole spendable balance minus fee goes to the destination. Clean coins go first and Unchecked
-     * ones only when the Clean ones cannot cover it; held coins only with [includeHeld] (see [SpendTiers.candidates]).
+     * ones only when the Clean ones cannot cover it (a sweep only with [includeUnchecked]); held coins only with
+     * [includeHeld] (see [SpendTiers.candidates]).
      */
     suspend fun prepareSend(data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean,
-                            includeHeld: Boolean = false): SendPreview {
+                            includeHeld: Boolean = false, includeUnchecked: Boolean = false): SendPreview {
         val net = network(data)
         val coin = coin(data)
         if(coin == Coin.LITECOIN && isMwebAddress(toAddress, net)) {
@@ -799,7 +800,8 @@ class WalletRepository(context: Context) {
         return withBackend(coin, net) { client ->
             val feeRate = clampFeeRate(coin, client.feeRate(2))
             val (tiers, changeScript) = collectSpendables(client, data, account, scriptType(data))
-            val built = TxBuilder.build(tiers.candidates(includeHeld, sendMax), destScript, amountLitoshis, feeRate, changeScript,
+            val built = TxBuilder.build(tiers.candidates(includeHeld, sendMax, includeUnchecked = includeUnchecked), destScript,
+                amountLitoshis, feeRate, changeScript,
                 sendMax, params, keepOrder = true)
             SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex(), tiers.uncheckedIn(spentOutpoints(built.tx)))
         }
@@ -846,7 +848,8 @@ class WalletRepository(context: Context) {
      * externally signed anywhere yet.
      */
     suspend fun prepareSendPsbt(
-        data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean, includeHeld: Boolean = false
+        data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean, includeHeld: Boolean = false,
+        includeUnchecked: Boolean = false
     ): UnsignedSendPreview {
         val net = network(data)
         val coin = coin(data)
@@ -875,7 +878,7 @@ class WalletRepository(context: Context) {
                 })
             val changeKey = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong())
             val selected = TxBuilder.buildUnsigned(
-                tiers.candidates(includeHeld, sendMax), destScript, amountLitoshis, feeRate,
+                tiers.candidates(includeHeld, sendMax, includeUnchecked = includeUnchecked), destScript, amountLitoshis, feeRate,
                 Scripts.outputScript(changeKey.pubKey, scriptType), sendMax, params, keepOrder = true
             )
             //every chosen coin carries the transaction that made it: Legacy signers need it, and a

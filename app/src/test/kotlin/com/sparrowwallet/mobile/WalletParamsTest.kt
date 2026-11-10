@@ -195,10 +195,11 @@ class WalletParamsTest {
         return spendables(scan, 200, ltcAccount, ScriptType.P2WPKH, 6) { states.getValue(it.utxo.txHash) }
     }
 
-    private fun pay(amount: Long, includeHeld: Boolean = false, sendMax: Boolean = false, pegIn: Boolean = false): Pair<SpendTiers, List<String>> {
+    private fun pay(amount: Long, includeHeld: Boolean = false, sendMax: Boolean = false, pegIn: Boolean = false,
+                    includeUnchecked: Boolean = false): Pair<SpendTiers, List<String>> {
         val (tiers, change) = tieredScan()
         val dest = Scripts.p2wpkhOutput(ltcAccount.deriveChild(0).deriveChild(9).pubKey)
-        val built = TxBuilder.buildUnsigned(tiers.candidates(includeHeld, sendMax, pegIn), dest, amount, 2, change, sendMax,
+        val built = TxBuilder.buildUnsigned(tiers.candidates(includeHeld, sendMax, pegIn, includeUnchecked), dest, amount, 2, change, sendMax,
             ChainParams.of(Coin.LITECOIN, Network.MAINNET), keepOrder = true)
         return tiers to built.inputs.map { outpoint(it) }
     }
@@ -229,8 +230,20 @@ class WalletParamsTest {
     fun sendMaxLeavesUncheckedCoinsOut() {
         val (tiers, swept) = pay(0, sendMax = true)
         assertEquals(setOf("11", "33").map { it.repeat(32) + ":0" }.toSet(), swept.toSet())
-        assertEquals(5, pay(0, includeHeld = true, sendMax = true).second.size)
-        assertEquals(2, tiers.uncheckedIn(pay(0, includeHeld = true, sendMax = true).second))
+        val all = pay(0, includeHeld = true, sendMax = true, includeUnchecked = true).second
+        assertEquals(5, all.size)
+        assertEquals(2, tiers.uncheckedIn(all))
+    }
+
+    /** Including the unchecked coins in a sweep never releases a held one: each box covers its own coins. */
+    @Test
+    fun sweepWithUncheckedIncludedLeavesHeldOut() {
+        val (tiers, swept) = pay(0, sendMax = true, includeUnchecked = true)
+        assertEquals(setOf("11", "33", "22", "44").map { it.repeat(32) + ":0" }.toSet(), swept.toSet())
+        assertEquals(2, tiers.uncheckedIn(swept))
+        //and the held box alone adds the held coin but not the unchecked ones
+        assertEquals(setOf("11", "33", "55").map { it.repeat(32) + ":0" }.toSet(), pay(0, includeHeld = true, sendMax = true).second.toSet())
+        assertEquals(listOf(30_000L, 10_000L), tiers.candidates(includeHeld = false, sendMax = true, pegIn = true, includeUnchecked = true).map { it.value })
     }
 
     @Test
@@ -254,9 +267,15 @@ class WalletParamsTest {
         assertEquals(listOf(50_000L, 10_000L), coins.unchecked)
         assertEquals(listOf(30_000L, 50_000L, 10_000L), coins.usable(includeHeld = false))
         assertEquals(listOf(30_000L, 50_000L, 10_000L, 80_000L), coins.usable(includeHeld = true))
-        assertEquals(listOf(30_000L), coins.sweepable(includeHeld = false))
-        assertEquals(listOf(30_000L, 50_000L, 10_000L, 80_000L), coins.sweepable(includeHeld = true))
+        assertEquals(listOf(30_000L), coins.sweepable(includeHeld = false, includeUnchecked = false))
+        assertEquals(listOf(30_000L, 50_000L, 10_000L), coins.sweepable(includeHeld = false, includeUnchecked = true))
+        assertEquals(listOf(30_000L, 80_000L), coins.sweepable(includeHeld = true, includeUnchecked = false))
+        assertEquals(listOf(30_000L, 50_000L, 10_000L, 80_000L), coins.sweepable(includeHeld = true, includeUnchecked = true))
         assertFalse(coins.heldInscribed)
+        //a payment taking the first coin stays Clean; one taking two reaches the Unchecked
+        assertFalse(coins.usesUnchecked(1))
+        assertTrue(coins.usesUnchecked(2))
+        assertFalse(SendCoins(listOf(30_000L), 0).usesUnchecked(2))
     }
 
     @Test
