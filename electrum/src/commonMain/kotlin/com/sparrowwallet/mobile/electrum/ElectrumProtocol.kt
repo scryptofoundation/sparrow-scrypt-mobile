@@ -15,11 +15,12 @@ object ElectrumProtocol {
     /**
      * Parses a decimal LTC amount string (as found in verbose transaction JSON, e.g.
      * "0.05", "1.23456789", or "7.166e-05" from servers that print Python floats) into
-     * litoshis without any floating-point rounding.
+     * litoshis without any floating-point rounding. An output value is never negative, and one past the Long range
+     * throws rather than wrapping.
      */
     fun ltcToLitoshis(decimal: String): Long {
-        val negative = decimal.startsWith("-")
-        val s = expandExponent(decimal.removePrefix("-"), decimal)
+        require(!decimal.startsWith("-")) { "Not an LTC amount: $decimal" }
+        val s = expandExponent(decimal, decimal)
         require(s.isNotEmpty() && s.all { it.isDigit() || it == '.' }) { "Not a decimal amount: $decimal" }
         val parts = s.split(".")
         require(parts.size <= 2) { "Not an LTC amount: $decimal" }
@@ -38,11 +39,18 @@ object ElectrumProtocol {
             }
             fraction = fraction.substring(0, 8)
         }
+        //Twenty digits or more cannot fit (toLong would throw a NumberFormatException, an IllegalArgumentException)
+        require(parts[0].length <= 19) { "Not an LTC amount: $decimal" }
         val whole = if(parts[0].isEmpty()) 0L else parts[0].toLong()
         val frac = fraction.padEnd(8, '0').toLong()
-        val value = whole * 100_000_000L + frac + carry
-        return if(negative) -value else value
+        //Bound checks rather than Math.multiplyExact, which common code does not have
+        require(whole <= Long.MAX_VALUE / UNIT) { "Not an LTC amount: $decimal" }
+        val base = whole * UNIT
+        require(frac + carry <= Long.MAX_VALUE - base) { "Not an LTC amount: $decimal" }
+        return base + frac + carry
     }
+
+    private const val UNIT = 100_000_000L
 
     /** "7.166e-05" to "0.00007166" by moving the decimal point; plain decimals pass through. */
     private fun expandExponent(s: String, original: String): String {

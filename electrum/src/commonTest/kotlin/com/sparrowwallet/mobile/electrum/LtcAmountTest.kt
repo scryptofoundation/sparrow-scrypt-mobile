@@ -14,7 +14,6 @@ class LtcAmountTest {
         assertEquals(1L, ElectrumProtocol.ltcToLitoshis("0.00000001"))
         assertEquals(0L, ElectrumProtocol.ltcToLitoshis("0.00000000"))
         assertEquals(8_400_000_000_000_000L, ElectrumProtocol.ltcToLitoshis("84000000"))
-        assertEquals(-5_000_000L, ElectrumProtocol.ltcToLitoshis("-0.05"))
         assertEquals(50_000_000L, ElectrumProtocol.ltcToLitoshis(".5"))
     }
 
@@ -25,7 +24,6 @@ class LtcAmountTest {
         assertEquals(1_000L, ElectrumProtocol.ltcToLitoshis("1e-05"))
         assertEquals(1L, ElectrumProtocol.ltcToLitoshis("1E-8"))
         assertEquals(15_000_000_000L, ElectrumProtocol.ltcToLitoshis("1.5e2"))
-        assertEquals(-7_166L, ElectrumProtocol.ltcToLitoshis("-7.166e-05"))
         assertEquals(100_000_000L, ElectrumProtocol.ltcToLitoshis("1e+0"))
     }
 
@@ -34,7 +32,6 @@ class LtcAmountTest {
     fun roundsFloatNoiseBeyondTheEighthDecimal() {
         assertEquals(99_718L, ElectrumProtocol.ltcToLitoshis("0.0009971800000000001"))
         assertEquals(99_718L, ElectrumProtocol.ltcToLitoshis("0.00099717999999999"))
-        assertEquals(-99_718L, ElectrumProtocol.ltcToLitoshis("-0.0009971800000000001"))
         assertEquals(100_000_000L, ElectrumProtocol.ltcToLitoshis("0.99999999999999999"))
         //a real sub-litoshi amount is still refused
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("0.000000015") }
@@ -53,5 +50,29 @@ class LtcAmountTest {
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("0.123456789") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("") }
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1.2.3") }
+    }
+
+    /** An output value is never negative: a server that sends one is refused. */
+    @Test
+    fun refusesNegativeAmounts() {
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("-0.05") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("-7.166e-05") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("-0.0009971800000000001") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("-0") }
+    }
+
+    /**
+     * The largest amount a Long holds is 92,233,720,368.54775807 coins, and it parses exactly; one unit more, or
+     * 100,000,000,000 coins (10^19 units, past the Long range), throws instead of wrapping.
+     */
+    @Test
+    fun amountsPastTheLongRangeThrow() {
+        assertEquals(Long.MAX_VALUE, ElectrumProtocol.ltcToLitoshis("92233720368.54775807"))
+        assertEquals(9_223_372_036_800_000_000L, ElectrumProtocol.ltcToLitoshis("92233720368"))
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("92233720368.54775808") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("92233720368.54775807999999") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("100000000000") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e11") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("99999999999999999999") }
     }
 }
