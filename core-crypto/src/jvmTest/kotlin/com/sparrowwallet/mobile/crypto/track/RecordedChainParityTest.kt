@@ -141,6 +141,9 @@ class RecordedChainParityTest {
             val verdicts = HashSet<String>()
             val coins = recording.getValue("coins").jsonArray
             assertTrue(coins.isNotEmpty(), "$chain: no coins recorded")
+            //Every coin is recorded twice, once at the default budget (200) and once checked deeper (2,000)
+            val budgets = HashMap<String, MutableList<Int>>()
+            var traces = 0
             for(entry in coins) {
                 val coin = entry.jsonObject
                 val txid = coin.getValue("txid").jsonPrimitive.content
@@ -150,13 +153,23 @@ class RecordedChainParityTest {
                 val desktop = coin.getValue("result").jsonObject
                 verdicts.add(desktop.getValue("verdict").jsonPrimitive.content)
                 //A fresh tracer and cache per trace, as the recording was made
+                budgets.getOrPut("$txid:$vout") { ArrayList() }.add(budget)
                 val tracer = InscriptionTracer(source, KnownResults.NONE, TxCache(), cutoff, subsidy)
                 val phone = runBlocking { tracer.trace(txid, vout, emptyList(), budget, walkBlocks) }
+                traces++
                 val want = expected(desktop)
                 val got = actual(phone)
                 if(want != got) {
                     mismatches.add("$chain $txid:$vout budget $budget walk $walkBlocks\n  desktop $want\n  phone   $got")
                 }
+            }
+            for((outpoint, seen) in budgets) {
+                if(seen.sorted() != listOf(200, 2_000)) {
+                    mismatches.add("$chain $outpoint: recorded at budgets $seen, not once at 200 and once at 2000")
+                }
+            }
+            if(traces != 2 * budgets.size) {
+                mismatches.add("$chain: $traces traces for ${budgets.size} coins, not two each")
             }
             if(Verdict.INSCRIBED.name !in verdicts) {
                 mismatches.add("$chain: no INSCRIBED coin recorded")

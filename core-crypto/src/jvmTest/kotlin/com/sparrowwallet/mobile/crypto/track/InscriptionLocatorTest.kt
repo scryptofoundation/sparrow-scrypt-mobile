@@ -160,7 +160,7 @@ class InscriptionLocatorTest {
         assertEquals(listOf(Creation(reveal.txid + "i0", 1, 2_000)), InscriptionLocator.ord(reveal, listOf(15_000L)))
     }
 
-    /** Added: an OP_0 chunk is no push at all as a Doginals last element. */
+    /** Added: an OP_1 chunk is no push at all as a Doginals last element. */
     @Test
     fun nonPushLastElementIsNotDoginals() {
         val sig = script(listOf(push(byteArrayOf(1)), push(byteArrayOf(2)), push(byteArrayOf(3)), op(0x51)))

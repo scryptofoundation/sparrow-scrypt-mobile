@@ -45,6 +45,11 @@ kotlin {
     }
 }
 
+// The parity tests read ../vectors (the tracker recordings among them): a changed recording reruns them
+tasks.named<Test>("jvmTest") {
+    inputs.dir(rootProject.file("vectors")).withPropertyName("vectors").withPathSensitivity(PathSensitivity.RELATIVE)
+}
+
 android {
     namespace = "com.sparrowwallet.mobile.crypto"
     compileSdk = 35
