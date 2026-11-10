@@ -100,6 +100,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                     inscriptionCheckNeeded(it.inscriptionCheckDue, repo.storedInscriptionResults(it.name))
             }
             inscriptionPass(wallets, startedAt, System::currentTimeMillis) { creds, timeUp ->
+                //deleted since the pass began (its credentials go with it): nothing to check or write back
+                if(store.load(creds.name) == null) return@inscriptionPass
                 if(repo.checkInscriptionsFromXpub(creds, timeUp) != null) {
                     store.load(creds.name)?.takeIf { it.inscriptionCheckDue }?.let { store.save(it.copy(inscriptionCheckDue = false)) }
                 }

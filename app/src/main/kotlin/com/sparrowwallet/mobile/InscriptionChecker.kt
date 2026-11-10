@@ -41,6 +41,8 @@ class InscriptionChecker(val store: InscriptionStore) {
     private val progressFlows = ConcurrentHashMap<String, MutableStateFlow<Pair<Int, Int>?>>()
     /** Bumped by [forget], so a run that began before a wallet was deleted never writes its file back. */
     private val epochs = ConcurrentHashMap<String, Int>()
+    /** The epoch when a run was claimed ([start], [tryRun]), so a wallet deleted while its coins are listed is noticed. */
+    private val claimedEpochs = ConcurrentHashMap<String, Int>()
     private val saveLock = Any()
     /** Transactions the traces read, one cache per coin and network; a cache is used under its lock only. */
     private val caches = ConcurrentHashMap<String, TxCache>()
@@ -106,6 +108,7 @@ class InscriptionChecker(val store: InscriptionStore) {
         if(!running.add(key)) {
             return null
         }
+        claim(key)
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 work()
@@ -118,6 +121,7 @@ class InscriptionChecker(val store: InscriptionStore) {
         jobs[key] = job
         job.invokeOnCompletion {
             jobs.remove(key, job)
+            claimedEpochs.remove(key)
             running.remove(key)
         }
         job.start()
@@ -150,6 +154,9 @@ class InscriptionChecker(val store: InscriptionStore) {
         if(NetworkPolicy.blocked) {
             return results(walletName)
         }
+        val key = key(walletName)
+        //Read before any server call: a run claimed earlier keeps the epoch of its claim
+        val epoch = claimedEpochs[key] ?: synchronized(saveLock) { epochs[key] ?: 0 }
         //Block hashes kept from earlier runs answer heights deep below the tip at no cost; others are asked once each
         val kept = entry(walletName).blocks
         val blocks = HashMap<Int, String?>()
@@ -167,9 +174,7 @@ class InscriptionChecker(val store: InscriptionStore) {
         val keep = keptBlocks(backend, kept, asked, utxos.map { it.height }.toSet())
 
         val chain = "${coin.id}:${network.id}"
-        val key = key(walletName)
         val shown = flow(key)
-        val epoch = epochs[key] ?: 0
         return locks.computeIfAbsent(chain) { Mutex() }.withLock {
             val stored = results(walletName)
             //What the file holds: the stored rows, each replaced by the coin's new result once decided
@@ -275,6 +280,7 @@ class InscriptionChecker(val store: InscriptionStore) {
         if(!running.add(key)) {
             return null
         }
+        claim(key)
         try {
             return work()
         } catch(e: CancellationException) {
@@ -282,7 +288,14 @@ class InscriptionChecker(val store: InscriptionStore) {
         } catch(e: Exception) {
             return null
         } finally {
+            claimedEpochs.remove(key)
             running.remove(key)
+        }
+    }
+
+    private fun claim(key: String) {
+        synchronized(saveLock) {
+            claimedEpochs[key] = epochs[key] ?: 0
         }
     }
 }

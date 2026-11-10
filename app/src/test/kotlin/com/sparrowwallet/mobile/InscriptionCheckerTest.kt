@@ -66,6 +66,8 @@ private class FakeChain : ChainBackend {
     var cancelOn: String? = null
     /** Runs before each transaction read, as something else the app does mid-run would. */
     var beforeRaw: (String) -> Unit = {}
+    /** Runs before each block-hash call. */
+    var beforeBlock: (Int) -> Unit = {}
 
     fun add(bytes: ByteArray, height: Int): String {
         val txid = RawTx.parse(bytes).txid
@@ -102,6 +104,7 @@ private class FakeChain : ChainBackend {
     override suspend fun blockHash(height: Int): String? {
         calls++
         blockCalls++
+        beforeBlock(height)
         if(blockHashFails) throw IOException("connection reset")
         if(blockHashRateLimited) throw com.sparrowwallet.mobile.electrum.RateLimitedException("HTTP 429")
         return if(blockHashNull) null else block(height)
@@ -236,6 +239,33 @@ class InscriptionCheckerTest {
         release.complete(Unit)
         job!!.join()
         assertFalse(job!!.isCancelled)
+    }
+
+    /** Residual R3: a wallet deleted while the worker lists its coins (before the check begins) is not written back. */
+    @Test fun aWalletForgottenWhileItsCoinsAreListedIsNotWrittenBack(): Unit = runBlocking {
+        val dir = newDir()
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val checker = checker(dir, CheckerCipher())
+        val ran = checker.tryRun(wallet) {
+            //the address walk, during which the user deletes the wallet
+            checker.forget(wallet)
+            checker.store.delete(wallet)
+            checker.ltc(chain, listOf(Utxo(a, 0, 100, 50_000)))
+        }
+        assertTrue(ran != null)
+        assertFalse(File(dir, "My Wallet.bin").exists())
+    }
+
+    /** Residual R3: the same during the block-hash phase, before the trace. */
+    @Test fun aWalletForgottenWhileItsBlocksAreAskedIsNotWrittenBack(): Unit = runBlocking {
+        val dir = newDir()
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val checker = checker(dir, CheckerCipher())
+        chain.beforeBlock = { checker.forget(wallet); checker.store.delete(wallet) }
+        checker.ltc(chain, listOf(Utxo(a, 0, 100, 50_000)))
+        assertFalse(File(dir, "My Wallet.bin").exists())
     }
 
     /** A wallet deleted while its check runs is not written back by that run, and forget cancels a started run. */
