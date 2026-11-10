@@ -57,20 +57,36 @@ object TrackerRun {
     }
 
     /**
-     * Whether a coin's creating transaction is a real MWEB peg-out: exactly the tracer's test for a piece that ends clean
-     * at a HogEx (a confirmed transaction with the MWEB flag and the null extension), and only on a chain with MWEB. The
-     * output script shape alone, which anyone can build, never counts.
+     * Whether a coin (output [vout] of its creating transaction) came straight out of MWEB, on a chain with MWEB. The
+     * tracer's test for a piece that ends clean at a HogEx (confirmed, with the MWEB flag and the null extension) is not
+     * enough here: the flag and extension sit outside the txid, so a server could add them to any transaction. So the
+     * transaction must also have the HogEx shape its txid commits to: output 0 exactly OP_8 and a direct 32 byte push
+     * (34 bytes, compared as bytes), and input 0 spending an output 0 (the previous HogEx's pool output). And the coin
+     * must not be output 0 itself, which is the MWEB pool.
      */
-    fun mwebPegOut(coin: com.sparrowwallet.mobile.crypto.Coin, creating: ChainTx): Boolean =
-        coin.mweb && creating.height > 0 && creating.tx.mwebNullExtension
+    fun mwebPegOut(coin: com.sparrowwallet.mobile.crypto.Coin, creating: ChainTx, vout: Int): Boolean =
+        coin.mweb && creating.height > 0 && creating.tx.mwebNullExtension && committedHogExShape(creating.tx) && vout >= 1
+
+    /** A HogEx's txid-committed shape: output 0 is `0x58 0x20` and 32 bytes, and input 0 spends an output 0. */
+    private fun committedHogExShape(tx: RawTx.Parsed): Boolean {
+        val pool = tx.outputs.firstOrNull()?.script ?: return false
+        return pool.size == 34 && pool[0] == 0x58.toByte() && pool[1] == 0x20.toByte() && tx.inputs.firstOrNull()?.prevVout == 0L
+    }
 
     /**
      * The [InscriptionCheck.mwebPegOut] to record from a creating transaction: [mwebPegOut], except null (not known) for
-     * one with the null extension but no height, which a later read may confirm. Without the extension it is false at
-     * any height.
+     * one with the null extension but no height, which a later read may confirm, and for a peg-out in another block than
+     * [block], the row's. With [blockRequired] (a stored row's fill) the transaction's block must be known and equal; else
+     * (a fresh result) they must agree only when both are known. Without the extension it is false at any height.
      */
-    private fun pegOutFlag(coin: com.sparrowwallet.mobile.crypto.Coin, creating: ChainTx): Boolean? =
-        if(coin.mweb && creating.tx.mwebNullExtension && creating.height <= 0) null else mwebPegOut(coin, creating)
+    private fun pegOutFlag(coin: com.sparrowwallet.mobile.crypto.Coin, creating: ChainTx, vout: Int, block: String?,
+                           blockRequired: Boolean): Boolean? = when {
+        coin.mweb && creating.tx.mwebNullExtension && creating.height <= 0 -> null
+        !mwebPegOut(coin, creating, vout) -> false
+        blockRequired && (block == null || creating.blockHash != block) -> null
+        block != null && creating.blockHash != null && creating.blockHash != block -> null
+        else -> true
+    }
 
     /** A stored row that stands but was saved before [InscriptionCheck.mwebPegOut] existed: proven, complete and Clean. */
     private fun lacksPegOutFlag(check: InscriptionCheck): Boolean =
@@ -79,8 +95,9 @@ object TrackerRun {
     /**
      * Fills [InscriptionCheck.mwebPegOut] into a standing row without a trace: from the cache, or one read of the coin's
      * creating transaction, which counts against the run budget. When the budget or time is gone, the run has stopped,
-     * the read fails (a server error stops the run, as any other does) or the server gives no height for a transaction
-     * with the null extension (see [pegOutFlag]), the row is returned as it was.
+     * a fill read failed earlier in the run, the read fails, or [pegOutFlag] cannot say, the row is returned as it was. A
+     * failed read does not stop the run (the fill is not needed to decide anything): it only ends this run's fills, and
+     * a real outage stops the run at its next trace.
      */
     private suspend fun fillPegOut(
         coin: com.sparrowwallet.mobile.crypto.Coin,
@@ -94,7 +111,7 @@ object TrackerRun {
             return check
         }
         val creating = cache.get(check.txid) ?: readCreating(check, source, cache, state, timeUp) ?: return check
-        val flag = pegOutFlag(coin, creating) ?: return check
+        val flag = pegOutFlag(coin, creating, check.vout, check.blockHash, blockRequired = true) ?: return check
         return check.copy(mwebPegOut = flag)
     }
 
@@ -104,7 +121,7 @@ object TrackerRun {
         if(state.stop == null && timeUp()) {
             state.stop = TIME_UP
         }
-        if(state.stop != null || state.exhausted(false)) {
+        if(state.stop != null || state.fillsStopped || state.exhausted(false)) {
             return null
         }
         return try {
@@ -118,7 +135,7 @@ object TrackerRun {
             cache.put(tx)
             tx
         } catch(e: ServerFailure) {
-            state.stop = "${InscriptionTracer.SERVER_ERROR_PREFIX}: ${e.message}"
+            state.fillsStopped = true
             null
         }
     }
@@ -130,6 +147,8 @@ object TrackerRun {
     private class State(val limit: Int) {
         var used = 0
         var stop: String? = null
+        /** A fill read failed this run: no more fill reads (see [fillPegOut]); traces go on. */
+        var fillsStopped = false
         fun exhausted(deep: Boolean): Boolean = !deep && used >= limit
     }
 
@@ -311,7 +330,7 @@ object TrackerRun {
             return decided
         }
         val chainTx = creatingChain ?: cache.get(utxo.txid) ?: return decided
-        return decided.copy(mwebPegOut = pegOutFlag(coin, chainTx))
+        return decided.copy(mwebPegOut = pegOutFlag(coin, chainTx, utxo.vout, utxo.confirmingBlock, blockRequired = false))
     }
 
     /** A stored result stands unless an indexer now answers otherwise about whether the coin carries something. */

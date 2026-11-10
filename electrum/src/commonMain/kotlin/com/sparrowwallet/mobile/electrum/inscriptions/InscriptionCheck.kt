@@ -10,9 +10,10 @@ import kotlinx.serialization.Serializable
  * (for an UNCHECKED or cut-short INSCRIBED coin) the reason and the pieces still to trace. blockHash is the block of the
  * transaction that created the coin, so a reorg can be told from a stale result.
  *
- * mwebPegOut says whether the coin's creating transaction is a confirmed HogEx with the MWEB flag and the null
- * extension (see [TrackerRun.mwebPegOut]): true, it is (the coin came straight out of MWEB, with no history to carry
- * anything); false, it is not; null, not known (a row stored before 2026-11-10, or a result that is not Clean).
+ * mwebPegOut says whether the coin is a peg-out of a confirmed HogEx in the coin's block, with the MWEB flag, the null
+ * extension and the HogEx shape its txid commits to (see [TrackerRun.mwebPegOut]): true, it is (the coin came straight
+ * out of MWEB, with no history to carry anything); false, it is not; null, not known (a row stored before 2026-11-10,
+ * a result that is not Clean, or a read that could not say).
  */
 @Serializable
 data class InscriptionCheck(

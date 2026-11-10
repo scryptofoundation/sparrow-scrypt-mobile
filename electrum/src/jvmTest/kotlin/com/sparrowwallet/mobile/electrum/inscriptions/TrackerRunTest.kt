@@ -60,9 +60,10 @@ class TrackerRunTest {
         indexerSource: InscriptionCheck.Source? = null,
         runBudget: Int = TrackerRun.RUN_BUDGET,
         timeUp: () -> Boolean = { false },
-        onResult: suspend (String, InscriptionCheck) -> Unit = { _, _ -> }
+        onResult: suspend (String, InscriptionCheck) -> Unit = { _, _ -> },
+        chainCoin: Coin = Coin.LITECOIN
     ): Map<String, InscriptionCheck> = runBlocking {
-        TrackerRun.run(Coin.LITECOIN, Network.MAINNET, TxCache(), chain, utxos, stored, answers, indexerSource, deeper, runBudget,
+        TrackerRun.run(chainCoin, Network.MAINNET, TxCache(), chain, utxos, stored, answers, indexerSource, deeper, runBudget,
             timeUp, onResult) { done, _ -> progress.add(done) }
     }
 
@@ -281,12 +282,17 @@ class TrackerRunTest {
         assertEquals(2, chain.calls, "the coin and the HogEx")
     }
 
-    private val hogAddr = ByteArray(34).also { it[0] = 0x58; it[1] = 0x20 }
+    /** The HogEx's committed output 0: OP_8 and a direct 32 byte push, 34 bytes exactly. */
+    private val hogAddr = ByteArray(34) { 7 }.also { it[0] = 0x58; it[1] = 0x20 }
 
-    /** A HogEx paying the MWEB pool (output 0) and a peg-out (output 1); [flagged] sets the MWEB flag with the null extension. */
-    private fun hogEx(n: Int, height: Int, flagged: Boolean = true): RawTx.Parsed =
-        chain.add(tx(listOf(hash(n) to 0), listOf(1_000_000L, 10_000L), outputScripts = listOf(hogAddr, TrackFakes.PLAIN),
-            mwebExtension = if(flagged) byteArrayOf(0) else null), height)
+    /**
+     * A HogEx paying the MWEB pool (output 0, [output0]) and a peg-out (output 1), its input 0 spending output [spendVout]
+     * of the previous HogEx; [flagged] sets the MWEB flag with the null extension, [extension] any other MWEB extension.
+     */
+    private fun hogEx(n: Int, height: Int, flagged: Boolean = true, spendVout: Int = 0, output0: ByteArray = hogAddr,
+                      extension: ByteArray? = if(flagged) byteArrayOf(0) else null): RawTx.Parsed =
+        chain.add(tx(listOf(hash(n) to spendVout), listOf(1_000_000L, 10_000L), outputScripts = listOf(output0, TrackFakes.PLAIN),
+            mwebExtension = extension), height)
 
     private fun pegOutCoin(tx: RawTx.Parsed, height: Int = 2_500_000) = TrackerRun.Coin(tx.txid, 1, block(height))
 
@@ -359,14 +365,72 @@ class TrackerRunTest {
         val stored = storedClean(hog, 1)
         assertSame(stored, run(listOf(pegOutCoin(hog)), mapOf(stored.outpoint to stored), runBudget = 0).getValue(stored.outpoint))
         assertEquals(0, chain.calls)
+    }
 
+    /**
+     * A failed fill read does not stop the run: that row and any later row needing a fill stay as they were (no more
+     * fill reads this run), and other coins are still traced.
+     */
+    @Test fun aFailedFillLeavesTheRowUnknownAndTheRunGoesOn() {
+        val hog = hogEx(1, 2_500_000)
+        val stored = storedClean(hog, 1)
+        val laterHog = hogEx(2, 2_500_000)
+        val later = storedClean(laterHog, 1)
         chain.failing.add(hog.txid)
-        val other = cleanCoin(2)
-        val result = run(listOf(pegOutCoin(hog), coin(other)), mapOf(stored.outpoint to stored))
+        val other = cleanCoin(3)
+        val result = run(listOf(pegOutCoin(hog), coin(other), pegOutCoin(laterHog)), mapOf(stored.outpoint to stored, later.outpoint to later))
         assertSame(stored, result.getValue(stored.outpoint))
-        //a failed read is a server error like any other: no server call after it
-        assertEquals(serverError + "connection reset", result.getValue(other.txid + ":0").reason)
-        assertEquals(1, chain.calls)
+        assertNull(result.getValue(stored.outpoint).mwebPegOut)
+        val traced = result.getValue(other.txid + ":0")
+        assertEquals(Verdict.CLEAN, traced.verdict, traced.toString())
+        assertSame(later, result.getValue(later.outpoint), "no further fill reads after a failed one")
+        assertEquals(3, chain.calls, "the failed read, then the other coin's two")
+    }
+
+    /**
+     * Only the committed shape of a HogEx counts: the MWEB flag and extension sit outside the txid, so a server could add
+     * them to any transaction. Output 0 must be exactly OP_8 and a direct 32 byte push, input 0 must spend an output 0,
+     * and the coin must not be output 0 itself (the MWEB pool). Each forgery or near miss is false, fresh or filled.
+     */
+    @Test fun onlyTheCommittedHogExShapeMakesAnMwebPegOut() {
+        val pushData1 = byteArrayOf(0x58, 0x4c, 0x20) + ByteArray(32) { 7 }
+        val cases = listOf(
+            "peg-in (MWEB transaction in the extension)" to hogEx(1, 2_500_000, extension = byteArrayOf(1, 2, 3)),
+            "PUSHDATA1 output 0 with the null extension added" to hogEx(2, 2_500_000, output0 = pushData1),
+            "input 0 spends output 3" to hogEx(3, 2_500_000, spendVout = 3),
+            "output 0 one byte long" to hogEx(4, 2_500_000, output0 = hogAddr + byteArrayOf(0))
+        )
+        for((name, hog) in cases) {
+            val fresh = run(listOf(pegOutCoin(hog))).getValue(hog.txid + ":1")
+            assertTrue(fresh.mwebPegOut != true, "$name fresh: $fresh")
+            val stored = storedClean(hog, 1)
+            assertEquals(stored.copy(mwebPegOut = false), run(listOf(pegOutCoin(hog)), mapOf(stored.outpoint to stored)).getValue(stored.outpoint), name)
+        }
+        //output 0 of a real HogEx is the MWEB pool, not a peg-out
+        val real = hogEx(5, 2_500_000)
+        val pool = TrackerRun.Coin(real.txid, 0, block(2_500_000))
+        assertTrue(run(listOf(pool)).getValue(real.txid + ":0").mwebPegOut != true)
+        val storedPool = storedClean(real, 0)
+        assertEquals(storedPool.copy(mwebPegOut = false), run(listOf(pool), mapOf(storedPool.outpoint to storedPool)).getValue(storedPool.outpoint))
+    }
+
+    /** The flag is bound to the row's block: a creating transaction the server places in another block leaves it unknown. */
+    @Test fun aBlockHashMismatchLeavesTheFlagUnknown() {
+        val hog = hogEx(1, 2_500_000)
+        chain.txs[hog.txid] = chain.txs.getValue(hog.txid).copy(blockHash = block(7))
+        val fresh = run(listOf(pegOutCoin(hog))).getValue(hog.txid + ":1")
+        assertEquals(Verdict.CLEAN, fresh.verdict, fresh.toString())
+        assertNull(fresh.mwebPegOut)
+        val stored = storedClean(hog, 1)
+        assertSame(stored, run(listOf(pegOutCoin(hog)), mapOf(stored.outpoint to stored)).getValue(stored.outpoint))
+    }
+
+    /** Off a chain with MWEB a stored row is not read for the flag: it stays unknown. */
+    @Test fun aChainWithoutMwebMakesNoFillRead() {
+        val tx = cleanCoin(1)
+        val stored = storedClean(tx, 0)
+        assertSame(stored, run(listOf(coin(tx)), mapOf(stored.outpoint to stored), chainCoin = Coin.DOGECOIN).getValue(stored.outpoint))
+        assertEquals(0, chain.calls)
     }
 
     /** A creating transaction without the MWEB null extension is not a peg-out at any height, so a missing height still fills false. */
