@@ -114,7 +114,7 @@ class WalletRepository(context: Context) {
     fun deleteWallet(name: String) {
         vaultFile(name).delete()
         metaFile(name).delete()
-        deleteWalletCaches(name, inscriptionStore, SyncStore.cacheFile(appContext.filesDir, name))
+        deleteWalletCaches(safeName(name), inscriptionStore, SyncStore.cacheFile(appContext.filesDir, name))
         inscriptionChecker.forget(name)
         sessionTotals.remove(safeName(name))
         sessionNames.values.removeAll { it == safeName(name) }
@@ -298,39 +298,55 @@ class WalletRepository(context: Context) {
     /** Per-wallet inscription check results, encrypted under their own Keystore key. */
     val inscriptionStore: InscriptionStore get() = inscriptionChecker.store
 
-    /** The wallet's stored inscription checks by outpoint, from memory after the first read (empty when never checked). */
+    /**
+     * The wallet's stored inscription checks by outpoint, as held in memory: cheap, never reads the file, so it is safe
+     * from composition. Empty until [loadInscriptionChecks] or a check has loaded them (empty reads as not checked).
+     */
     fun inscriptionChecks(data: VaultData): Map<String, InscriptionCheck> =
-        sessionNames[data]?.let { inscriptionChecker.results(it) } ?: emptyMap()
+        sessionNames[data]?.let { inscriptionChecker.cached(it) } ?: emptyMap()
+
+    /** Loads the wallet's stored inscription checks into memory, off the main thread; returns them. */
+    suspend fun loadInscriptionChecks(data: VaultData): Map<String, InscriptionCheck> {
+        val name = sessionNames[data] ?: return emptyMap()
+        return withContext(Dispatchers.IO) { inscriptionChecker.results(name) }
+    }
 
     /**
-     * Checks an open public wallet's coins for inscriptions on one server connection: lists its unspent coins, then runs
-     * the built-in check, with the coins in [deeper] checked deeper. Never throws but for cancellation: a skipped (one
-     * is already going for the wallet) or failed check returns the stored results unchanged. MWEB wallets, uncovered
-     * coins and air-gapped mode open no connection.
+     * Checks an open public wallet's coins for inscriptions on one server connection: lists its unspent coins (the
+     * shown receive addresses included, as the sync walks them), then runs the built-in check, with the coins in
+     * [deeper] checked deeper. Never throws but for cancellation: a skipped (one is already going for the wallet) or
+     * failed check returns the stored results unchanged. MWEB wallets, uncovered coins and air-gapped mode open no
+     * connection.
      */
     suspend fun checkInscriptions(data: VaultData, deeper: Set<String> = emptySet(),
                                   progress: (done: Int, total: Int) -> Unit = { _, _ -> }): Map<String, InscriptionCheck> {
         val name = sessionNames[data] ?: return emptyMap()
-        return checkCoins(name, coin(data), network(data), data.scriptType, deeper, progress) { accountKey(data) }
+        return checkCoins(name, coin(data), network(data), data.scriptType, deeper, progress, { accountKey(data) }) {
+            receiveShownTo(data)
+        }
     }
 
-    /** The background worker's check of a wallet from its cached xpub alone, with the default budgets. Never throws but for cancellation. */
+    /**
+     * The background worker's check of a wallet from its cached xpub alone, with the default budgets and the receive
+     * addresses Home has shown (kept under the xpub's hash). Never throws but for cancellation.
+     */
     suspend fun checkInscriptionsFromXpub(creds: SyncCredentials): Map<String, InscriptionCheck> {
-        val xpub = creds.xpub ?: return inscriptionChecker.results(creds.name)
-        return checkCoins(creds.name, Coin.fromId(creds.coin), Network.fromId(creds.network), creds.scriptType, emptySet(), { _, _ -> }) {
-            XpubKey.fromXpub(xpub)
-        }
+        val xpub = creds.xpub ?: return withContext(Dispatchers.IO) { inscriptionChecker.results(creds.name) }
+        return checkCoins(creds.name, Coin.fromId(creds.coin), Network.fromId(creds.network), creds.scriptType, emptySet(),
+            { _, _ -> }, { XpubKey.fromXpub(xpub) }) { prefs.getInt(receiveShownKey(xpub), 0) }
     }
 
     private suspend fun checkCoins(name: String, coin: Coin, network: Network, scriptType: String, deeper: Set<String>,
-                                   progress: (Int, Int) -> Unit, key: () -> Bip32Pub): Map<String, InscriptionCheck> {
+                                   progress: (Int, Int) -> Unit, key: () -> Bip32Pub,
+                                   watchReceiveTo: () -> Int): Map<String, InscriptionCheck> = withContext(Dispatchers.IO) {
         val checker = inscriptionChecker
         if(scriptType == "MWEB" || !ChainRules.covers(coin) || NetworkPolicy.blocked) {
-            return checker.results(name)
+            return@withContext checker.results(name)
         }
-        return checker.guarded(name) {
+        checker.guarded(name) {
             withBackend(coin, network) { client ->
-                val utxos = WalletScanner(client, walletScriptType(scriptType)).utxos(key()).utxos.map { it.utxo }
+                val utxos = WalletScanner(client, walletScriptType(scriptType))
+                    .utxos(key(), watchReceiveTo = watchReceiveTo()).utxos.map { it.utxo }
                 checker.check(name, coin, network, client, utxos, deeper, progress)
             }
         }
@@ -700,9 +716,10 @@ class WalletRepository(context: Context) {
     /** Prefs key per account, from a hash of its xpub so the key itself says nothing about the wallet. */
     private val receiveShownKeys = java.util.concurrent.ConcurrentHashMap<VaultData, String>()
 
-    private fun receiveShownKey(data: VaultData): String = receiveShownKeys.getOrPut(data) {
-        "receiveShown." + sha256(accountXpub(data).encodeToByteArray()).toHex().take(16)
-    }
+    private fun receiveShownKey(data: VaultData): String = receiveShownKeys.getOrPut(data) { receiveShownKey(accountXpub(data)) }
+
+    /** The same key from the account xpub alone, as the background worker holds it. */
+    private fun receiveShownKey(xpub: String): String = "receiveShown." + sha256(xpub.encodeToByteArray()).toHex().take(16)
 
     /** One past the highest receive index the Receive screen has shown; the sync keeps all of those watched. */
     fun receiveShownTo(data: VaultData): Int = prefs.getInt(receiveShownKey(data), 0)

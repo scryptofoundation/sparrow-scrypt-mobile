@@ -26,6 +26,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -161,24 +162,34 @@ class InscriptionCheckerTest {
         assertEquals(0, chain.rawCalls)
     }
 
-    @Test fun unconfirmedCoinHasNoBlockAndIsNotStoredAsComplete(): Unit = runBlocking {
+    @Test fun unconfirmedCoinIsStoredProvisionalAndTracedAgain(): Unit = runBlocking {
         val chain = FakeChain()
         val parent = oldCoin(chain, 60_000)
         val pay = chain.add(tx(listOf(parent to 0), listOf(50_000)), 0)
         val dir = newDir()
         val cipher = CheckerCipher()
+        val checker = checker(dir, cipher)
 
-        val first = checker(dir, cipher).ltc(chain, listOf(Utxo(pay, 0, 0, 50_000)))
+        val first = checker.ltc(chain, listOf(Utxo(pay, 0, 0, 50_000)))
         assertEquals(0, chain.blockCalls, "an unconfirmed coin has no block to ask for")
-        assertNull(first.getValue("$pay:0").blockHash)
-        assertNull(InscriptionStore(dir, cipher).load(wallet).getValue("$pay:0").blockHash)
+        val row = InscriptionStore(dir, cipher).load(wallet).getValue("$pay:0")
+        assertEquals(first.getValue("$pay:0"), row)
+        assertEquals(Verdict.CLEAN, row.verdict)
+        assertNull(row.blockHash)
+        assertFalse(row.proven, "a Clean without a block is provisional")
 
-        //It confirms: the stored result does not stand, so the coin is traced again and now carries its block
+        //Still unconfirmed: the row does not stand, and the unconfirmed transaction was not cached, so it is read again
+        chain.rawCalls = 0
+        checker.ltc(chain, listOf(Utxo(pay, 0, 0, 50_000)))
+        assertTrue(chain.rawCalls > 0, "traced again")
+
+        //It confirms: traced again, and now it carries its block
         chain.heights[pay] = 150
         chain.rawCalls = 0
-        val confirmed = checker(dir, cipher).ltc(chain, listOf(Utxo(pay, 0, 150, 50_000)))
+        val confirmed = checker.ltc(chain, listOf(Utxo(pay, 0, 150, 50_000)))
         assertTrue(chain.rawCalls > 0, "traced again")
         assertEquals(FakeChain.block(150), confirmed.getValue("$pay:0").blockHash)
+        assertTrue(confirmed.getValue("$pay:0").proven)
 
         chain.rawCalls = 0
         checker(dir, cipher).ltc(chain, listOf(Utxo(pay, 0, 150, 50_000)))
@@ -299,6 +310,52 @@ class InscriptionCheckerTest {
             fresh.guarded(wallet) { fresh.ltc(chain, listOf(Utxo(b, 0, 100, 70_000))) }
         }
         assertTrue(bytes.contentEquals(File(dir, "My Wallet.bin").readBytes()))
+    }
+
+    /**
+     * The worker passes the name its credentials were cached under; Home passes the session's wallet file name
+     * ([walletFileName] of the same name). Both reach the same results, file and guard.
+     */
+    @Test fun workerAndHomeNamesReachTheSameWallet(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val raw = "A wallet with a name/that runs past forty characters"
+        val home = walletFileName(raw)
+        val stored = checker(dir, cipher).check(raw, Coin.LITECOIN, Network.MAINNET, chain, listOf(Utxo(a, 0, 100, 50_000)))
+        assertEquals(1, dir.list()!!.size)
+
+        val checker = checker(dir, cipher)
+        assertEquals(stored, checker.results(home))
+        chain.rawCalls = 0
+        assertEquals(stored, checker.check(home, Coin.LITECOIN, Network.MAINNET, chain, listOf(Utxo(a, 0, 100, 50_000))))
+        assertEquals(0, chain.rawCalls)
+        assertEquals(1, dir.list()!!.size, "one file for both names")
+
+        val release = CompletableDeferred<Unit>()
+        val started = CompletableDeferred<Unit>()
+        val running = async { checker.guarded(raw) { started.complete(Unit); release.await(); stored } }
+        started.await()
+        var ran = false
+        checker.guarded(home) { ran = true; stored }
+        assertFalse(ran, "the same wallet under its other name is skipped")
+        release.complete(Unit)
+        running.await()
+    }
+
+    /** What composition reads: the copy in memory only, never a load of the file. */
+    @Test fun cachedReadsMemoryOnly(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val stored = checker(dir, cipher).ltc(chain, listOf(Utxo(a, 0, 100, 50_000)))
+
+        val checker = checker(dir, cipher)
+        assertNull(checker.cached(wallet), "not loaded yet")
+        assertEquals(stored, checker.results(wallet))
+        assertEquals(stored, checker.cached(wallet))
     }
 
     @Test fun anOverlappingRunForTheSameWalletIsSkipped(): Unit = runBlocking {

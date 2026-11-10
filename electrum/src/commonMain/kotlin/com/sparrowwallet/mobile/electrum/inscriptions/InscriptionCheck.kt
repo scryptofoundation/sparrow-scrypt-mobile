@@ -26,6 +26,12 @@ data class InscriptionCheck(
     enum class Source { OWN, PUBLIC, YOUR_OWN, BUILT_IN }
 
     val outpoint: String get() = "$txid:$vout"
+
+    /**
+     * A result checked against a mined block. A Clean result without one (an unconfirmed coin, or a block lookup that
+     * failed) is provisional: callers that act on Clean must treat it as Unchecked.
+     */
+    val proven: Boolean get() = blockHash != null
 }
 
 /** What an indexer said about one output (the part of the desktop's OrdOutput the policy reads). */

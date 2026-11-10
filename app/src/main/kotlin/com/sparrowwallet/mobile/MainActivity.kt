@@ -1079,6 +1079,8 @@ private fun HomeScreen(
         )
     }
     LaunchedEffect(Unit) { if(!gapped) usdNow = PriceService.currentUsd(repo.coin(data)) }
+    // the stored inscription checks are read off the main thread, so inscriptionChecks(data) can serve them from memory
+    LaunchedEffect(data) { repo.loadInscriptionChecks(data) }
     // the inscription check's line, shown after the sync status only while a check runs
     var checking by remember(data) { mutableStateOf<String?>(null) }
     val checkJob = remember(data) { arrayOfNulls<kotlinx.coroutines.Job>(1) }

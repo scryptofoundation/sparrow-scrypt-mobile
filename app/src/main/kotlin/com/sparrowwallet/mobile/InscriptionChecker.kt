@@ -30,11 +30,21 @@ class InscriptionChecker(val store: InscriptionStore) {
     /** Wallets with a run going. */
     private val running = ConcurrentHashMap.newKeySet<String>()
 
-    private fun key(walletName: String) = safeFileName(walletName)
+    /**
+     * The name a wallet is stored under: its wallet file name, as the session gives it to Home. The worker passes the
+     * name its credentials were cached under, which maps to the same one.
+     */
+    private fun stored(walletName: String) = walletFileName(walletName)
 
-    /** The wallet's stored results, by outpoint (empty when never checked). */
+    /** The key of the wallet's file, for memory and the running guard. */
+    private fun key(walletName: String) = safeFileName(stored(walletName))
+
+    /** The wallet's stored results, by outpoint (empty when never checked). Reads the file the first time: call it off the main thread. */
     fun results(walletName: String): Map<String, InscriptionCheck> =
-        memory.computeIfAbsent(key(walletName)) { store.load(walletName) }
+        memory.computeIfAbsent(key(walletName)) { store.load(stored(walletName)) }
+
+    /** The wallet's results if already in memory, else null; never reads the file, so it is cheap on the main thread. */
+    fun cached(walletName: String): Map<String, InscriptionCheck>? = memory[key(walletName)]
 
     /** Drops the wallet's results from memory, after the wallet is deleted. */
     fun forget(walletName: String) {
@@ -84,7 +94,7 @@ class InscriptionChecker(val store: InscriptionStore) {
                 coin, network, caches.computeIfAbsent(chain) { TxCache() }, BackendChainSource(backend), coins, stored,
                 emptyMap(), null, deeper, TrackerRun.RUN_BUDGET, progress
             )
-            store.save(walletName, checks)
+            store.save(stored(walletName), checks)
             memory[key(walletName)] = checks
             checks
         }

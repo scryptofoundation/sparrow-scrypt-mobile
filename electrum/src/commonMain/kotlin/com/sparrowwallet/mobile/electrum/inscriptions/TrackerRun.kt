@@ -60,12 +60,13 @@ object TrackerRun {
     ): Map<String, InscriptionCheck> {
         val results = HashMap<String, InscriptionCheck>()
         //The coin being traced is never its own known result (a row dropped for a reorg must not come back that way),
-        //and only complete checks stand for their units
+        //and only complete checks proven against a mined block stand for their units (an unconfirmed transaction's
+        //witness can still change, so a Clean without a block is not passed on)
         var tracing: String? = null
         val known = KnownResults { txid, vout ->
             val outpoint = "$txid:$vout"
             val check = if(outpoint == tracing) null else results[outpoint] ?: stored[outpoint]
-            if(check != null && CheckPolicy.complete(check)) KnownOutput(check.verdict, check.found) else null
+            if(check != null && CheckPolicy.complete(check) && check.blockHash != null) KnownOutput(check.verdict, check.found) else null
         }
         val tracer = InscriptionTracer(coin, network, source, known, cache)
 

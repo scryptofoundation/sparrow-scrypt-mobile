@@ -217,6 +217,16 @@ class WalletScannerTest {
         assertEquals(23, scan.nextChangeIndex)
     }
 
+    /** Like sync, a coin on a handed-out receive address past the gap is listed when the walk covers the shown ones. */
+    @Test fun utxosOnShownReceiveAddressesPastTheGap(): Unit = runBlocking {
+        val account = master.derivePath("m/84'/2'/0'")
+        val backend = FakeBackend()
+        used(backend, account, 0, 25, 1_000)
+        assertTrue(WalletScanner(backend).utxos(account).utxos.isEmpty())
+        val scan = WalletScanner(backend).utxos(account, watchReceiveTo = 26)
+        assertEquals(listOf("tx-0-25" to 25), scan.utxos.map { it.utxo.txHash to it.index })
+    }
+
     @Test fun balancePastTheFirstTwenty(): Unit = runBlocking {
         val account = master.derivePath("m/84'/2'/0'")
         val backend = FakeBackend()

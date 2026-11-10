@@ -50,6 +50,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             val store = SyncStore(context)
             val repo = WalletRepository(context)
             val received = mutableListOf<String>()
+            val scanned = HashSet<String>() // public wallets whose history scan succeeded this pass
 
             for(creds in store.loadAll()) {
                 try {
@@ -74,6 +75,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         val fresh = SyncBaseline.newlyReceived(creds, snap.history.map { it.txid to it.delta })
                         if(fresh > 0) received += "${formatAmount(Coin.fromId(creds.coin), fresh)} → ${creds.name}"
                         store.save(creds.copy(baselined = true, knownTxids = snap.history.map { it.txid }))
+                        scanned += creds.name
                     }
                 } catch(t: Throwable) {
                     // per-wallet best effort — a dead server or offline scanner retries next period
@@ -84,10 +86,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 notifyReceived(context, received)
             }
 
-            // Then each public wallet's inscription check, after the funds notice so a long check cannot hold it back.
-            // No notification; a failed check leaves the stored results and never fails or retries the worker.
+            // Then the inscription check of each public wallet whose scan just succeeded, after the funds notice so a
+            // long check cannot hold it back. No notification; a failed check leaves the stored results and never
+            // fails or retries the worker.
             for(creds in store.loadAll()) {
-                if(creds.scriptType == "MWEB" || creds.xpub == null) continue
+                if(creds.scriptType == "MWEB" || creds.xpub == null || creds.name !in scanned) continue
                 try {
                     repo.checkInscriptionsFromXpub(creds)
                 } catch(e: kotlinx.coroutines.CancellationException) {

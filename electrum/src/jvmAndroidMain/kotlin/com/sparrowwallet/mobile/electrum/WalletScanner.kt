@@ -67,14 +67,15 @@ class WalletScanner(private val backend: ChainBackend, private val scriptType: S
      * Collects all spendable utxos over the same walk as [balance], and the change index after the highest used
      * one for the change output. A utxo confirmed above [checkCoinbaseAbove] is looked up to tell whether it is a
      * coinbase, which must mature before it is spent; deeper ones are mature either way and cost no lookup. [isHeld]
-     * marks the coins that may carry an inscription or tokens.
+     * marks the coins that may carry an inscription or tokens. Receive addresses below [watchReceiveTo] were handed
+     * out, so the walk covers them even unused, as [sync] does.
      */
     suspend fun utxos(accountKey: Bip32Pub, checkCoinbaseAbove: Int = Int.MAX_VALUE,
-                      isHeld: suspend (Utxo) -> Boolean = { false }): UtxoScan {
+                      isHeld: suspend (Utxo) -> Boolean = { false }, watchReceiveTo: Int = 0): UtxoScan {
         val utxos = ArrayList<ChainUtxo>()
         var nextChangeIndex = 0
         for(chain in 0..1) {
-            val next = walk(accountKey, chain) { i, script, history ->
+            val next = walk(accountKey, chain, if(chain == 0) watchReceiveTo else 0) { i, script, history ->
                 if(history.isNotEmpty()) {
                     for(utxo in backend.unspent(script)) {
                         val young = utxo.height > 0 && utxo.height > checkCoinbaseAbove

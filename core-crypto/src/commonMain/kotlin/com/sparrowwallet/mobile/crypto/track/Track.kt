@@ -114,8 +114,8 @@ interface ChainSource {
 }
 
 /**
- * The transactions traces have read, shared between traces of one coin and network, least recently used dropped first.
- * Not thread safe: use it from one coroutine at a time.
+ * The mined transactions traces have read, shared between traces of one coin and network, least recently used dropped
+ * first. Not thread safe: use it from one coroutine at a time.
  */
 class TxCache(private val size: Int = 5_000) {
     private val transactions = HashMap<String, ChainTx>()
@@ -128,7 +128,14 @@ class TxCache(private val size: Int = 5_000) {
         return tx
     }
 
+    /**
+     * Keeps a mined transaction. An unconfirmed one is not kept: until it is mined its witness can still be swapped for
+     * another with the same txid, and its height is not known, so it is read again each time.
+     */
     fun put(tx: ChainTx) {
+        if(tx.height <= 0) {
+            return
+        }
         val txid = tx.tx.txid
         if(transactions.put(txid, tx) != null) {
             order.remove(txid)

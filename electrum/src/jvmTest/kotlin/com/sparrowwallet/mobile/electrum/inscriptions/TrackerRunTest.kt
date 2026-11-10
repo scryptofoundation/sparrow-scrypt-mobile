@@ -97,6 +97,25 @@ class TrackerRunTest {
         val check = run(listOf(coin(tx, height = 0))).getValue(tx.txid + ":0")
         assertEquals(Verdict.CLEAN, check.verdict)
         assertNull(check.blockHash)
+        assertFalse(check.proven, "a Clean without a block is provisional")
+    }
+
+    /** A Clean without a block (an unconfirmed coin's, whose witness could still change) is not passed on to the coins that spend it. */
+    @Test fun provisionalCleanIsNotAKnownResult() {
+        val grandparent = chain.add(spend(hash(1), 10_000), 2_000_000)
+        val parent = chain.add(reveal(grandparent.txid, "hi", 9_000), 2_500_000)
+        val child = chain.add(spend(parent.txid, 8_000), 2_500_001)
+        val childCoin = coin(child, height = 2_500_001)
+
+        //With its block, the stored row for the parent stands for its units: the child reads it and looks no further
+        val proven = clean(parent, block(2_500_000))
+        assertEquals(Verdict.CLEAN, run(listOf(childCoin), mapOf(proven.outpoint to proven)).getValue(child.txid + ":0").verdict)
+
+        //Without one, the trace goes through the parent and finds what it carries
+        val provisional = clean(parent, null)
+        val check = run(listOf(childCoin), mapOf(provisional.outpoint to provisional)).getValue(child.txid + ":0")
+        assertEquals(Verdict.INSCRIBED, check.verdict)
+        assertTrue(check.proven)
     }
 
     @Test fun openPiecesResume() {
