@@ -1,0 +1,131 @@
+{
+  "chain": "bellscoin",
+  "coin": "BELLSCOIN",
+  "network": "REGTEST",
+  "tip": 44,
+  "firstInscriptionHeight": 0,
+  "subsidyRule": {
+    "kind": "none"
+  },
+  "calls": {
+    "transaction": {
+      "3bc69b3052663e4094ef280677cf6034e9c32e2491e34c4b6c1cd14403b3a651": {
+        "hex": "0200000000010159a5466c37aed0185b4057841de7575286e38baa902d451176671da1d70e9bd70000000000ffffffff01e8030000000000002251202befa14431d4cb71889ea1df7a7eaa2f1d8b9107e60b01564e15dabe5c0dfd320340f72a4f4d0a349e523c8af5709ddf559cb5758407099987a01eaa9669eb8fb3628c147ebf7de8fcd6e5bb4288382bc11b328e032d6b336e10f37e807839e9d4b387203058679f6d60b87ef921d98a2a9a1f1e0779dae27bedbd1cdb2f147a07835ac9ac0063036f7264010118746578742f706c61696e3b636861727365743d7574662d38004153706172726f772d5363727970742042656c6c73636f696e20696e736372697074696f6e2c206d696e74656420627920636f6d6d697420616e642072657665616c6821c03058679f6d60b87ef921d98a2a9a1f1e0779dae27bedbd1cdb2f147a07835ac900000000",
+        "height": 43,
+        "blockHash": "745f3bb18785d179eedbe12ec06c4afa70b26671b26b72ebb73f82b8fec851fb",
+        "blockTime": 1793871687
+      },
+      "60fc785740e5fc9892f938f2e45502a6d982da1de5b6a928ac7ff70cd32ffffb": {
+        "hex": "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff025300ffffffff0200c2eb0b000000002251203b82b2b2a9185315da6f80da5f06d0440d8a5e1457fa93387c2d919c86ec87860000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000",
+        "height": 3,
+        "blockHash": "6fbc3944a31ac8216f12b2109fbd30c8ab2e836f660c9ec4da740870c6223231",
+        "blockTime": 1793855707
+      },
+      "965b8f892408b5c41692d380281f3cbbda72ee0ea7af0675dcbf5bd70c660a10": {
+        "hex": "0200000000010251a6b30344d11c6c4b4ce391242ec3e93460cf770628ef94403e6652309bc63b0000000000fdfffffffbff2fd30cf77fac28a9b6e51dda82d9a60255e4f238f99298fce5405778fc600000000000fdffffff02e803000000000000225120a7f04bffd860ad7d72a59115354f5325a2c201d1332d00459f90d82bf420d5b5bdb9eb0b00000000225120d73acf6667b7850e6e00e21bb4525a2c5e2d88956a3d2c35b0bc06f4b0df01bc014088d195576a5f52e4cef4dfc90fb66eec11f6fed81e1f3b4996dab26e9934da8f7391eaef87bb7b1477591c91125a6195a8722d15f96c7e33cc2c9923d07eebf4014071f9efeac3cb664baccf941bc9336f8a5e12cf85b140f134740f6bdd39c4cdb68729bbf80d1c6347489b9a665f835be3fcb1063a40aebc3ac1550753665b026f00000000",
+        "height": 44,
+        "blockHash": "d63417ca7e4df84515a312bca116af0cd1ee8b64d0b18e37e2c6902024ade704",
+        "blockTime": 1793871697
+      },
+      "d79b0ed7a11d677611452d90aa8be3865257e71d8457405b18d0ae376c46a559": {
+        "hex": "020000000001011afe5aa9d6bdabfbf22194c6f178407c4bce27582cf956c1bf4c22f401dbe4fe0000000000ffffffff02ec09000000000000225120b9979c3bef163498f74d5a423b713f4b05206aa61c3ece2c0ea2d0a14827a86710b2eb0b00000000225120d73acf6667b7850e6e00e21bb4525a2c5e2d88956a3d2c35b0bc06f4b0df01bc01403a5b182147ce4b0d5290f386cd38d35cfd80d37b62edbb2654deb107c4cb18153d2572f4b60584f6cc3a44ea66d9eea40811581b551d4815a19db1122ee08f5000000000",
+        "height": 43,
+        "blockHash": "745f3bb18785d179eedbe12ec06c4afa70b26671b26b72ebb73f82b8fec851fb",
+        "blockTime": 1793871687
+      },
+      "fee4db01f4224cbfc156f92c5827ce4b7c4078f1c69421f2fbabbdd6a95afe1a": {
+        "hex": "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff025200ffffffff0200c2eb0b000000002251203b82b2b2a9185315da6f80da5f06d0440d8a5e1457fa93387c2d919c86ec87860000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000",
+        "height": 2,
+        "blockHash": "44425257535a42775a6fc6dbf4a00ce7f8903ec422629388f0b250243c36ce65",
+        "blockTime": 1793855707
+      }
+    },
+    "blockFees": {
+      "2:44425257535a42775a6fc6dbf4a00ce7f8903ec422629388f0b250243c36ce65": null,
+      "3:6fbc3944a31ac8216f12b2109fbd30c8ab2e836f660c9ec4da740870c6223231": null
+    },
+    "txidAt": {
+      "2:0": "fee4db01f4224cbfc156f92c5827ce4b7c4078f1c69421f2fbabbdd6a95afe1a",
+      "2:1": null,
+      "3:0": "60fc785740e5fc9892f938f2e45502a6d982da1de5b6a928ac7ff70cd32ffffb",
+      "3:1": null
+    },
+    "blockHash": {}
+  },
+  "coins": [
+    {
+      "txid": "965b8f892408b5c41692d380281f3cbbda72ee0ea7af0675dcbf5bd70c660a10",
+      "vout": 0,
+      "budget": 200,
+      "walkBlocks": false,
+      "result": {
+        "verdict": "INSCRIBED",
+        "found": [
+          {
+            "inscriptionId": "3bc69b3052663e4094ef280677cf6034e9c32e2491e34c4b6c1cd14403b3a651i0",
+            "offset": 0,
+            "number": null,
+            "mintTxid": "3bc69b3052663e4094ef280677cf6034e9c32e2491e34c4b6c1cd14403b3a651",
+            "mintHeight": 43,
+            "mintTime": 1793871687
+          }
+        ],
+        "reason": "Mined coin fees need Check deeper",
+        "open": [],
+        "lookups": 6,
+        "usedChain": true
+      }
+    },
+    {
+      "txid": "965b8f892408b5c41692d380281f3cbbda72ee0ea7af0675dcbf5bd70c660a10",
+      "vout": 0,
+      "budget": 2000,
+      "walkBlocks": true,
+      "result": {
+        "verdict": "INSCRIBED",
+        "found": [
+          {
+            "inscriptionId": "3bc69b3052663e4094ef280677cf6034e9c32e2491e34c4b6c1cd14403b3a651i0",
+            "offset": 0,
+            "number": null,
+            "mintTxid": "3bc69b3052663e4094ef280677cf6034e9c32e2491e34c4b6c1cd14403b3a651",
+            "mintHeight": 43,
+            "mintTime": 1793871687
+          }
+        ],
+        "reason": null,
+        "open": [],
+        "lookups": 8,
+        "usedChain": true
+      }
+    },
+    {
+      "txid": "965b8f892408b5c41692d380281f3cbbda72ee0ea7af0675dcbf5bd70c660a10",
+      "vout": 1,
+      "budget": 200,
+      "walkBlocks": false,
+      "result": {
+        "verdict": "UNCHECKED",
+        "found": [],
+        "reason": "Mined coin fees need Check deeper",
+        "open": [],
+        "lookups": 4,
+        "usedChain": true
+      }
+    },
+    {
+      "txid": "965b8f892408b5c41692d380281f3cbbda72ee0ea7af0675dcbf5bd70c660a10",
+      "vout": 1,
+      "budget": 2000,
+      "walkBlocks": true,
+      "result": {
+        "verdict": "CLEAN",
+        "found": [],
+        "reason": null,
+        "open": [],
+        "lookups": 6,
+        "usedChain": true
+      }
+    }
+  ]
+}
