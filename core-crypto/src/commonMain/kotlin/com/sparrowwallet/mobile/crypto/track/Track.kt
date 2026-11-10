@@ -1,8 +1,10 @@
 package com.sparrowwallet.mobile.crypto.track
 
 import com.sparrowwallet.mobile.crypto.RawTx
+import kotlinx.serialization.Serializable
 
 /** A run of units (sats, koinu, photons) by offset, start included, end excluded. */
+@Serializable
 data class UnitRange(val start: Long, val end: Long) {
     init {
         require(start >= 0 && end > start) { "Not a unit range: [$start, $end)" }
@@ -24,12 +26,14 @@ data class UnitRange(val start: Long, val end: Long) {
     override fun toString(): String = "$start-$end"
 }
 
+@Serializable
 enum class Verdict { CLEAN, INSCRIBED, UNCHECKED }
 
 /**
  * Part of a traced coin, found on an output of some transaction (or in its fee when vout is [FEE]). range is by offset
  * within that output (or fee); coinOffset is the offset in the traced coin that range.start stands for.
  */
+@Serializable
 data class Piece(val txid: String, val vout: Int, val range: UnitRange, val coinOffset: Long) {
     companion object {
         const val FEE = -1
@@ -50,6 +54,7 @@ data class Creation(val inscriptionId: String, val vout: Int, val offset: Long) 
  * An inscription on a coin: its id, the offset of its unit in the coin (-1 when unknown), its number (null unless an
  * indexer gave one), and the transaction, height and time it was minted in.
  */
+@Serializable
 data class Found(
     val inscriptionId: String,
     val offset: Long,

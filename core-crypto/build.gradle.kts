@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 kotlin {
@@ -13,6 +14,9 @@ kotlin {
     // iosArm64() / iosSimulatorArm64() — parked until Apple hardware exists (see DESIGN.md).
 
     sourceSets {
+        commonMain.dependencies {
+            implementation(libs.kotlinx.serialization.json) // @Serializable on the tracer's result types
+        }
         // JVM and Android share the same actuals: libsecp256k1 (constant-time) for keys, BouncyCastle for
         // ECDSA so signatures are byte-identical to the desktop's drongo
         val jvmAndroidMain by creating {
