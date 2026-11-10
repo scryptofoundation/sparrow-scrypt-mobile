@@ -2018,8 +2018,9 @@ private fun SendScreen(
     var maturing by remember { mutableStateOf(0L) }
     // coins that may carry an inscription or tokens are held back unless the user includes them
     var includeHeld by remember { mutableStateOf(false) }
-    // a sweep or a peg-in leaves coins not yet checked for inscriptions out unless the user includes them
-    var includeUnchecked by remember { mutableStateOf(false) }
+    // a sweep or a peg-in leaves coins not yet checked for inscriptions out unless the user includes them; the tick
+    // remembers which kind of destination it was given for (a peg-in or not), so it never carries over to the other
+    var uncheckedTickedFor by remember { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(Unit) {
         if(NetworkPolicy.blocked) return@LaunchedEffect
         usdRate = PriceService.currentUsd(sendCoin)
@@ -2045,6 +2046,7 @@ private fun SendScreen(
     }
 
     val isMwebDest = sendCoin == Coin.LITECOIN && repo.isMwebAddress(address, network)
+    val includeUnchecked = uncheckedTickedFor == isMwebDest
     val addressError = address.trim().takeIf { it.isNotEmpty() }
         ?.let { if(isMwebDest) null else repo.validateAddress(it, walletParams(sendCoin, network)) }
     val sharedWarning = if(isMwebDest || addressError != null || address.isBlank()) null
@@ -2313,8 +2315,8 @@ private fun SendScreen(
         }
         if(fundingPrivate != true && (isMwebDest || sendMax) && uncheckedCoins.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().clickable { includeUnchecked = !includeUnchecked; preview = null }) {
-                Checkbox(checked = includeUnchecked, onCheckedChange = { includeUnchecked = it; preview = null })
+                modifier = Modifier.fillMaxWidth().clickable { uncheckedTickedFor = if(includeUnchecked) null else isMwebDest; preview = null }) {
+                Checkbox(checked = includeUnchecked, onCheckedChange = { uncheckedTickedFor = if(it) isMwebDest else null; preview = null })
                 Text("Include unchecked coins", style = MaterialTheme.typography.bodySmall)
             }
         }
