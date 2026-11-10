@@ -453,4 +453,68 @@ class TrackerRunTest {
         assertTrue(check.runes)
         assertEquals(InscriptionCheck.Source.PUBLIC, check.source)
     }
+
+    @Test fun aCancelledCreatingTransactionFetchIsRethrown() {
+        val (tx, stored) = resumedCoin(1)
+        chain.cancelling.add(tx.txid)
+        assertFailsWith<CancellationException> { run(listOf(coin(tx)), mapOf(stored.outpoint to stored)) }
+    }
+
+    /** A coin holding inscription Y near the front of a 150 step ancestry above the first inscription: a trace of 100 lookups finds Y and stops short. */
+    private class Revealed(val tx: RawTx.Parsed, val yId: String, val links: List<RawTx.Parsed>)
+
+    private fun revealedCoin(): Revealed {
+        var previous = chain.add(spend(hash(300), 10_000), 2_000_000)
+        val links = arrayListOf(previous)
+        for(i in 0 until 150) {
+            previous = chain.add(spend(previous.txid, 10_000), 2_500_000 + i)
+            links.add(previous)
+        }
+        val revealY = chain.add(reveal(previous.txid, "Y", 4_000), 2_600_000)
+        val older = chain.add(spend(hash(301), 6_000), 2_000_000)
+        val a = chain.add(tx(listOf(older.txid to 0, revealY.txid to 0), listOf(10_000)), 2_600_001)
+        return Revealed(a, revealY.txid + "i0", links)
+    }
+
+    private fun assertStartsOver(r: Revealed, first: InscriptionCheck) {
+        //The held row forgot the find, so it must not carry the pieces a resume would take for the whole coin
+        assertEquals(Verdict.UNCHECKED, first.verdict)
+        assertTrue(first.found.isEmpty())
+        assertTrue(first.open.isEmpty(), first.toString())
+        val again = run(listOf(coin(r.tx, height = 2_600_001)), mapOf(first.outpoint to first)).getValue(first.outpoint)
+        assertEquals(Verdict.INSCRIBED, again.verdict, again.toString())
+        assertEquals(listOf(r.yId), again.found.map { it.inscriptionId })
+    }
+
+    @Test fun aBudgetExitAfterAFindStartsTheTraceOverNextRun() {
+        val r = revealedCoin()
+        val outpoint = r.tx.txid + ":0"
+        val answer = IndexerAnswer(true, listOf(r.yId), runes = false, unlisted = false)
+        val first = run(listOf(coin(r.tx, height = 2_600_001)), answers = mapOf(outpoint to answer), indexerSource = InscriptionCheck.Source.PUBLIC, runBudget = 100)
+            .getValue(outpoint)
+        assertEquals(budgetUsed, first.reason)
+        assertStartsOver(r, first)
+    }
+
+    @Test fun aRevealFailureAfterAFindStartsTheTraceOverNextRun() {
+        val r = revealedCoin()
+        val outpoint = r.tx.txid + ":0"
+        val answer = IndexerAnswer(true, listOf(r.yId, hash(999) + "i0"), runes = false, unlisted = false)
+        val first = run(listOf(coin(r.tx, height = 2_600_001)), answers = mapOf(outpoint to answer), indexerSource = InscriptionCheck.Source.PUBLIC)
+            .getValue(outpoint)
+        assertTrue(first.reason!!.startsWith(serverError), first.reason)
+        assertStartsOver(r, first)
+    }
+
+    @Test fun aServerErrorAfterAFindStartsTheTraceOverNextRun() {
+        val r = revealedCoin()
+        val outpoint = r.tx.txid + ":0"
+        val answer = IndexerAnswer(true, listOf(r.yId), runes = false, unlisted = false)
+        chain.failing.add(r.links[r.links.size - 50].txid)
+        val first = run(listOf(coin(r.tx, height = 2_600_001)), answers = mapOf(outpoint to answer), indexerSource = InscriptionCheck.Source.PUBLIC)
+            .getValue(outpoint)
+        assertTrue(first.reason!!.startsWith(serverError), first.reason)
+        chain.failing.clear()
+        assertStartsOver(r, first)
+    }
 }

@@ -88,7 +88,7 @@ object TrackerRun {
                 results[outpoint] = if(previous != null && (!(previous.verdict == Verdict.CLEAN || CheckPolicy.complete(previous)) || stands(previous, answer))) {
                     previous
                 } else {
-                    held(utxo, indexerSource, state.stop ?: InscriptionTracer.BUDGET_USED, blockHash, emptyList())
+                    held(utxo, indexerSource, state.stop ?: InscriptionTracer.BUDGET_USED, blockHash, null)
                 }
             } else {
                 tracing = outpoint
@@ -117,8 +117,16 @@ object TrackerRun {
     private fun stands(check: InscriptionCheck, answer: IndexerAnswer?): Boolean =
         CheckPolicy.complete(check) && check.blockHash != null && agrees(check, answer)
 
-    private fun held(utxo: Coin, indexerSource: InscriptionCheck.Source?, reason: String, blockHash: String?, open: List<Piece>) =
-        InscriptionCheck(utxo.txid, utxo.vout, Verdict.UNCHECKED, indexerSource ?: InscriptionCheck.Source.BUILT_IN, false, emptyList(), reason, blockHash, open)
+    /**
+     * An UNCHECKED row for a coin that could not be decided. An Unchecked row never carries open pieces together with a
+     * forgotten find: the row keeps no found list, and the next run resumes an Unchecked row from its open pieces alone, so
+     * pieces are kept only when the trace found nothing. Otherwise the next run starts the trace over and finds it again.
+     */
+    private fun held(utxo: Coin, indexerSource: InscriptionCheck.Source?, reason: String, blockHash: String?, trace: TraceResult?) =
+        InscriptionCheck(
+            utxo.txid, utxo.vout, Verdict.UNCHECKED, indexerSource ?: InscriptionCheck.Source.BUILT_IN, false, emptyList(), reason, blockHash,
+            if(trace != null && trace.found.isEmpty()) trace.open else emptyList()
+        )
 
     /** Runs a call to the chain source; any failure but cancellation becomes a [ServerFailure]. */
     private suspend fun <T> server(call: suspend () -> T): T = try {
@@ -151,9 +159,9 @@ object TrackerRun {
         try {
             if(indexed != null) {
                 for(id in indexed.inscriptions) {
-                    state.stop?.let { return held(utxo, indexerSource, it, blockHash, trace.open) }
+                    state.stop?.let { return held(utxo, indexerSource, it, blockHash, trace) }
                     if(state.exhausted(deep)) {
-                        return held(utxo, indexerSource, InscriptionTracer.BUDGET_USED, blockHash, trace.open)
+                        return held(utxo, indexerSource, InscriptionTracer.BUDGET_USED, blockHash, trace)
                     }
                     if(!deep) {
                         state.used++
@@ -167,7 +175,7 @@ object TrackerRun {
                 } else {
                     //A resumed trace starts from ancestors and never read the coin's own transaction
                     if(state.exhausted(deep)) {
-                        return held(utxo, indexerSource, InscriptionTracer.BUDGET_USED, blockHash, emptyList())
+                        return held(utxo, indexerSource, InscriptionTracer.BUDGET_USED, blockHash, null)
                     }
                     val tx = server { source.transaction(utxo.txid) }
                     if(tx.fromServer && !deep) {
@@ -183,7 +191,7 @@ object TrackerRun {
         } catch(e: ServerFailure) {
             val reason = "${InscriptionTracer.SERVER_ERROR_PREFIX}: ${e.message}"
             state.stop = reason
-            return held(utxo, indexerSource, reason, blockHash, trace.open)
+            return held(utxo, indexerSource, reason, blockHash, trace)
         }
         return CheckPolicy.decide(utxo.txid, utxo.vout, indexed, indexerSource, trace, reveals, creating, blockHash)
     }
