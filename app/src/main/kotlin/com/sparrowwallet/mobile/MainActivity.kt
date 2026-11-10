@@ -2018,7 +2018,7 @@ private fun SendScreen(
     var maturing by remember { mutableStateOf(0L) }
     // coins that may carry an inscription or tokens are held back unless the user includes them
     var includeHeld by remember { mutableStateOf(false) }
-    // a sweep leaves coins not yet checked for inscriptions out unless the user includes them
+    // a sweep or a peg-in leaves coins not yet checked for inscriptions out unless the user includes them
     var includeUnchecked by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if(NetworkPolicy.blocked) return@LaunchedEffect
@@ -2055,12 +2055,13 @@ private fun SendScreen(
 
     // each box counts only while it is shown, so a coin that turns held or unchecked later is never released unseen
     val heldIncluded = includeHeld && heldCoins.isNotEmpty()
-    val uncheckedIncluded = includeUnchecked && sendMax && uncheckedCoins.isNotEmpty()
-    // the coins this send can use, in the order it takes them: a peg-in takes Clean coins only, Send max the Clean ones
-    // plus whatever the user includes, and a payment Clean first, then Unchecked, then held when included
+    val uncheckedIncluded = includeUnchecked && (sendMax || isMwebDest) && uncheckedCoins.isNotEmpty()
+    // the coins this send can use, in the order it takes them: a peg-in takes Clean coins, then Unchecked ones only when
+    // included (never held ones), Send max the Clean ones plus whatever the user includes, and a payment Clean first,
+    // then Unchecked, then held when included
     val utxos: List<Long>? = scannedCoins?.let {
         when {
-            isMwebDest -> it.spendable
+            isMwebDest -> it.pegInUsable(uncheckedIncluded)
             sendMax -> it.sweepable(heldIncluded, uncheckedIncluded)
             else -> it.usable(heldIncluded)
         }
@@ -2305,12 +2306,12 @@ private fun SendScreen(
                 Text("Include held coins", style = MaterialTheme.typography.bodySmall)
             }
         }
-        // a sweep leaves Unchecked coins out unless included; a peg-in always does
-        if(uncheckedCoins.isNotEmpty() && fundingPrivate != true && (isMwebDest || (sendMax && !uncheckedIncluded))) {
+        // a sweep or a peg-in leaves Unchecked coins out unless the user includes them (a peg-in never takes held ones)
+        if(uncheckedCoins.isNotEmpty() && fundingPrivate != true && (isMwebDest || sendMax) && !uncheckedIncluded) {
             Text(uncheckedLeftOutCopy(uncheckedCoins.size, formatAmountShort(sendCoin, uncheckedCoins.sum())),
                 style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
         }
-        if(publicPays && sendMax && uncheckedCoins.isNotEmpty()) {
+        if(fundingPrivate != true && (isMwebDest || sendMax) && uncheckedCoins.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().clickable { includeUnchecked = !includeUnchecked; preview = null }) {
                 Checkbox(checked = includeUnchecked, onCheckedChange = { includeUnchecked = it; preview = null })

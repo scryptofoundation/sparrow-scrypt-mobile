@@ -244,7 +244,43 @@ class WalletParamsTest {
         assertEquals(2, tiers.uncheckedIn(swept))
         //and the held box alone adds the held coin but not the unchecked ones
         assertEquals(setOf("11", "33", "55").map { it.repeat(32) + ":0" }.toSet(), pay(0, includeHeld = true, sendMax = true).second.toSet())
-        assertEquals(listOf(30_000L, 10_000L), tiers.candidates(includeHeld = false, sendMax = true, pegIn = true, includeUnchecked = true).map { it.value })
+        //a peg-in with its own include box ticked takes the unchecked coins after the Clean ones, never the held one
+        assertEquals(listOf(30_000L, 10_000L, 50_000L, 20_000L),
+            tiers.candidates(includeHeld = false, sendMax = true, pegIn = true, includeUnchecked = true).map { it.value })
+    }
+
+    /**
+     * Review I5: coins that came out of MWEB are Unchecked for good, so a peg-in may take Unchecked coins when the user
+     * ticks their box: after the Clean ones, only on shortfall (all of them for send max). Held coins never.
+     */
+    @Test
+    fun pegInMayAddUncheckedCoinsByChoice() {
+        val (tiers, _) = tieredScan()
+        for(includeHeld in listOf(false, true)) {
+            for(sendMax in listOf(false, true)) {
+                assertEquals(listOf(30_000L, 10_000L, 50_000L, 20_000L),
+                    tiers.candidates(includeHeld, sendMax, pegIn = true, includeUnchecked = true).map { it.value })
+            }
+        }
+        val (_, small) = pay(20_000, pegIn = true, includeUnchecked = true)
+        assertEquals(listOf("11".repeat(32) + ":0"), small, "Clean first, Unchecked only on shortfall")
+        val (_, short) = pay(60_000, pegIn = true, includeUnchecked = true)
+        assertEquals(listOf("11", "33", "22").map { it.repeat(32) + ":0" }, short)
+        assertEquals(1, tiers.uncheckedIn(short))
+        val (_, max) = pay(0, sendMax = true, pegIn = true, includeUnchecked = true)
+        assertEquals(setOf("11", "33", "22", "44").map { it.repeat(32) + ":0" }.toSet(), max.toSet())
+        assertEquals(0, tiers.heldIn(max))
+        assertFailsWith<IllegalArgumentException> { pay(150_000, includeHeld = true, pegIn = true, includeUnchecked = true) }
+    }
+
+    /** What the Send screen counts as available for a peg-in: the Clean coins, plus the Unchecked ones when included. */
+    @Test
+    fun pegInAvailableFollowsTheUncheckedBox() {
+        val coins = SendCoins.split(listOf(
+            ScannedCoin(30_000, 40), ScannedCoin(50_000, 40, state = CoinState.UNCHECKED), ScannedCoin(80_000, 40, state = CoinState.HELD)
+        ), tip = 50, minConfirmations = 6)
+        assertEquals(listOf(30_000L), coins.pegInUsable(includeUnchecked = false))
+        assertEquals(listOf(30_000L, 50_000L), coins.pegInUsable(includeUnchecked = true))
     }
 
     @Test

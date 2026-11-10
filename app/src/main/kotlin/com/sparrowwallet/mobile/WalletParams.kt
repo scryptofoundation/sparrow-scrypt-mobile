@@ -80,6 +80,9 @@ data class SendCoins(val spendable: List<Long>, val maturing: Long, val held: Li
     fun sweepable(includeHeld: Boolean, includeUnchecked: Boolean): List<Long> =
         spendable + (if(includeUnchecked) unchecked else emptyList()) + (if(includeHeld) held else emptyList())
 
+    /** The coins a peg-in into MWEB may use: the Clean ones, plus the unchecked ones only when the user includes them. Never held ones. */
+    fun pegInUsable(includeUnchecked: Boolean): List<Long> = spendable + (if(includeUnchecked) unchecked else emptyList())
+
     companion object {
         /**
          * Ready coins by state: Clean ones are [spendable], [held] ones may carry an inscription (Send leaves them out by
@@ -171,12 +174,13 @@ internal class SpendTiers(clean: List<SpendableInput>, unchecked: List<Spendable
     /**
      * The coins a send may use, in the order it must take them (build with keepOrder): Clean first, then Unchecked, then
      * Held when the user includes them. Send max spends the Clean ones, plus the Unchecked ones only with
-     * [includeUnchecked] and the held ones only with [includeHeld]. A peg-in into MWEB takes Clean coins only: whatever a
-     * coin carries would be lost there.
+     * [includeUnchecked] and the held ones only with [includeHeld]. A peg-in into MWEB takes Clean coins, plus the
+     * Unchecked ones after them only with [includeUnchecked] (coins that came out of MWEB stay Unchecked for good); never
+     * held ones, whatever is ticked: whatever a coin carries would be lost there.
      */
     fun candidates(includeHeld: Boolean, sendMax: Boolean, pegIn: Boolean = false, includeUnchecked: Boolean = false): List<SpendableInput> =
         when {
-            pegIn -> clean
+            pegIn -> clean + (if(includeUnchecked) unchecked else emptyList())
             sendMax -> clean + (if(includeUnchecked) unchecked else emptyList()) + (if(includeHeld) held else emptyList())
             else -> clean + unchecked + (if(includeHeld) held else emptyList())
         }

@@ -815,7 +815,7 @@ class WalletRepository(context: Context) {
         val net = network(data)
         val coin = coin(data)
         if(coin == Coin.LITECOIN && isMwebAddress(toAddress, net)) {
-            return preparePegIn(data, account, toAddress, amountLitoshis, sendMax)
+            return preparePegIn(data, account, toAddress, amountLitoshis, sendMax, includeUnchecked)
         }
         val params = params(data)
         val destScript = Addresses.toScriptPubKey(toAddress, params)
@@ -877,7 +877,7 @@ class WalletRepository(context: Context) {
         val net = network(data)
         val coin = coin(data)
         if(coin == Coin.LITECOIN && isMwebAddress(toAddress, net)) {
-            return preparePegInPsbt(data, account, toAddress, amountLitoshis, sendMax)
+            return preparePegInPsbt(data, account, toAddress, amountLitoshis, sendMax, includeUnchecked)
         }
         require(externalSigningSupported(coin, net, data.scriptType)) {
             "Signing on another device is not available for this wallet"
@@ -930,7 +930,7 @@ class WalletRepository(context: Context) {
     /** Peg-in as a PSBT: mwebd builds/signs the MWEB side; the public inputs go out for
      *  external signing; the blob stays in [UnsignedSendPreview.mwebBlob] until finalize. */
     private suspend fun preparePegInPsbt(
-        data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean
+        data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean, includeUnchecked: Boolean
     ): UnsignedSendPreview {
         val net = network(data)
         val program = Bech32.decodeWitness(toAddress.trim()).program
@@ -946,15 +946,16 @@ class WalletRepository(context: Context) {
         }
         val accountPath = parsePathChildren(data.derivationPath)
         val pathByKey = HashMap<HDKey, List<Long>>()
-        //Clean coins only, through the same tiers as preparePegIn: whatever a held or unchecked coin carries, ord
-        //cannot follow it into MWEB
-        val candidates = SpendTiers.of(scan.utxos
+        //The same tiers as preparePegIn: Clean coins, then the unchecked ones only when included; never held ones,
+        //since whatever a coin carries cannot follow it into MWEB
+        val tiers = SpendTiers.of(scan.utxos
             .filter { spendable(data, tip, it) }
             .map {
                 val key = account.deriveChild(it.chain.toLong()).deriveChild(it.index.toLong())
                 pathByKey[key] = accountPath + listOf(it.chain.toLong(), it.index.toLong())
                 SpendableInput(it.utxo.txHash, it.utxo.txPos.toLong(), it.utxo.value, key, ScriptType.P2WPKH) to states.state(it)
-            }).candidates(includeHeld = false, sendMax = sendMax, pegIn = true)
+            })
+        val candidates = tiers.candidates(includeHeld = false, sendMax = sendMax, pegIn = true, includeUnchecked = includeUnchecked)
         val changeKey = account.deriveChild(1).deriveChild(scan.nextChangeIndex.toLong())
         val changeScript = Scripts.p2wpkhOutput(changeKey.pubKey)
 
@@ -981,7 +982,7 @@ class WalletRepository(context: Context) {
                 mwebScanSecret(data), mwebSpendSecret(data), program, amount, feeRate * 1000)
             val unsigned = TxBuilder.buildUnsigned(
                 candidates, template.peginScript, template.peginValue, effectiveRate, changeScript, sendMax,
-                ChainParams.of(Coin.LITECOIN, net))
+                ChainParams.of(Coin.LITECOIN, net), keepOrder = true)
             if(sendMax) {
                 require(unsigned.tx.outputs[0].value == template.peginValue) {
                     "Peg-in max calculation mismatch — enter a specific amount instead"
@@ -1000,7 +1001,8 @@ class WalletRepository(context: Context) {
                     changePath = accountPath + listOf(1L, scan.nextChangeIndex.toLong())
                 )
                 return UnsignedSendPreview(toAddress, amount, unsigned.fee + mwebFee, feeRate,
-                    unsigned.tx.txid(), Psbt.toBase64(psbt), template.mwebBlob)
+                    unsigned.tx.txid(), Psbt.toBase64(psbt), template.mwebBlob,
+                    unchecked = tiers.uncheckedIn(unsigned.inputs.map { outpoint(it) }))
             }
             effectiveRate += (requiredFee - (unsigned.fee + mwebFee) + canonicalVsize - 1) / canonicalVsize
         }
@@ -1238,16 +1240,18 @@ class WalletRepository(context: Context) {
         }
     }
 
-    private suspend fun preparePegIn(data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean): SendPreview {
+    private suspend fun preparePegIn(data: VaultData, account: HDKey, toAddress: String, amountLitoshis: Long, sendMax: Boolean,
+                                     includeUnchecked: Boolean): SendPreview {
         val net = network(data)
         val program = Bech32.decodeWitness(toAddress.trim()).program
         require(program.size == 66) { "Not a valid MWEB address" }
 
         requirePegInWallet(data)
         val feeRate = withBackend(Coin.LITECOIN, net) { clampFeeRate(Coin.LITECOIN, it.feeRate(2)) }
-        //Clean coins only: whatever a held or unchecked coin carries, ord cannot follow it into MWEB
-        val (candidates, changeScript) = withBackend(Coin.LITECOIN, net) { collectSpendables(it, data, account, ScriptType.P2WPKH) }
-            .let { (tiers, change) -> tiers.candidates(includeHeld = false, sendMax = sendMax, pegIn = true) to change }
+        //Clean coins, then the unchecked ones only when included (in that order, so only on shortfall); never held ones:
+        //whatever a coin carries, ord cannot follow it into MWEB
+        val (tiers, changeScript) = withBackend(Coin.LITECOIN, net) { collectSpendables(it, data, account, ScriptType.P2WPKH) }
+        val candidates = tiers.candidates(includeHeld = false, sendMax = sendMax, pegIn = true, includeUnchecked = includeUnchecked)
         val service = mwebd(data)
 
         // Relay rules charge fee on the MWEB blob's bytes too (min relay = size × rate),
@@ -1277,7 +1281,7 @@ class WalletRepository(context: Context) {
                 mwebScanSecret(data), mwebSpendSecret(data), program, amount, feeRate * 1000
             )
             val built = TxBuilder.build(candidates, template.peginScript, template.peginValue,
-                effectiveRate, changeScript, sendMax, ChainParams.of(Coin.LITECOIN, net))
+                effectiveRate, changeScript, sendMax, ChainParams.of(Coin.LITECOIN, net), keepOrder = true)
             if(sendMax) {
                 require(built.tx.outputs[0].value == template.peginValue) {
                     "Peg-in max calculation mismatch — enter a specific amount instead"
@@ -1294,7 +1298,8 @@ class WalletRepository(context: Context) {
                 return SendPreview(
                     toAddress, amount,
                     built.fee + mwebFee, // public fee (incl HogEx allowance) + mweb fee
-                    feeRate, built.tx.txid(), built.hex()
+                    feeRate, built.tx.txid(), built.hex(),
+                    unchecked = tiers.uncheckedIn(spentOutpoints(built.tx))
                 )
             }
             val shortfall = requiredFee - (built.fee + mwebFee)
