@@ -54,6 +54,15 @@ class LiveTraceTest {
         json.parseToJsonElement(it.body)
     }
 
+    /**
+     * One output's find_meta: the answer, or null when the indexer cannot say (any status but 200 and 429, as the app's
+     * InscriptionIndex reads it), which skips that output only. A 429 still skips the whole leg.
+     */
+    private suspend fun findMeta(http: HttpEndpoint, path: String) = http.get(path, "application/json").let {
+        if(it.status == 429) throw Skip("429 from ${http.url}$path")
+        if(it.status != 200) null else json.parseToJsonElement(it.body)
+    }
+
     /** A trace that did not reach a verdict is inconclusive, not a pass: say so and why. */
     private fun reportNegative(label: String, outpoint: String, r: TraceResult) {
         report(label, outpoint, emptyList(), r)
@@ -120,8 +129,8 @@ class LiveTraceTest {
                             val tx = t.jsonObject
                             val txid = tx["txid"]!!.jsonPrimitive.content
                             for(vout in 0 until tx["vout"]!!.jsonArray.size) {
-                                //Only a 404 means "nothing there"; a 429 skips the leg rather than reading as clean
-                                val metas = getJsonOrNone(index, "/find_meta/${txid}i$vout") as? JsonArray ?: continue
+                                //An output the indexer cannot say about is passed over; a 429 skips the leg rather than reading as clean
+                                val metas = findMeta(index, "/find_meta/${txid}i$vout") as? JsonArray ?: continue
                                 //An output holding a dozen inscriptions is a collector's coin with a long history; a small holder is the useful probe
                                 if(metas.isNotEmpty() && metas.size <= 3 && hit == null) {
                                     hit = Triple(txid, vout, metas.map { it.jsonObject["genesis"]!!.jsonPrimitive.content })
