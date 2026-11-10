@@ -114,8 +114,9 @@ class WalletRepository(context: Context) {
     fun deleteWallet(name: String) {
         vaultFile(name).delete()
         metaFile(name).delete()
-        deleteWalletCaches(safeName(name), inscriptionStore, SyncStore.cacheFile(appContext.filesDir, name))
+        //forget first: it stops a running check from writing the file back after it is deleted
         inscriptionChecker.forget(name)
+        deleteWalletCaches(safeName(name), inscriptionStore, SyncStore.cacheFile(appContext.filesDir, name))
         sessionTotals.remove(safeName(name))
         sessionNames.values.removeAll { it == safeName(name) }
         pendingPsbts.drop(name)
@@ -315,45 +316,63 @@ class WalletRepository(context: Context) {
     }
 
     /**
-     * Checks an open public wallet's coins for inscriptions on one server connection: lists its unspent coins (the
-     * shown receive addresses included, as the sync walks them), then runs the built-in check, with the coins in
-     * [deeper] checked deeper. Never throws but for cancellation: a skipped (one is already going for the wallet) or
-     * failed check returns the stored results unchanged. MWEB wallets, uncovered coins and air-gapped mode open no
-     * connection.
+     * Starts the check of an open public wallet's coins for inscriptions, in the checker's own scope (leaving Home does
+     * not cancel it): on one server connection it lists the unspent coins (the shown receive addresses included, as
+     * the sync walks them), then runs the built-in check, with the coins in [deeper] checked deeper. It holds only the
+     * account xpub and the shown-receive count, never the wallet's keys, so locking the wallet does not need to stop
+     * it. Skipped while one is going for the wallet; [inscriptionProgress] shows it. MWEB wallets, uncovered coins and
+     * air-gapped mode start nothing. [account] is the wallet's account key Home holds (its xpub is read from it here,
+     * cheaply, so nothing slow runs on the caller's thread).
      */
-    suspend fun checkInscriptions(data: VaultData, deeper: Set<String> = emptySet(),
-                                  progress: (done: Int, total: Int) -> Unit = { _, _ -> }): Map<String, InscriptionCheck> {
-        val name = sessionNames[data] ?: return emptyMap()
-        return checkCoins(name, coin(data), network(data), data.scriptType, deeper, progress, { accountKey(data) }) {
-            receiveShownTo(data)
+    fun startInscriptionCheck(data: VaultData, account: HDKey, deeper: Set<String> = emptySet()) {
+        val name = sessionNames[data] ?: return
+        val coin = coin(data)
+        if(!checkApplies(data.scriptType, coin)) {
+            return
+        }
+        val network = network(data)
+        val scriptType = data.scriptType
+        val xpub = account.xpub(params(data).xpubHeader)
+        val receiveTo = receiveShownTo(data)
+        inscriptionChecker.start(name) {
+            runCheck(name, coin, network, scriptType, deeper, { false }, XpubKey.fromXpub(xpub), receiveTo)
         }
     }
+
+    /** The wallet's running check as (done, total) coins, or null when none is going; read by Home's status line. */
+    fun inscriptionProgress(data: VaultData): kotlinx.coroutines.flow.StateFlow<Pair<Int, Int>?>? =
+        sessionNames[data]?.let { inscriptionChecker.progress(it) }
 
     /**
      * The background worker's check of a wallet from its cached xpub alone, with the default budgets and the receive
-     * addresses Home has shown (kept under the xpub's hash). Never throws but for cancellation.
+     * addresses Home has shown (kept under the xpub's hash). [timeUp] stops it between coins, saving what it decided.
+     * Skipped while one is going for the wallet. Never throws but for cancellation.
      */
-    suspend fun checkInscriptionsFromXpub(creds: SyncCredentials): Map<String, InscriptionCheck> {
-        val xpub = creds.xpub ?: return withContext(Dispatchers.IO) { inscriptionChecker.results(creds.name) }
-        return checkCoins(creds.name, Coin.fromId(creds.coin), Network.fromId(creds.network), creds.scriptType, emptySet(),
-            { _, _ -> }, { XpubKey.fromXpub(xpub) }) { prefs.getInt(receiveShownKey(xpub), 0) }
-    }
-
-    private suspend fun checkCoins(name: String, coin: Coin, network: Network, scriptType: String, deeper: Set<String>,
-                                   progress: (Int, Int) -> Unit, key: () -> Bip32Pub,
-                                   watchReceiveTo: () -> Int): Map<String, InscriptionCheck> = withContext(Dispatchers.IO) {
+    suspend fun checkInscriptionsFromXpub(creds: SyncCredentials, timeUp: () -> Boolean = { false }): Map<String, InscriptionCheck> {
         val checker = inscriptionChecker
-        if(scriptType == "MWEB" || !ChainRules.covers(coin) || NetworkPolicy.blocked) {
-            return@withContext checker.results(name)
+        val xpub = creds.xpub
+        val coin = Coin.fromId(creds.coin)
+        if(xpub == null || !checkApplies(creds.scriptType, coin)) {
+            return withContext(Dispatchers.IO) { checker.results(creds.name) }
         }
-        checker.guarded(name) {
-            withBackend(coin, network) { client ->
-                val utxos = WalletScanner(client, walletScriptType(scriptType))
-                    .utxos(key(), watchReceiveTo = watchReceiveTo()).utxos.map { it.utxo }
-                checker.check(name, coin, network, client, utxos, deeper, progress)
+        return withContext(Dispatchers.IO) {
+            checker.guarded(creds.name) {
+                runCheck(creds.name, coin, Network.fromId(creds.network), creds.scriptType, emptySet(), timeUp,
+                    XpubKey.fromXpub(xpub), prefs.getInt(receiveShownKey(xpub), 0))
             }
         }
     }
+
+    private fun checkApplies(scriptType: String, coin: Coin): Boolean =
+        scriptType != "MWEB" && ChainRules.covers(coin) && !NetworkPolicy.blocked
+
+    private suspend fun runCheck(name: String, coin: Coin, network: Network, scriptType: String, deeper: Set<String>,
+                                 timeUp: () -> Boolean, key: Bip32Pub, watchReceiveTo: Int): Map<String, InscriptionCheck> =
+        withBackend(coin, network) { client ->
+            val utxos = WalletScanner(client, walletScriptType(scriptType))
+                .utxos(key, watchReceiveTo = watchReceiveTo).utxos.map { it.utxo }
+            inscriptionChecker.check(name, coin, network, client, utxos, deeper, timeUp)
+        }
 
     /**
      * Caches view-only sync credentials (xpub / MWEB scan key — never seeds or spend

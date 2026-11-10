@@ -20,7 +20,9 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.NetworkPolicy
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import java.util.concurrent.TimeUnit
 
 /**
@@ -47,6 +49,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         /** One pass over every cached wallet; false when nothing ran. */
         internal suspend fun runChecks(context: Context): Boolean {
             if(NetworkPolicy.blocked) return false
+            val startedAt = System.currentTimeMillis()
             val store = SyncStore(context)
             val repo = WalletRepository(context)
             val received = mutableListOf<String>()
@@ -87,19 +90,39 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             }
 
             // Then the inscription check of each public wallet whose scan just succeeded, after the funds notice so a
-            // long check cannot hold it back. No notification; a failed check leaves the stored results and never
-            // fails or retries the worker.
-            for(creds in store.loadAll()) {
-                if(creds.scriptType == "MWEB" || creds.xpub == null || creds.name !in scanned) continue
+            // long check cannot hold it back. No notification; a failed check leaves what it saved and never fails or
+            // retries the worker. The pass keeps inside WorkManager's ten-minute window (see inscriptionPass).
+            val wallets = store.loadAll().filter { it.scriptType != "MWEB" && it.xpub != null && it.name in scanned }
+            inscriptionPass(wallets, startedAt, System::currentTimeMillis) { creds, timeUp ->
+                repo.checkInscriptionsFromXpub(creds, timeUp)
+            }
+            return true
+        }
+
+        /** No new wallet's inscription check starts once the worker has run this long. */
+        internal const val START_LIMIT_MS = 5 * 60_000L
+
+        /** A running check stops between coins (saving what it decided) once the worker has run this long. */
+        internal const val CHECK_DEADLINE_MS = 8 * 60_000L
+
+        /**
+         * Runs [check] for each wallet in turn, from a worker that started at [startedAtMs]: none starts after
+         * [START_LIMIT_MS], and each is handed a timeUp that turns true at [CHECK_DEADLINE_MS]. One wallet's check that
+         * fails or is cancelled (a timeout inside it) moves on to the next; a cancelled worker stops the pass.
+         */
+        internal suspend fun <T> inscriptionPass(wallets: List<T>, startedAtMs: Long, now: () -> Long,
+                                                 check: suspend (T, timeUp: () -> Boolean) -> Unit) {
+            val timeUp = { now() - startedAtMs >= CHECK_DEADLINE_MS }
+            for(wallet in wallets) {
+                if(now() - startedAtMs >= START_LIMIT_MS) break
                 try {
-                    repo.checkInscriptionsFromXpub(creds)
+                    check(wallet, timeUp)
                 } catch(e: kotlinx.coroutines.CancellationException) {
-                    throw e
+                    currentCoroutineContext().ensureActive()
                 } catch(t: Throwable) {
                     // checkInscriptionsFromXpub already swallows failures; this keeps the worker safe regardless
                 }
             }
-            return true
         }
 
         private fun notifyReceived(context: Context, lines: List<String>) {

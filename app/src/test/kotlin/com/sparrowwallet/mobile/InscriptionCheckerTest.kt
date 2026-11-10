@@ -14,6 +14,10 @@ import com.sparrowwallet.mobile.electrum.TxDetail
 import com.sparrowwallet.mobile.electrum.Utxo
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import java.io.File
@@ -59,6 +63,8 @@ private class FakeChain : ChainBackend {
     var blockHashNull = false
     var blockHashFails = false
     var cancelOn: String? = null
+    /** Runs before each transaction read, as something else the app does mid-run would. */
+    var beforeRaw: (String) -> Unit = {}
 
     fun add(bytes: ByteArray, height: Int): String {
         val txid = RawTx.parse(bytes).txid
@@ -79,6 +85,7 @@ private class FakeChain : ChainBackend {
     override suspend fun rawTransaction(txid: String): ByteArray {
         calls++
         rawCalls++
+        beforeRaw(txid)
         if(txid == cancelOn) throw CancellationException("left the screen")
         return raw[txid] ?: throw IOException("No such transaction $txid")
     }
@@ -128,8 +135,123 @@ class InscriptionCheckerTest {
 
     private fun checker(dir: File, cipher: StoreCipher) = InscriptionChecker(InscriptionStore(dir, cipher))
 
-    private suspend fun InscriptionChecker.ltc(chain: FakeChain, utxos: List<Utxo>, deeper: Set<String> = emptySet()) =
-        check(wallet, Coin.LITECOIN, Network.MAINNET, chain, utxos, deeper)
+    private suspend fun InscriptionChecker.ltc(chain: FakeChain, utxos: List<Utxo>, deeper: Set<String> = emptySet(),
+                                               timeUp: () -> Boolean = { false }) =
+        check(wallet, Coin.LITECOIN, Network.MAINNET, chain, utxos, deeper, timeUp)
+
+    /** Four coins, each Clean in one lookup, with provisional rows (no block) stored by a first run. */
+    private class Four(val chain: FakeChain, val coins: List<String>, val utxos: List<Utxo>, val old: Map<String, InscriptionCheck>)
+
+    private suspend fun four(dir: File, cipher: StoreCipher): Four {
+        val chain = FakeChain()
+        val coins = (1..4).map { oldCoin(chain, 50_000L + it) }
+        val utxos = coins.mapIndexed { i, txid -> Utxo(txid, 0, 100, 50_001L + i) }
+        chain.blockHashNull = true
+        val old = checker(dir, cipher).ltc(chain, utxos)
+        assertTrue(old.values.all { it.blockHash == null })
+        chain.blockHashNull = false
+        return Four(chain, coins, utxos, old)
+    }
+
+    /** Review I2: a run killed after the 2nd of 4 coins has saved the first two new results over the old rows. */
+    @Test fun aCancelledRunKeepsItsProgress(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val f = four(dir, cipher)
+        f.chain.cancelOn = f.coins[2]
+        val checker = checker(dir, cipher)
+        assertFailsWith<CancellationException> { checker.ltc(f.chain, f.utxos) }
+        val saved = InscriptionStore(dir, cipher).load(wallet)
+        assertEquals(f.coins.map { "$it:0" }.toSet(), saved.keys, "no row dropped, none invented")
+        for(txid in f.coins.take(2)) {
+            assertEquals(FakeChain.block(100), saved.getValue("$txid:0").blockHash, "a new result")
+        }
+        for(txid in f.coins.drop(2)) {
+            assertEquals(f.old.getValue("$txid:0"), saved.getValue("$txid:0"), "the old row")
+        }
+        assertEquals(saved, checker.results(wallet), "memory follows the file")
+        assertNull(checker.progress(wallet).value, "no run shown once it ends")
+    }
+
+    /** A deadline stops the run between coins; what it decided is saved, the rest says why it was not checked. */
+    @Test fun aDeadlineStopsBetweenCoinsAndSaves(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val f = four(dir, cipher)
+        f.chain.rawCalls = 0
+        val result = checker(dir, cipher).ltc(f.chain, f.utxos, timeUp = { f.chain.rawCalls >= 2 })
+        assertEquals(2, f.chain.rawCalls)
+        assertEquals(result, InscriptionStore(dir, cipher).load(wallet))
+        for(txid in f.coins.take(2)) {
+            assertEquals(Verdict.CLEAN, result.getValue("$txid:0").verdict)
+            assertEquals(FakeChain.block(100), result.getValue("$txid:0").blockHash)
+        }
+        for(txid in f.coins.drop(2)) {
+            assertEquals(Verdict.UNCHECKED, result.getValue("$txid:0").verdict)
+            assertEquals(com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun.TIME_UP, result.getValue("$txid:0").reason)
+        }
+    }
+
+    /** A save is skipped when a coin's result is what the file already holds. */
+    @Test fun standingRowsWriteNothing(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        checker(dir, cipher).ltc(chain, listOf(Utxo(a, 0, 100, 50_000)))
+        val file = File(dir, "My Wallet.bin")
+        val bytes = file.readBytes()
+        checker(dir, cipher).ltc(chain, listOf(Utxo(a, 0, 100, 50_000)))
+        assertTrue(bytes.contentEquals(file.readBytes()), "not rewritten")
+    }
+
+    /** Home reads a run's progress from the checker, whoever started it. */
+    @Test fun progressIsShownWhileARunGoes(): Unit = runBlocking {
+        val chain = FakeChain()
+        val coins = (1..2).map { oldCoin(chain, 50_000L + it) }
+        val checker = checker(newDir(), CheckerCipher())
+        val seen = ArrayList<Pair<Int, Int>?>()
+        chain.beforeRaw = { seen.add(checker.progress(wallet).value) }
+        checker.ltc(chain, coins.map { Utxo(it, 0, 100, 1) })
+        assertEquals(listOf<Pair<Int, Int>?>(0 to 2, 1 to 2), seen)
+        assertNull(checker.progress(wallet).value)
+    }
+
+    /** Review I2: a run Home starts lives in the checker's scope, so leaving Home does not cancel it. */
+    @Test fun aRunStartedFromAScreenOutlivesIt(): Unit = runBlocking {
+        val checker = checker(newDir(), CheckerCipher())
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val screen = CoroutineScope(Job())
+        var job: Job? = null
+        screen.launch { job = checker.start(wallet) { started.complete(Unit); release.await(); emptyMap() } }.join()
+        started.await()
+        screen.cancel()
+        assertTrue(job!!.isActive, "still running after the screen's scope is gone")
+        assertNull(checker.start(wallet) { error("a second run for the wallet") }, "one run per wallet")
+        release.complete(Unit)
+        job!!.join()
+        assertFalse(job!!.isCancelled)
+    }
+
+    /** A wallet deleted while its check runs is not written back by that run, and forget cancels a started run. */
+    @Test fun aDeletedWalletIsNotWrittenBack(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val coins = (1..3).map { oldCoin(chain, 50_000L + it) }
+        val checker = checker(dir, cipher)
+        chain.beforeRaw = { if(it == coins[1]) { checker.forget(wallet); checker.store.delete(wallet) } }
+        checker.ltc(chain, coins.map { Utxo(it, 0, 100, 1) })
+        assertFalse(File(dir, "My Wallet.bin").exists())
+
+        val started = CompletableDeferred<Unit>()
+        val job = checker.start(wallet) { started.complete(Unit); kotlinx.coroutines.awaitCancellation() }!!
+        started.await()
+        checker.forget(wallet)
+        job.join()
+        assertTrue(job.isCancelled)
+    }
 
     @Test fun uncoveredCoinDoesNoWork(): Unit = runBlocking {
         val chain = FakeChain()

@@ -21,6 +21,9 @@ object TrackerRun {
     /** The most server lookups one run spends on coins that are not being checked deeper. */
     const val RUN_BUDGET = 600
 
+    /** Why a coin was not checked when the run's time ran out (the background worker's window); retried next sync. */
+    const val TIME_UP = "Check stopped for time, will continue next sync"
+
     /** An unspent coin to check: its outpoint and the hash of the block that confirmed its transaction (null when unconfirmed). */
     class Coin(val txid: String, val vout: Int, val confirmingBlock: String?) {
         val outpoint: String get() = "$txid:$vout"
@@ -68,7 +71,9 @@ object TrackerRun {
      * each with the full deeper budget and the block walk, outside runBudget; the rest share runBudget (their traces, an
      * indexer reveal check and a creating transaction read each count). Once it is used up, or after a server error, no
      * more server calls are made: a coin that would need one keeps its stored result when that proves nothing it should
-     * not, and is otherwise left UNCHECKED. progress is told (done, total) after each coin.
+     * not, and is otherwise left UNCHECKED. Once timeUp says so (checked before each coin that needs the server), the
+     * run stops the same way with [TIME_UP]. onResult is told each coin's result as soon as it is decided, in run order,
+     * so a caller can save as it goes; progress is told (done, total) after each coin.
      */
     suspend fun run(
         coin: com.sparrowwallet.mobile.crypto.Coin,
@@ -81,6 +86,8 @@ object TrackerRun {
         indexerSource: InscriptionCheck.Source?,
         deeper: Set<String>,
         runBudget: Int = RUN_BUDGET,
+        timeUp: () -> Boolean = { false },
+        onResult: suspend (outpoint: String, check: InscriptionCheck) -> Unit = { _, _ -> },
         progress: (done: Int, total: Int) -> Unit = { _, _ -> }
     ): Map<String, InscriptionCheck> {
         val results = HashMap<String, InscriptionCheck>()
@@ -107,8 +114,12 @@ object TrackerRun {
                 previous = null
             }
 
-            if(previous != null && !deep && standing(previous, blockHash, answer)) {
-                results[outpoint] = previous
+            val stands = previous != null && !deep && standing(previous, blockHash, answer)
+            if(!stands && state.stop == null && timeUp()) {
+                state.stop = TIME_UP
+            }
+            if(stands) {
+                results[outpoint] = previous!!
             } else if(state.stop != null || state.exhausted(deep)) {
                 //No server call: keep what is stored unless it claims more than it can now show, or say why nothing was checked
                 results[outpoint] = if(previous != null && (!(previous.verdict == Verdict.CLEAN || CheckPolicy.complete(previous)) || stands(previous, answer))) {
@@ -130,6 +141,7 @@ object TrackerRun {
                 }
                 results[outpoint] = finish(utxo, answer, indexerSource, trace, source, cache, blockHash, deep, state)
             }
+            onResult(outpoint, results.getValue(outpoint))
             progress(++done, utxos.size)
         }
         val ordered = LinkedHashMap<String, InscriptionCheck>()

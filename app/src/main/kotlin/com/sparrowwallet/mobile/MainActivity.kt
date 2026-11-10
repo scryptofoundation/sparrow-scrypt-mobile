@@ -35,6 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -1081,21 +1082,15 @@ private fun HomeScreen(
     LaunchedEffect(Unit) { if(!gapped) usdNow = PriceService.currentUsd(repo.coin(data)) }
     // the stored inscription checks are read off the main thread, so inscriptionChecks(data) can serve them from memory
     LaunchedEffect(data) { repo.loadInscriptionChecks(data) }
-    // the inscription check's line, shown after the sync status only while a check runs
-    var checking by remember(data) { mutableStateOf<String?>(null) }
-    val checkJob = remember(data) { arrayOfNulls<kotlinx.coroutines.Job>(1) }
+    // the inscription check's line, shown after the sync status while a check for this wallet runs, whoever started it
+    val checkProgress = remember(data) { repo.inscriptionProgress(data) }?.collectAsState()
+    val checking = checkProgress?.value?.let { (done, total) -> "Checking inscriptions: $done of $total coins" }
 
-    // After a public sync, checks the wallet's coins for inscriptions in the background of the screen
-    // (leaving the screen cancels it). One check at a time; a failed one leaves the stored results.
+    // After a public sync, checks the wallet's coins for inscriptions. The run belongs to the app, not this screen:
+    // going to Send or Receive does not stop it. One check per wallet at a time; it saves as it goes.
     fun checkInscriptions() {
-        if(data.scriptType == "MWEB" || checkJob[0]?.isActive == true) return
-        checkJob[0] = scope.launch {
-            try {
-                repo.checkInscriptions(data) { done, total -> checking = "Checking inscriptions: $done of $total coins" }
-            } finally {
-                checking = null
-            }
-        }
+        if(data.scriptType == "MWEB") return
+        repo.startInscriptionCheck(data, account)
     }
 
     // One wallet in two layers: refresh syncs the public side and the linked private

@@ -58,9 +58,41 @@ class TrackerRunTest {
         deeper: Set<String> = emptySet(),
         answers: Map<String, IndexerAnswer> = emptyMap(),
         indexerSource: InscriptionCheck.Source? = null,
-        runBudget: Int = TrackerRun.RUN_BUDGET
+        runBudget: Int = TrackerRun.RUN_BUDGET,
+        timeUp: () -> Boolean = { false },
+        onResult: suspend (String, InscriptionCheck) -> Unit = { _, _ -> }
     ): Map<String, InscriptionCheck> = runBlocking {
-        TrackerRun.run(Coin.LITECOIN, Network.MAINNET, TxCache(), chain, utxos, stored, answers, indexerSource, deeper, runBudget) { done, _ -> progress.add(done) }
+        TrackerRun.run(Coin.LITECOIN, Network.MAINNET, TxCache(), chain, utxos, stored, answers, indexerSource, deeper, runBudget,
+            timeUp, onResult) { done, _ -> progress.add(done) }
+    }
+
+    /** Review I2: each coin's result is handed on as soon as it is decided, in run order, so a caller can save as it goes. */
+    @Test fun eachDecidedCoinIsHandedOn() {
+        val coins = (1..3).map { cleanCoin(it) }
+        val stored = clean(coins[1], block(2_500_000))
+        val told = ArrayList<Pair<String, InscriptionCheck>>()
+        val result = run(coins.map { coin(it) }, mapOf(stored.outpoint to stored), onResult = { op, check -> told.add(op to check) })
+        assertEquals(coins.map { it.txid + ":0" }, told.map { it.first })
+        assertEquals(result.toList(), told)
+    }
+
+    /** A deadline stops the run between coins: no server call after it, and the coins not reached say why. */
+    @Test fun aDeadlineStopsTheRunBetweenCoins() {
+        val coins = (1..4).map { cleanCoin(it) }
+        val standing = clean(coins[3], block(2_500_000))
+        var decided = 0
+        val result = run(coins.map { coin(it) }, mapOf(standing.outpoint to standing), timeUp = { decided >= 1 },
+            onResult = { _, _ -> decided++ })
+        assertEquals(Verdict.CLEAN, result.getValue(coins[0].txid + ":0").verdict)
+        for(c in coins.subList(1, 3)) {
+            val check = result.getValue(c.txid + ":0")
+            assertEquals(Verdict.UNCHECKED, check.verdict)
+            assertEquals(TrackerRun.TIME_UP, check.reason)
+        }
+        //A row that stands costs nothing and is kept
+        assertSame(standing, result.getValue(standing.outpoint))
+        assertEquals(2, chain.calls, "only the first coin's two lookups")
+        assertEquals(listOf(1, 2, 3, 4), progress)
     }
 
     private fun clean(tx: RawTx.Parsed, block: String?) =

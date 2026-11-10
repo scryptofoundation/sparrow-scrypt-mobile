@@ -10,6 +10,14 @@ import com.sparrowwallet.mobile.electrum.ChainBackend
 import com.sparrowwallet.mobile.electrum.Utxo
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
@@ -19,9 +27,18 @@ import kotlin.coroutines.cancellation.CancellationException
  * Runs the built-in inscription check over a wallet's unspent coins and keeps the results, in [store] and in memory.
  * The app keeps one per process (Home and the background worker share it), so its transaction caches, their locks and
  * the running-wallet guard are shared too. Nothing here turns a missing or failed answer into Clean: a coin without
- * its confirming block gets a result that does not stand, and a run that fails saves nothing.
+ * its confirming block gets a result that does not stand. A run saves as it goes, so one that stops or fails keeps
+ * what it decided; coins it did not reach keep their stored rows.
  */
 class InscriptionChecker(val store: InscriptionStore) {
+    /** Runs Home starts live here, for the process's lifetime, so leaving the screen does not cancel them. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val jobs = ConcurrentHashMap<String, Job>()
+    /** (done, total) of the wallet's run while one goes, else null; by wallet key. */
+    private val progressFlows = ConcurrentHashMap<String, MutableStateFlow<Pair<Int, Int>?>>()
+    /** Bumped by [forget], so a run that began before a wallet was deleted never writes its file back. */
+    private val epochs = ConcurrentHashMap<String, Int>()
+    private val saveLock = Any()
     /** Transactions the traces read, one cache per coin and network; a cache is used under its lock only. */
     private val caches = ConcurrentHashMap<String, TxCache>()
     private val locks = ConcurrentHashMap<String, Mutex>()
@@ -58,16 +75,61 @@ class InscriptionChecker(val store: InscriptionStore) {
     /** The wallet's results if already in memory, else null; never reads the file, so it is cheap on the main thread. */
     fun cached(walletName: String): Map<String, InscriptionCheck>? = memory[key(walletName)]?.checks
 
-    /** Drops the wallet's results from memory, after the wallet is deleted. */
+    /**
+     * Drops the wallet's results from memory and cancels its started run, before the wallet's file is deleted: a run
+     * still going (the worker's) saves nothing more for it.
+     */
     fun forget(walletName: String) {
-        memory.remove(key(walletName))
+        val key = key(walletName)
+        synchronized(saveLock) {
+            epochs[key] = (epochs[key] ?: 0) + 1
+            memory.remove(key)
+        }
+        jobs[key]?.cancel()
+    }
+
+    /** The wallet's run as (done, total) coins while one goes, whoever started it; null otherwise. */
+    fun progress(walletName: String): StateFlow<Pair<Int, Int>?> = flow(key(walletName))
+
+    private fun flow(key: String) = progressFlows.computeIfAbsent(key) { MutableStateFlow(null) }
+
+    /**
+     * Starts [work] (a wallet's check) in the checker's own scope unless one is already going for the wallet; returns
+     * its job, or null when skipped. Not tied to any screen: it runs to its end unless [forget] cancels it. A failure
+     * is swallowed (what the run decided is already saved).
+     */
+    fun start(walletName: String, work: suspend () -> Map<String, InscriptionCheck>): Job? {
+        val key = key(walletName)
+        if(!running.add(key)) {
+            return null
+        }
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                work()
+            } catch(e: CancellationException) {
+                throw e
+            } catch(e: Exception) {
+                //the stored results stay as the run left them
+            }
+        }
+        jobs[key] = job
+        job.invokeOnCompletion {
+            jobs.remove(key, job)
+            running.remove(key)
+        }
+        job.start()
+        return job
     }
 
     /**
      * Checks [utxos], every unspent coin of the wallet, and saves the results, which replace the stored ones (so spent
      * coins drop out). An uncovered coin gets an empty map and no backend call; in air-gapped mode the stored results
      * come back and nothing is asked. Each confirmed coin's block hash is asked once per height; when the server gives
-     * none or fails, the coin has no block for this run and its result cannot stand. If the run throws, nothing is saved.
+     * none or fails, the coin has no block for this run and its result cannot stand. While it runs, each coin's new
+     * result is saved over the stored rows as soon as it is decided (when it differs from what the file holds), so a
+     * run that is cancelled or fails keeps what it decided and the rows of the coins it did not reach. [timeUp] stops it
+     * between coins (see [TrackerRun.TIME_UP]). [progress] is told (done, total) as it goes, and so is the wallet's
+     * [InscriptionChecker.progress] flow, which goes back to null when the run ends.
      */
     suspend fun check(
         walletName: String,
@@ -76,6 +138,7 @@ class InscriptionChecker(val store: InscriptionStore) {
         backend: ChainBackend,
         utxos: List<Utxo>,
         deeper: Set<String> = emptySet(),
+        timeUp: () -> Boolean = { false },
         progress: (Int, Int) -> Unit = { _, _ -> }
     ): Map<String, InscriptionCheck> {
         if(!ChainRules.covers(coin)) {
@@ -97,18 +160,49 @@ class InscriptionChecker(val store: InscriptionStore) {
         }
 
         val chain = "${coin.id}:${network.id}"
+        val key = key(walletName)
+        val shown = flow(key)
+        val epoch = epochs[key] ?: 0
         return locks.computeIfAbsent(chain) { Mutex() }.withLock {
             val stored = results(walletName)
-            if(coins.isNotEmpty()) {
-                progress(0, coins.size)
+            //What the file holds: the stored rows, each replaced by the coin's new result once decided
+            val saved = LinkedHashMap(stored)
+            val report = { done: Int, total: Int -> shown.value = done to total; progress(done, total) }
+            try {
+                if(coins.isNotEmpty()) {
+                    report(0, coins.size)
+                }
+                val checks = TrackerRun.run(
+                    coin, network, caches.computeIfAbsent(chain) { TxCache() }, BackendChainSource(backend), coins, stored,
+                    emptyMap(), null, deeper, TrackerRun.RUN_BUDGET, timeUp, { outpoint, check ->
+                        if(saved[outpoint] != check) {
+                            saved[outpoint] = check
+                            persist(walletName, key, epoch, HashMap(saved))
+                        }
+                    }, report
+                )
+                //The final save drops spent coins
+                if(checks != saved || memory[key]?.checked != true) {
+                    persist(walletName, key, epoch, checks)
+                }
+                checks
+            } finally {
+                shown.value = null
             }
-            val checks = TrackerRun.run(
-                coin, network, caches.computeIfAbsent(chain) { TxCache() }, BackendChainSource(backend), coins, stored,
-                emptyMap(), null, deeper, TrackerRun.RUN_BUDGET, progress
-            )
+        }
+    }
+
+    /**
+     * Writes the wallet's file, then its copy in memory, unless the wallet was forgotten (deleted) since the run began.
+     * Each write is atomic (see [InscriptionStore.save]).
+     */
+    private fun persist(walletName: String, key: String, epoch: Int, checks: Map<String, InscriptionCheck>) {
+        synchronized(saveLock) {
+            if((epochs[key] ?: 0) != epoch) {
+                return
+            }
             store.save(stored(walletName), checks)
-            memory[key(walletName)] = Stored(checks, true)
-            checks
+            memory[key] = Stored(checks, true)
         }
     }
 
