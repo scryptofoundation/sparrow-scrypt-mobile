@@ -269,7 +269,9 @@ class TrackerRunTest {
         val hogAddr = ByteArray(34)
         hogAddr[0] = 0x58
         hogAddr[1] = 0x20
-        val hogEx = chain.add(tx(listOf(hash(1) to 0), listOf(1_000_000L, 10_000L), outputScripts = listOf(hogAddr, TrackFakes.PLAIN)), 2_499_999)
+        val hogEx = chain.add(tx(listOf(hash(1) to 0), listOf(1_000_000L, 10_000L), outputScripts = listOf(hogAddr, TrackFakes.PLAIN),
+            mwebExtension = byteArrayOf(0)), 2_499_999)
+        assertTrue(hogEx.mwebNullExtension, "fixture is a flagged HogEx")
         val pegOut = chain.add(tx(listOf(hogEx.txid to 1), listOf(9_000L)), 2_500_000)
         val stored = deadEnd(pegOut, InscriptionTracer.THROUGH_MWEB)
         chain.calls = 0

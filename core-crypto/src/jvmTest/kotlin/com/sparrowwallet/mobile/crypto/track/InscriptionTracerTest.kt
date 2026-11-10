@@ -37,15 +37,22 @@ class InscriptionTracerTest {
     /** A plain transaction at a height below Litecoin's first inscription, paying one output of the value. */
     private fun old(n: Int, value: Long): RawTx.Parsed = chain.add(spend(listOf(hash(n) to 0), value), 2_000_000)
 
-    /**
-     * A HogEx: input 0 spends output 0 of the previous one (then any peg-ins), output 0 (the MWEB pool) pays OP_8 and a 32
-     * byte push, the other outputs are peg-outs.
-     */
-    private fun hogEx(pegIns: List<Pair<String, Int>> = emptyList(), pegOut: Long = 10_000L): RawTx.Parsed {
+    /** OP_8 and a 32 byte push: the MWEB pool output a HogEx pays first. */
+    private fun hogAddr(): ByteArray {
         val hogAddr = ByteArray(34)
         hogAddr[0] = 0x58
         hogAddr[1] = 0x20
-        return tx(listOf(hash(1) to 0) + pegIns, listOf(1_000_000L, pegOut), outputScripts = listOf(hogAddr, PLAIN))
+        return hogAddr
+    }
+
+    /**
+     * A real HogEx: the MWEB flag with the null extension (the byte 0); input 0 spends output 0 of the previous one (then
+     * any peg-ins), output 0 (the MWEB pool) pays OP_8 and a 32 byte push, the other outputs are peg-outs.
+     */
+    private fun hogEx(pegIns: List<Pair<String, Int>> = emptyList(), pegOut: Long = 10_000L): RawTx.Parsed {
+        val hogEx = tx(listOf(hash(1) to 0) + pegIns, listOf(1_000_000L, pegOut), outputScripts = listOf(hogAddr(), PLAIN), mwebExtension = byteArrayOf(0))
+        assertTrue(InscriptionTracer.isHogEx(hogEx) && hogEx.mwebNullExtension, "fixture is a flagged HogEx")
+        return hogEx
     }
 
     private fun trace(tracer: InscriptionTracer, txid: String, vout: Int, resume: List<Piece> = emptyList(), budget: Int = InscriptionTracer.DEFAULT_BUDGET, walkBlocks: Boolean = false) =
@@ -155,8 +162,7 @@ class InscriptionTracerTest {
      */
     @Test
     fun inscriptionThroughMwebIsClean() {
-        val parent = old(1, 10_000)
-        val reveal = chain.add(reveal(listOf(parent.txid to 0), listOf(script(envelope("in"))), 10_000), 2_500_000)
+        val reveal = inscribed()
         val pegInScript = ByteArray(34)
         pegInScript[0] = 0x59
         pegInScript[1] = 0x20
@@ -169,6 +175,65 @@ class InscriptionTracerTest {
         assertEquals(Verdict.CLEAN, result.verdict, result.reason)
         assertTrue(result.found.isEmpty())
         assertEquals(2, result.lookups, "the trace stops at the HogEx")
+    }
+
+    /** A coin that is itself a peg-out of a confirmed HogEx is clean in one lookup. */
+    @Test
+    fun pegOutCoinIsCleanInOneLookup() {
+        val hogEx = chain.add(hogEx(), 2_500_000)
+        val result = trace(litecoin(), hogEx.txid, 1)
+        assertEquals(Verdict.CLEAN, result.verdict, result.reason)
+        assertEquals(1, result.lookups)
+    }
+
+    /** An inscribed reveal at 2,500,000, its output 0 holding 10,000 with the inscription on its first unit. */
+    private fun inscribed(): RawTx.Parsed {
+        val parent = old(1, 10_000)
+        return chain.add(reveal(listOf(parent.txid to 0), listOf(script(envelope("in"))), 10_000), 2_500_000)
+    }
+
+    /**
+     * A look-alike anyone can build: input 0 spends some output 0 (1,000), input 1 the inscribed 10,000, output 0 pays
+     * poolScript with 1,000 and output 1 carries the inscription to the coin. Unless it is a confirmed, flagged HogEx it
+     * must not end the trace clean (drongo's lookAlike).
+     */
+    private fun lookAlike(poolScript: ByteArray, extension: ByteArray?, height: Int): TraceResult {
+        val reveal = inscribed()
+        val filler = old(2, 1_000)
+        val lookAlike = tx(listOf(filler.txid to 0, reveal.txid to 0), listOf(1_000L, 10_000L), outputScripts = listOf(poolScript, PLAIN),
+            mwebExtension = extension)
+        assertTrue(InscriptionTracer.isHogEx(lookAlike), "the look-alike reads as a HogEx")
+        chain.add(lookAlike, height)
+        val coin = chain.add(spend(listOf(lookAlike.txid to 1), 10_000), 2_500_002)
+        return trace(litecoin(), coin.txid, 0)
+    }
+
+    /** Review: an unflagged transaction whose output 0 is the plain OP_8 32 byte form is no proof of MWEB. */
+    @Test
+    fun unflaggedHogExLookAlikeIsUnchecked() {
+        val result = lookAlike(hogAddr(), null, 2_500_001)
+        assertEquals(Verdict.UNCHECKED, result.verdict)
+        assertEquals("Came through MWEB", result.reason)
+    }
+
+    /** Review: OP_8 OP_PUSHDATA1 0x20 and 32 bytes, the non-minimal form of the pool output, is no proof either. */
+    @Test
+    fun pushData1HogExLookAlikeIsUnchecked() {
+        val script = ByteArray(35)
+        script[0] = 0x58
+        script[1] = 0x4c
+        script[2] = 0x20
+        val result = lookAlike(script, null, 2_500_001)
+        assertEquals(Verdict.UNCHECKED, result.verdict)
+        assertEquals("Came through MWEB", result.reason)
+    }
+
+    /** Review: a flagged HogEx not yet in a block has no consensus behind it. */
+    @Test
+    fun unconfirmedFlaggedHogExIsUnchecked() {
+        val result = lookAlike(hogAddr(), byteArrayOf(0), 0)
+        assertEquals(Verdict.UNCHECKED, result.verdict)
+        assertEquals("Came through MWEB", result.reason)
     }
 
     /** Review C1: a trace that hit a dead end leaves nothing to resume, so a later resume cannot skip the dead end. */

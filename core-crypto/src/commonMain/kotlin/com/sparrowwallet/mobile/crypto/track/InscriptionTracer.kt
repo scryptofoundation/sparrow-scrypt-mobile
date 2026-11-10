@@ -41,8 +41,9 @@ class InscriptionTracer internal constructor(
         const val FEES_NEED_DEEPER = "Mined coin fees need Check deeper"
         const val DOES_NOT_ADD_UP = "Mined coin does not add up"
         /**
-         * The phone's stop at an MWEB input (see hasMwebInput); not a standing dead end. A HogEx no longer stops here: coins
-         * out of MWEB are clean (the owner's rule, 2026-11-10).
+         * A stop at MWEB the trace cannot prove: a HogEx match that is unconfirmed or lacks the MWEB flag with the null
+         * extension, or the phone's MWEB input (see hasMwebInput). Not a standing dead end. A confirmed, flagged HogEx ends
+         * its piece clean: coins out of MWEB are clean (the owner's rule, 2026-11-10).
          */
         const val THROUGH_MWEB = "Came through MWEB"
         /** Not a dead end: a server that gave no height may give one next time. */
@@ -214,7 +215,7 @@ class InscriptionTracer internal constructor(
         val found = distinct(run.found)
         val reason = stopped ?: run.deadEnd
         val verdict = if(found.isNotEmpty()) Verdict.INSCRIBED else if(reason != null) Verdict.UNCHECKED else Verdict.CLEAN
-        //A dead end (an MWEB input, a coinbase that cannot be resolved) leaves nothing to resume: resuming only the other pieces
+        //A dead end (unproven MWEB, a coinbase that cannot be resolved) leaves nothing to resume: resuming only the other pieces
         //would forget it, so the next trace starts over from the coin and meets it again
         val open = if(run.deadEnd != null) emptyList() else run.open.toList()
         return TraceResult(verdict, found, if(verdict == Verdict.CLEAN) null else reason, open, run.lookups, run.usedChain)
@@ -241,7 +242,13 @@ class InscriptionTracer internal constructor(
             return
         }
         if(isHogEx(tx)) {
-            //Units that come out of MWEB (a peg-out, or the pool's own output) carry no history to follow, so they are clean
+            //Units that come out of MWEB (a peg-out, or the pool's own output) carry no history to follow, so they are clean;
+            //but only a confirmed transaction with the MWEB flag and null extension is a HogEx by consensus (only a block's
+            //last transaction may be one). The output script shape alone anyone can build, so it stays a dead end.
+            if(chainTx.height > 0 && tx.mwebNullExtension) {
+                return
+            }
+            run.deadEnd(THROUGH_MWEB)
             return
         }
         if(isCoinBase(tx)) {

@@ -26,19 +26,24 @@ object TrackFakes {
 
     private fun push(data: ByteArray): ByteArray = byteArrayOf(data.size.toByte()) + data
 
-    /** One input per spend (txid, vout), paying the outputs to a plain script (or to outputScripts); witnesses make it segwit. */
+    /**
+     * One input per spend (txid, vout), paying the outputs to a plain script (or to outputScripts); witnesses make it
+     * segwit; a non-null mwebExtension sets the MWEB flag (0x08) and writes those bytes before the locktime.
+     */
     fun tx(
         spends: List<Pair<String, Int>>,
         outputs: List<Long>,
         scriptSigs: List<ByteArray>? = null,
         witnesses: List<List<ByteArray>>? = null,
-        outputScripts: List<ByteArray>? = null
+        outputScripts: List<ByteArray>? = null,
+        mwebExtension: ByteArray? = null
     ): RawTx.Parsed {
         val segwit = witnesses != null && witnesses.any { it.isNotEmpty() }
+        val flag = (if(segwit) 0x01 else 0) or (if(mwebExtension != null) 0x08 else 0)
         val body = ArrayList<Byte>()
         fun add(b: ByteArray) = b.forEach { body.add(it) }
         add(le(2, 4))
-        if(segwit) add(byteArrayOf(0, 1))
+        if(flag != 0) add(byteArrayOf(0, flag.toByte()))
         add(varInt(spends.size))
         spends.forEachIndexed { i, (txid, vout) ->
             add(txid.hexToBytes().reversedArray())
@@ -59,6 +64,7 @@ object TrackFakes {
                 items.forEach { add(varInt(it.size)); add(it) }
             }
         }
+        if(mwebExtension != null) add(mwebExtension)
         add(le(0, 4))
         return RawTx.parse(body.toByteArray())
     }

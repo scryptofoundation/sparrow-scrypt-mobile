@@ -34,7 +34,8 @@ object TrackerRun {
      * coin whose fees need Check deeper or do not add up, and runes the policy cannot rule out over a Clean trace (the
      * creating transaction's runestone does not change). "Mined coin height unknown", budget and server-error rows are not
      * here: they are retried. Nor is "Came through MWEB": rows stored before coins out of MWEB counted clean (2026-11-10)
-     * must be traced again, and the phone's remaining MWEB stop (an MWEB input) is rare enough to retry each run.
+     * must be traced again, and the remaining MWEB stops (an unconfirmed or unflagged HogEx match, an MWEB input) are rare
+     * enough to retry each run.
      */
     val DEAD_ENDS: Set<String> = setOf(
         InscriptionTracer.FEES_NEED_DEEPER, InscriptionTracer.DOES_NOT_ADD_UP, CheckPolicy.MAY_CARRY_RUNES
