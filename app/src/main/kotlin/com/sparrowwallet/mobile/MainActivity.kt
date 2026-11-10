@@ -2018,9 +2018,8 @@ private fun SendScreen(
     var maturing by remember { mutableStateOf(0L) }
     // coins that may carry an inscription or tokens are held back unless the user includes them
     var includeHeld by remember { mutableStateOf(false) }
-    // a sweep or a peg-in leaves coins not yet checked for inscriptions out unless the user includes them; the tick
-    // remembers which kind of destination it was given for (a peg-in or not), so it never carries over to the other
-    var uncheckedTickedFor by remember { mutableStateOf<Boolean?>(null) }
+    // a sweep (Send max, a peg-in's too) leaves coins not yet checked for inscriptions out unless the user includes them
+    var includeUnchecked by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if(NetworkPolicy.blocked) return@LaunchedEffect
         usdRate = PriceService.currentUsd(sendCoin)
@@ -2046,7 +2045,6 @@ private fun SendScreen(
     }
 
     val isMwebDest = sendCoin == Coin.LITECOIN && repo.isMwebAddress(address, network)
-    val includeUnchecked = uncheckedTickedFor == isMwebDest
     val addressError = address.trim().takeIf { it.isNotEmpty() }
         ?.let { if(isMwebDest) null else repo.validateAddress(it, walletParams(sendCoin, network)) }
     val sharedWarning = if(isMwebDest || addressError != null || address.isBlank()) null
@@ -2056,14 +2054,14 @@ private fun SendScreen(
                          else parseAmount(amountText)
 
     // each box counts only while it is shown, so a coin that turns held or unchecked later is never released unseen
-    val heldIncluded = includeHeld && heldCoins.isNotEmpty()
-    val uncheckedIncluded = includeUnchecked && (sendMax || isMwebDest) && uncheckedCoins.isNotEmpty()
-    // the coins this send can use, in the order it takes them: a peg-in takes Clean coins, then Unchecked ones only when
-    // included (never held ones), Send max the Clean ones plus whatever the user includes, and a payment Clean first,
-    // then Unchecked, then held when included
+    // (the held box is not shown for a peg-in, which never takes held coins)
+    val heldIncluded = includeHeld && !isMwebDest && heldCoins.isNotEmpty()
+    val uncheckedIncluded = includeUnchecked && sendMax && uncheckedCoins.isNotEmpty()
+    // the coins this send can use, in the order it takes them: Send max the Clean ones plus whatever the user includes,
+    // a payment Clean first, then Unchecked, then held when included; a peg-in the same, never held ones
     val utxos: List<Long>? = scannedCoins?.let {
         when {
-            isMwebDest -> it.pegInUsable(uncheckedIncluded)
+            isMwebDest -> it.pegInUsable(sendMax, uncheckedIncluded)
             sendMax -> it.sweepable(heldIncluded, uncheckedIncluded)
             else -> it.usable(heldIncluded)
         }
@@ -2298,25 +2296,29 @@ private fun SendScreen(
                 "(${repo.minConfirmations}, or longer for mined coins).", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        val publicPays = fundingPrivate != true && !isMwebDest
+        val publicPays = fundingPrivate != true
+        // a peg-in never takes held coins: its held line says so, with no box
         if(heldCoins.isNotEmpty() && publicPays) {
-            Text(heldCopy(heldCoins.size, formatAmountShort(sendCoin, heldCoins.sum()), scannedCoins?.heldInscribed == true, heldIncluded),
+            Text(heldCopy(heldCoins.size, formatAmountShort(sendCoin, heldCoins.sum()), scannedCoins?.heldInscribed == true, heldIncluded,
+                    pegIn = isMwebDest),
                 style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
-            Row(verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().clickable { includeHeld = !includeHeld; preview = null }) {
-                Checkbox(checked = includeHeld, onCheckedChange = { includeHeld = it; preview = null })
-                Text("Include held coins", style = MaterialTheme.typography.bodySmall)
+            if(!isMwebDest) {
+                Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().clickable { includeHeld = !includeHeld; preview = null }) {
+                    Checkbox(checked = includeHeld, onCheckedChange = { includeHeld = it; preview = null })
+                    Text("Include held coins", style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
-        // a sweep or a peg-in leaves Unchecked coins out unless the user includes them (a peg-in never takes held ones)
-        if(uncheckedCoins.isNotEmpty() && fundingPrivate != true && (isMwebDest || sendMax) && !uncheckedIncluded) {
+        // a sweep (a peg-in's too) leaves Unchecked coins out unless the user includes them
+        if(uncheckedCoins.isNotEmpty() && publicPays && sendMax && !uncheckedIncluded) {
             Text(uncheckedLeftOutCopy(uncheckedCoins.size, formatAmountShort(sendCoin, uncheckedCoins.sum())),
                 style = MaterialTheme.typography.bodySmall, color = LtcPalette.amber)
         }
-        if(fundingPrivate != true && (isMwebDest || sendMax) && uncheckedCoins.isNotEmpty()) {
+        if(publicPays && sendMax && uncheckedCoins.isNotEmpty()) {
             Row(verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().clickable { uncheckedTickedFor = if(includeUnchecked) null else isMwebDest; preview = null }) {
-                Checkbox(checked = includeUnchecked, onCheckedChange = { uncheckedTickedFor = if(it) isMwebDest else null; preview = null })
+                modifier = Modifier.fillMaxWidth().clickable { includeUnchecked = !includeUnchecked; preview = null }) {
+                Checkbox(checked = includeUnchecked, onCheckedChange = { includeUnchecked = it; preview = null })
                 Text("Include unchecked coins", style = MaterialTheme.typography.bodySmall)
             }
         }

@@ -80,8 +80,12 @@ data class SendCoins(val spendable: List<Long>, val maturing: Long, val held: Li
     fun sweepable(includeHeld: Boolean, includeUnchecked: Boolean): List<Long> =
         spendable + (if(includeUnchecked) unchecked else emptyList()) + (if(includeHeld) held else emptyList())
 
-    /** The coins a peg-in into MWEB may use: the Clean ones, plus the unchecked ones only when the user includes them. Never held ones. */
-    fun pegInUsable(includeUnchecked: Boolean): List<Long> = spendable + (if(includeUnchecked) unchecked else emptyList())
+    /**
+     * The coins a peg-in into MWEB may use: those of an ordinary send ([usable], or [sweepable] for send max) with the
+     * held box unticked. Never held ones, whatever is ticked.
+     */
+    fun pegInUsable(sendMax: Boolean, includeUnchecked: Boolean): List<Long> =
+        if(sendMax) sweepable(includeHeld = false, includeUnchecked = includeUnchecked) else usable(includeHeld = false)
 
     companion object {
         /**
@@ -185,16 +189,14 @@ internal class SpendTiers(clean: List<SpendableInput>, unchecked: List<Spendable
     /**
      * The coins a send may use, in the order it must take them (build with keepOrder): Clean first, then Unchecked, then
      * Held when the user includes them. Send max spends the Clean ones, plus the Unchecked ones only with
-     * [includeUnchecked] and the held ones only with [includeHeld]. A peg-in into MWEB takes Clean coins, plus the
-     * Unchecked ones after them only with [includeUnchecked] (coins that came out of MWEB stay Unchecked for good); never
-     * held ones, whatever is ticked: whatever a coin carries would be lost there.
+     * [includeUnchecked] and the held ones only with [includeHeld]. A peg-in into MWEB is an ordinary send in this
+     * (Clean, then Unchecked, by the same rules), except that it never takes held ones, whatever is ticked: whatever a
+     * coin carries would be lost there.
      */
-    fun candidates(includeHeld: Boolean, sendMax: Boolean, pegIn: Boolean = false, includeUnchecked: Boolean = false): List<SpendableInput> =
-        when {
-            pegIn -> clean + (if(includeUnchecked) unchecked else emptyList())
-            sendMax -> clean + (if(includeUnchecked) unchecked else emptyList()) + (if(includeHeld) held else emptyList())
-            else -> clean + unchecked + (if(includeHeld) held else emptyList())
-        }
+    fun candidates(includeHeld: Boolean, sendMax: Boolean, pegIn: Boolean = false, includeUnchecked: Boolean = false): List<SpendableInput> {
+        val heldIncluded = if(includeHeld && !pegIn) held else emptyList()
+        return if(sendMax) clean + (if(includeUnchecked) unchecked else emptyList()) + heldIncluded else clean + unchecked + heldIncluded
+    }
 
     /** How many of the [selected] outpoints are Unchecked coins, for the review's warning. */
     fun uncheckedIn(selected: List<String>): Int = selected.count { it in uncheckedOutpoints }

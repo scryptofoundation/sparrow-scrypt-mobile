@@ -160,16 +160,21 @@ fun inscriptionCheckNeeded(due: Boolean, stored: Map<String, InscriptionCheck>?)
 
 private fun coins(count: Int): String = "$count ${if(count == 1) "coin" else "coins"}"
 
-/** The Send screen's line about held coins; [inscribed] when every held coin has an Inscribed check. */
-fun heldCopy(count: Int, amount: String, inscribed: Boolean, included: Boolean): String =
+/**
+ * The Send screen's line about held coins; [inscribed] when every held coin has an Inscribed check. For a move into MWEB
+ * ([pegIn]) there is no box: held coins are never moved there, whatever [included] says.
+ */
+fun heldCopy(count: Int, amount: String, inscribed: Boolean, included: Boolean, pegIn: Boolean = false): String =
     "${coins(count)} ($amount) " + when {
+        pegIn && inscribed -> "held back: they carry inscriptions. Held coins are not moved into MWEB."
+        pegIn -> "held back: they may carry an inscription or tokens. Held coins are not moved into MWEB."
         included && inscribed -> "that carry inscriptions can be spent. Anything they carry could be lost."
         included -> "that may carry an inscription or tokens can be spent. Anything they carry could be lost."
         inscribed -> "held back: they carry inscriptions."
         else -> "held back: they may carry an inscription or tokens."
     }
 
-/** The Send screen's line when a sweep (or a peg-in) leaves the Unchecked coins out. */
+/** The Send screen's line when a sweep (a Send max, peg-ins included) leaves the Unchecked coins out. */
 fun uncheckedLeftOutCopy(count: Int, amount: String): String =
     "${coins(count)} ($amount) not yet checked for inscriptions ${if(count == 1) "is" else "are"} left out."
 

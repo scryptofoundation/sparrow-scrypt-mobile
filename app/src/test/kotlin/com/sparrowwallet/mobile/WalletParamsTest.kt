@@ -244,14 +244,14 @@ class WalletParamsTest {
         assertEquals(2, tiers.uncheckedIn(swept))
         //and the held box alone adds the held coin but not the unchecked ones
         assertEquals(setOf("11", "33", "55").map { it.repeat(32) + ":0" }.toSet(), pay(0, includeHeld = true, sendMax = true).second.toSet())
-        //a peg-in with its own include box ticked takes the unchecked coins after the Clean ones, never the held one
+        //a peg-in sweep with the include box ticked takes the unchecked coins after the Clean ones, never the held one
         assertEquals(listOf(30_000L, 10_000L, 50_000L, 20_000L),
             tiers.candidates(includeHeld = false, sendMax = true, pegIn = true, includeUnchecked = true).map { it.value })
     }
 
     /**
-     * Review I5: coins that came out of MWEB are Unchecked for good, so a peg-in may take Unchecked coins when the user
-     * ticks their box: after the Clean ones, only on shortfall (all of them for send max). Held coins never.
+     * A peg-in with the unchecked box ticked (shown for send max only): Unchecked coins after the Clean ones, only on
+     * shortfall (all of them for send max). Held coins never.
      */
     @Test
     fun pegInMayAddUncheckedCoinsByChoice() {
@@ -273,14 +273,23 @@ class WalletParamsTest {
         assertFailsWith<IllegalArgumentException> { pay(150_000, includeHeld = true, pegIn = true, includeUnchecked = true) }
     }
 
-    /** What the Send screen counts as available for a peg-in: the Clean coins, plus the Unchecked ones when included. */
+    /**
+     * What the Send screen counts as available for a peg-in: what an ordinary send counts (Clean then Unchecked; for send
+     * max the Unchecked ones only when included), never the held ones.
+     */
     @Test
-    fun pegInAvailableFollowsTheUncheckedBox() {
+    fun pegInAvailableIsAnOrdinarySendsWithoutHeldCoins() {
         val coins = SendCoins.split(listOf(
             ScannedCoin(30_000, 40), ScannedCoin(50_000, 40, state = CoinState.UNCHECKED), ScannedCoin(80_000, 40, state = CoinState.HELD)
         ), tip = 50, minConfirmations = 6)
-        assertEquals(listOf(30_000L), coins.pegInUsable(includeUnchecked = false))
-        assertEquals(listOf(30_000L, 50_000L), coins.pegInUsable(includeUnchecked = true))
+        assertEquals(listOf(30_000L, 50_000L), coins.pegInUsable(sendMax = false, includeUnchecked = false))
+        assertEquals(listOf(30_000L, 50_000L), coins.pegInUsable(sendMax = false, includeUnchecked = true))
+        assertEquals(listOf(30_000L), coins.pegInUsable(sendMax = true, includeUnchecked = false))
+        assertEquals(listOf(30_000L, 50_000L), coins.pegInUsable(sendMax = true, includeUnchecked = true))
+        for(sendMax in listOf(false, true)) {
+            assertEquals(if(sendMax) coins.sweepable(includeHeld = false, includeUnchecked = false) else coins.usable(includeHeld = false),
+                coins.pegInUsable(sendMax, includeUnchecked = false))
+        }
     }
 
     /**
@@ -307,15 +316,41 @@ class WalletParamsTest {
         assertTrue(psbtMatchesPreview(spentOutpoints(built.tx), built.amount, built.inputs.map { outpoint(it) }, built.amount))
     }
 
+    /**
+     * A move into MWEB selects coins like any other payment: Clean first, Unchecked only on shortfall (send max: only when
+     * included), with the same unchecked count for the review. Held coins are never candidates, whatever is ticked.
+     */
     @Test
-    fun pegInUsesCleanCoinsOnly() {
-        val (tiers, _) = tieredScan()
+    fun pegInSelectsLikeAnOrdinaryPaymentButNeverHeldCoins() {
+        val (tiers, small) = pay(20_000, pegIn = true)
+        assertEquals(listOf("11".repeat(32) + ":0"), small, "Clean only, with no box ticked")
+        assertEquals(0, tiers.uncheckedIn(small))
+
+        val (_, short) = pay(60_000, pegIn = true)
+        assertEquals(listOf("11", "33", "22").map { it.repeat(32) + ":0" }, short)
+        assertEquals(1, tiers.uncheckedIn(short))
+        assertEquals(uncheckedWarning(1), uncheckedWarning(tiers.uncheckedIn(short)))
+
         for(includeHeld in listOf(false, true)) {
             for(sendMax in listOf(false, true)) {
-                assertEquals(listOf(30_000L, 10_000L), tiers.candidates(includeHeld, sendMax, pegIn = true).map { it.value })
+                for(includeUnchecked in listOf(false, true)) {
+                    val candidates = tiers.candidates(includeHeld, sendMax, pegIn = true, includeUnchecked = includeUnchecked)
+                    assertFalse(candidates.any { it.value == 80_000L }, "held, $includeHeld $sendMax $includeUnchecked")
+                    //an ordinary send with the held box unticked
+                    assertEquals(tiers.candidates(includeHeld = false, sendMax = sendMax, includeUnchecked = includeUnchecked).map { it.value },
+                        candidates.map { it.value }, "$includeHeld $sendMax $includeUnchecked")
+                }
             }
         }
-        assertFailsWith<IllegalArgumentException> { pay(45_000, includeHeld = true, pegIn = true) }
+        //Clean and Unchecked make 110,000: more needs the held coin, which a peg-in never takes
+        assertFailsWith<IllegalArgumentException> { pay(150_000, includeHeld = true, pegIn = true, includeUnchecked = true) }
+
+        //send max: the Clean coins, plus the Unchecked ones only when included, as an ordinary send max
+        val (_, max) = pay(0, sendMax = true, pegIn = true)
+        assertEquals(setOf("11", "33").map { it.repeat(32) + ":0" }.toSet(), max.toSet())
+        val (_, maxAll) = pay(0, includeHeld = true, sendMax = true, pegIn = true, includeUnchecked = true)
+        assertEquals(setOf("11", "33", "22", "44").map { it.repeat(32) + ":0" }.toSet(), maxAll.toSet())
+        assertEquals(0, tiers.heldIn(maxAll))
     }
 
     @Test

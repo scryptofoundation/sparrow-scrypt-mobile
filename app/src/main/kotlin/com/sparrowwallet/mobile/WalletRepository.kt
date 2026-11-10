@@ -949,8 +949,8 @@ class WalletRepository(context: Context) {
         }
         val accountPath = parsePathChildren(data.derivationPath)
         val pathByKey = HashMap<HDKey, List<Long>>()
-        //The same tiers as preparePegIn: Clean coins, then the unchecked ones only when included; never held ones,
-        //since whatever a coin carries cannot follow it into MWEB
+        //The same tiers as preparePegIn: as an ordinary send (Clean first, Unchecked on shortfall, a sweep's only when
+        //included); never held ones, since whatever a coin carries cannot follow it into MWEB
         val tiers = SpendTiers.of(scan.utxos
             .filter { spendable(data, tip, it) }
             .map {
@@ -1251,8 +1251,8 @@ class WalletRepository(context: Context) {
 
         requirePegInWallet(data)
         val feeRate = withBackend(Coin.LITECOIN, net) { clampFeeRate(Coin.LITECOIN, it.feeRate(2)) }
-        //Clean coins, then the unchecked ones only when included (in that order, so only on shortfall); never held ones:
-        //whatever a coin carries, ord cannot follow it into MWEB
+        //As an ordinary send: Clean coins, then the unchecked ones (in that order, so only on shortfall; a sweep's only
+        //when included); never held ones: whatever a coin carries, ord cannot follow it into MWEB
         val (tiers, changeScript) = withBackend(Coin.LITECOIN, net) { collectSpendables(it, data, account, ScriptType.P2WPKH) }
         val candidates = tiers.candidates(includeHeld = false, sendMax = sendMax, pegIn = true, includeUnchecked = includeUnchecked)
         val service = mwebd(data)

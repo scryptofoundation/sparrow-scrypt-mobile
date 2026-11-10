@@ -411,4 +411,15 @@ class InscriptionChecksTest {
         assertEquals("This payment uses 1 held coin.", heldWarning(1))
         assertEquals("This payment uses 3 held coins.", heldWarning(3))
     }
+
+    /** For a move into MWEB the held line has no box: it says plainly that held coins are not moved, whatever was ticked. */
+    @Test
+    fun heldCopyForAMoveIntoMwebSaysHeldCoinsStay() {
+        for(included in listOf(false, true)) {
+            assertEquals("1 coin (0.0001 LTC) held back: they carry inscriptions. Held coins are not moved into MWEB.",
+                heldCopy(1, "0.0001 LTC", inscribed = true, included = included, pegIn = true))
+            assertEquals("2 coins (0.0002 LTC) held back: they may carry an inscription or tokens. Held coins are not moved into MWEB.",
+                heldCopy(2, "0.0002 LTC", inscribed = false, included = included, pegIn = true))
+        }
+    }
 }
