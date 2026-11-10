@@ -29,6 +29,18 @@ class LtcAmountTest {
         assertEquals(100_000_000L, ElectrumProtocol.ltcToLitoshis("1e+0"))
     }
 
+    /** Fulcrum on LTC testnet printed 0.0009971800000000001 for 99718 litoshis (float arithmetic noise); sync failed on it. */
+    @Test
+    fun roundsFloatNoiseBeyondTheEighthDecimal() {
+        assertEquals(99_718L, ElectrumProtocol.ltcToLitoshis("0.0009971800000000001"))
+        assertEquals(99_718L, ElectrumProtocol.ltcToLitoshis("0.00099717999999999"))
+        assertEquals(-99_718L, ElectrumProtocol.ltcToLitoshis("-0.0009971800000000001"))
+        assertEquals(100_000_000L, ElectrumProtocol.ltcToLitoshis("0.99999999999999999"))
+        //a real sub-litoshi amount is still refused
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("0.000000015") }
+        assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("0.000000001") }
+    }
+
     @Test
     fun rejectsMalformedValues() {
         assertFailsWith<IllegalArgumentException> { ElectrumProtocol.ltcToLitoshis("1e-09") }

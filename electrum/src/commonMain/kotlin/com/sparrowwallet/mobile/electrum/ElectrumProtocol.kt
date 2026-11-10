@@ -22,10 +22,25 @@ object ElectrumProtocol {
         val s = expandExponent(decimal.removePrefix("-"), decimal)
         require(s.isNotEmpty() && s.all { it.isDigit() || it == '.' }) { "Not a decimal amount: $decimal" }
         val parts = s.split(".")
-        require(parts.size <= 2 && (parts.getOrNull(1)?.length ?: 0) <= 8) { "Not an LTC amount: $decimal" }
+        require(parts.size <= 2) { "Not an LTC amount: $decimal" }
+        var fraction = parts.getOrNull(1) ?: ""
+        //A server that sums in floating point (Fulcrum) can print 0.0009971800000000001 for 99718 litoshis: digits past the
+        //eighth that sit within 1/10000 of a litoshi of a whole one are that noise and are rounded; a real sub-litoshi
+        //amount (0.000000015) is still refused
+        var carry = 0L
+        if(fraction.length > 8) {
+            val excess = fraction.substring(8)
+            require(excess.all { it.isDigit() }) { "Not an LTC amount: $decimal" }
+            carry = when {
+                excess.startsWith("0000") -> 0L
+                excess.startsWith("9999") -> 1L
+                else -> throw IllegalArgumentException("Not an LTC amount: $decimal")
+            }
+            fraction = fraction.substring(0, 8)
+        }
         val whole = if(parts[0].isEmpty()) 0L else parts[0].toLong()
-        val frac = if(parts.size > 1) parts[1].padEnd(8, '0').toLong() else 0L
-        val value = whole * 100_000_000L + frac
+        val frac = fraction.padEnd(8, '0').toLong()
+        val value = whole * 100_000_000L + frac + carry
         return if(negative) -value else value
     }
 
