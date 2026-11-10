@@ -9,10 +9,17 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import kotlinx.coroutines.delay
 import java.io.IOException
 
-/** [ChainBackend] over an Electrum server (Litecoin, Dogecoin, Dingocoin). */
-class ElectrumBackend(private val client: ElectrumClient) : ChainBackend {
+/**
+ * [ChainBackend] over an Electrum server (Litecoin, Dogecoin, Dingocoin). [pause] waits (cancellably) while the server's
+ * tip catches up with its daemon; tests inject one that does not wait.
+ */
+class ElectrumBackend(
+    private val client: ElectrumClient,
+    private val pause: suspend (millis: Long) -> Unit = { delay(it) }
+) : ChainBackend {
     private var version: List<String>? = null
 
     override suspend fun connect() {
@@ -60,13 +67,17 @@ class ElectrumBackend(private val client: ElectrumClient) : ChainBackend {
     /**
      * Where the transaction is mined: height is the tip minus confirmations plus one, and the verbose answer's
      * blockhash must equal the hash of the header at that height, or the tip and the daemon disagree (a block
-     * one side has and the other lacks). The tip is read once per backend (one check run) and kept: one mismatch
-     * re-reads it (a block found since), keeps the new one and tries again, a second throws.
+     * one side has and the other lacks). The tip is read once per backend (one check run) and kept. On a mismatch the
+     * tip is read again and the transaction placed again, up to [MAX_PLACING_RETRIES] times per call; when the fresh tip
+     * equals the one just used (the server's tip trails its daemon for a few seconds after a block, while the verbose
+     * confirmations already count it), the backend first waits [TIP_LAG_PAUSE_MS]. Only a hash equality places a
+     * transaction; still mismatching after the retries throws.
      * Without confirmations the height is 0 and the block hash null; confirmations without a blockhash throw.
      */
     override suspend fun transactionAt(txid: String): TxAt {
-        repeat(2) { attempt ->
-            val tip = (if(attempt == 0) placingTip else null) ?: client.tipHeight().also { placingTip = it }
+        var tip = placingTip ?: client.tipHeight().also { placingTip = it }
+        var retries = 0
+        while(true) {
             val json = client.getTransactionVerbose(txid)
             val confirmations = json["confirmations"]?.jsonPrimitive?.longOrNull ?: 0L
             if(confirmations <= 0L) return TxAt(0, null, 0)
@@ -76,13 +87,26 @@ class ElectrumBackend(private val client: ElectrumClient) : ChainBackend {
             val height = tip - confirmations + 1
             if(height < 1 || height > Int.MAX_VALUE) throw IOException("The server's confirmations ($confirmations) do not fit its tip ($tip) for $txid")
             if(blockHash(height.toInt()) == claimed) return TxAt(height.toInt(), claimed, time)
+            if(retries++ >= MAX_PLACING_RETRIES) throw IOException("The height of $txid does not match its block hash")
+            var fresh = client.tipHeight()
+            if(fresh == tip) {
+                pause(TIP_LAG_PAUSE_MS)
+                fresh = client.tipHeight()
+            }
+            tip = fresh
+            placingTip = fresh
         }
-        throw IOException("The height of $txid does not match its block hash")
     }
 
     override fun close() = client.close()
 
     companion object {
+        /** How many times one placement re-reads the tip after a block-hash mismatch before it gives up. */
+        const val MAX_PLACING_RETRIES = 3
+
+        /** The wait before reading the tip again when it has not moved (the server catching up with its daemon). */
+        const val TIP_LAG_PAUSE_MS = 2_500L
+
         /** The block hash a header gives; fewer than 80 bytes, or anything not hex, is an error. */
         fun blockHashOfHeader(headerHex: String): String {
             val clean = headerHex.trim().lowercase()

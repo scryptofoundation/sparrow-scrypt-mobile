@@ -14,6 +14,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** The block calls the inscription trace makes, against a fake Electrum server answering canned results. */
 class ElectrumBackendBlocksTest {
@@ -43,10 +44,13 @@ class ElectrumBackendBlocksTest {
         }
     }
 
+    /** The waits the backend asked for (injected, so no test sleeps). */
+    private val pauses = ArrayList<Long>()
+
     private fun withBackend(answer: (String, String) -> Pair<String?, String>, block: suspend (ElectrumBackend) -> Unit) = runBlocking {
         ServerSocket(0).use { server ->
             fake(server, answer)
-            val backend = ElectrumBackend(ElectrumClient("127.0.0.1", server.localPort, useTls = false))
+            val backend = ElectrumBackend(ElectrumClient("127.0.0.1", server.localPort, useTls = false)) { pauses.add(it) }
             backend.connect()
             try { block(backend) } finally { backend.close() }
         }
@@ -178,6 +182,37 @@ class ElectrumBackendBlocksTest {
             assertEquals(2, tips)
             assertEquals(100, b.transactionAt(txid).height)
             assertEquals(2, tips, "the new tip is kept")
+        }
+    }
+
+    /**
+     * Residual R2: the server's tip trails its daemon for a few seconds after a block. The verbose confirmations already
+     * count the new block; an instant re-read gives the same tip, so the backend waits, reads again and places it.
+     */
+    @Test fun aTipThatLagsItsDaemonIsWaitedFor() {
+        var tips = 0
+        withBackend(chain(tip = { if(tips++ < 2) 110 else 111 }) { verboseOf(1, hashAt(111)) }) { b ->
+            assertEquals(TxAt(111, hashAt(111), 1761000000L), b.transactionAt(txid))
+            assertEquals(1, pauses.size)
+            assertEquals(3, tips)
+        }
+    }
+
+    @Test fun aTipThatNeverCatchesUpThrowsAfterThreeRetries() {
+        var tips = 0
+        withBackend(chain(tip = { tips++; 110 }) { verboseOf(1, hashAt(111)) }) { b ->
+            assertFailsWith<IOException> { b.transactionAt(txid) }
+            assertEquals(3, pauses.size)
+            assertEquals(1 + 3 * 2, tips, "the first read, then two per retry (before and after the wait)")
+        }
+    }
+
+    /** A block hash that matches no height the tip gives is never placed, however often the tip is read again. */
+    @Test fun aMismatchingHashNeverReturnsAHeight() {
+        var tip = 105
+        withBackend(chain(tip = { tip++ }) { verboseOf(3, "ee".repeat(32)) }) { b ->
+            assertFailsWith<IOException> { b.transactionAt(txid) }
+            assertTrue(pauses.isEmpty(), "a tip that moves needs no wait")
         }
     }
 
