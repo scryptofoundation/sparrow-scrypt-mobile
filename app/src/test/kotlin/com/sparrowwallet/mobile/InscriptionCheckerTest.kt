@@ -62,6 +62,7 @@ private class FakeChain : ChainBackend {
     var blockCalls = 0
     var blockHashNull = false
     var blockHashFails = false
+    var blockHashRateLimited = false
     var cancelOn: String? = null
     /** Runs before each transaction read, as something else the app does mid-run would. */
     var beforeRaw: (String) -> Unit = {}
@@ -100,6 +101,7 @@ private class FakeChain : ChainBackend {
         calls++
         blockCalls++
         if(blockHashFails) throw IOException("connection reset")
+        if(blockHashRateLimited) throw com.sparrowwallet.mobile.electrum.RateLimitedException("HTTP 429")
         return if(blockHashNull) null else block(height)
     }
 
@@ -386,6 +388,25 @@ class InscriptionCheckerTest {
         chain.rawCalls = 0
         checker(dir, cipher).ltc(chain, utxos)
         assertEquals(0, chain.rawCalls, "with its block the result stands")
+    }
+
+    /**
+     * Review I3: a rate-limited block-hash call ends the run before anything is saved. Read as "no block", it would
+     * drop every proven row as if reorged and trace them all again on a server that is already refusing.
+     */
+    @Test fun aRateLimitedBlockHashEndsTheRunBeforeAnythingIsSaved(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        checker(dir, cipher).ltc(chain, listOf(Utxo(a, 0, 100, 50_000)))
+        val bytes = File(dir, "My Wallet.bin").readBytes()
+        chain.blockHashRateLimited = true
+        chain.rawCalls = 0
+        val checker = checker(dir, cipher)
+        assertFailsWith<com.sparrowwallet.mobile.electrum.RateLimitedException> { checker.ltc(chain, listOf(Utxo(a, 0, 100, 50_000))) }
+        assertEquals(0, chain.rawCalls)
+        assertTrue(bytes.contentEquals(File(dir, "My Wallet.bin").readBytes()))
     }
 
     @Test fun aRunThatThrowsSavesNothing(): Unit = runBlocking {

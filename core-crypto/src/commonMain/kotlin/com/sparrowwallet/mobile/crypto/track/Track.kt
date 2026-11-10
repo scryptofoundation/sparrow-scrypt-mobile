@@ -106,6 +106,13 @@ interface ChainSource {
     /** The block's non-coinbase transactions with their fees, in block order, or null when the server cannot list them. */
     suspend fun blockFees(height: Int, blockHash: String): List<BlockFee>?
 
+    /**
+     * As the other [blockFees], telling [extraRequest] before each server request past the first (a paged listing), so
+     * each counts against the trace's budget; [extraRequest] throws to stop the listing. A source that makes one
+     * request (or replays recorded answers) never calls it.
+     */
+    suspend fun blockFees(height: Int, blockHash: String, extraRequest: () -> Unit): List<BlockFee>? = blockFees(height, blockHash)
+
     /** The txid at a position in the block at a height (0 is the coinbase), or null past its end or when unsupported. */
     suspend fun txidAt(height: Int, position: Int): String?
 

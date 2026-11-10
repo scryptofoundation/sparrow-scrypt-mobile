@@ -7,6 +7,8 @@ import com.sparrowwallet.mobile.crypto.track.ChainRules
 import com.sparrowwallet.mobile.crypto.track.TxCache
 import com.sparrowwallet.mobile.electrum.BackendChainSource
 import com.sparrowwallet.mobile.electrum.ChainBackend
+import com.sparrowwallet.mobile.electrum.NoRateLimitWait
+import com.sparrowwallet.mobile.electrum.RateLimitedException
 import com.sparrowwallet.mobile.electrum.Utxo
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun
@@ -18,6 +20,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.ConcurrentHashMap
@@ -206,10 +209,16 @@ class InscriptionChecker(val store: InscriptionStore) {
         }
     }
 
-    /** The block at [height], or null when the server gives none or the call fails (so nothing stands on it). */
+    /**
+     * The block at [height], or null when the server gives none or the call fails (so nothing stands on it). A rate
+     * limit is not read as "no block" (that would drop every proven row as if reorged and trace them all again on a
+     * server already refusing): it throws, ending the run before anything is saved.
+     */
     private suspend fun confirmingBlock(backend: ChainBackend, height: Int): String? = try {
-        backend.blockHash(height)
+        withContext(NoRateLimitWait) { backend.blockHash(height) }
     } catch(e: CancellationException) {
+        throw e
+    } catch(e: RateLimitedException) {
         throw e
     } catch(e: Exception) {
         null

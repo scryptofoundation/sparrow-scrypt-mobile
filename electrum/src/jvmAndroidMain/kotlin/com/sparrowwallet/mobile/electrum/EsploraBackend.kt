@@ -23,6 +23,7 @@ import kotlinx.serialization.json.long
 import kotlinx.serialization.json.longOrNull
 import com.sparrowwallet.mobile.crypto.AirGappedException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import java.io.IOException
 
@@ -49,12 +50,16 @@ class EsploraBackend(
 
     /**
      * One request, retried after a 429 as the server's Retry-After asks (capped), since public
-     * Esplora instances rate-limit hard (peppool.space: 15 a minute).
+     * Esplora instances rate-limit hard (peppool.space: 15 a minute). Under [NoRateLimitWait] (the
+     * inscription check's calls) a 429 throws a [RateLimitedException] at once instead.
      */
     private suspend fun get(path: String): HttpEndpoint.Response = withRateLimit { http.get(path) }
 
     private suspend fun withRateLimit(call: suspend () -> HttpEndpoint.Response): HttpEndpoint.Response {
         var r = call()
+        if(r.status == 429 && currentCoroutineContext()[NoRateLimitWait] != null) {
+            throw RateLimitedException("${http.url} answered HTTP 429 (rate limited): ${r.body.take(200)}")
+        }
         var attempt = 0
         while(r.status == 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
             val wait = r.headers["retry-after"]?.trim()?.toLongOrNull()?.coerceIn(1, MAX_RETRY_AFTER_SECONDS) ?: DEFAULT_RETRY_AFTER_SECONDS
@@ -218,17 +223,21 @@ class EsploraBackend(
      * coinbase is the block's first transaction and is skipped; every other transaction must carry a fee,
      * or the whole listing is refused, since a partial list would misplace the fees that follow.
      */
-    override suspend fun blockFees(blockHash: String): List<BlockFee>? {
+    override suspend fun blockFees(blockHash: String): List<BlockFee>? = blockFees(blockHash) {}
+
+    /** [extraRequest] is told before each request past the first (later pages, the count check), and may throw to stop. */
+    override suspend fun blockFees(blockHash: String, extraRequest: () -> Unit): List<BlockFee>? {
         val hash = requireHash(blockHash, "block hash")
         val fees = ArrayList<BlockFee>()
         var index = 0
         for(page in 0 until MAX_BLOCK_PAGES) {
             val start = page * PAGE_SIZE
+            if(page > 0) extraRequest()
             val r = get("/block/$hash/txs/$start")
             if(r.status == 404 && page == 0) return null
             if(r.status != 200) {
                 // a block of an exact multiple of 25 may answer its (empty) next page with an error: the count check settles it
-                if(page > 0 && (r.status == 400 || r.status == 404)) return checkedAgainstCount(hash, index, fees)
+                if(page > 0 && (r.status == 400 || r.status == 404)) return checkedAgainstCount(hash, index, fees, extraRequest)
                 throw IOException(failure(r))
             }
             val txs = try {
@@ -250,13 +259,14 @@ class EsploraBackend(
                 }
                 index++
             }
-            if(txs.size < PAGE_SIZE) return checkedAgainstCount(hash, index, fees)
+            if(txs.size < PAGE_SIZE) return checkedAgainstCount(hash, index, fees, extraRequest)
         }
         throw IOException("Block $hash has more than ${MAX_BLOCK_PAGES * PAGE_SIZE} transactions")
     }
 
     /** [fees] if the [read] transactions (coinbase included) are all the block has, per its tx_count; else an error. */
-    private suspend fun checkedAgainstCount(hash: String, read: Int, fees: List<BlockFee>): List<BlockFee> {
+    private suspend fun checkedAgainstCount(hash: String, read: Int, fees: List<BlockFee>, extraRequest: () -> Unit): List<BlockFee> {
+        extraRequest()
         val r = get("/block/$hash")
         if(r.status != 200) throw IOException(failure(r))
         val count = try {

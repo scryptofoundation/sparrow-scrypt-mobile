@@ -58,6 +58,22 @@ class MinedCoinTest {
         chain.fees[HEIGHT] = listOf(BlockFee(a.txid, 5_000))
     }
 
+    /** Review I3: every page of a fee listing past the first counts as a lookup, and a listing can use up the budget. */
+    @Test
+    fun feeListingPagesCountAgainstTheBudget() {
+        val a = feeBurn()
+        esploraFees(a)
+        val cb = coinbase(REWARD + 5_000)
+        val single = trace(litecoinRegtest(), cb.txid, 0)
+        chain.extraFeeRequests = 3
+        val paged = trace(litecoinRegtest(), cb.txid, 0)
+        assertEquals(single.verdict, paged.verdict)
+        assertEquals(single.lookups + 3, paged.lookups)
+        val short = trace(litecoinRegtest(), cb.txid, 0, budget = single.lookups + 2)
+        assertEquals(Verdict.UNCHECKED, short.verdict)
+        assertEquals(InscriptionTracer.BUDGET_USED, short.reason)
+    }
+
     @Test
     fun subsidyPartClean() {
         val cb = coinbase(10_000, REWARD - 10_000 + 1_000)

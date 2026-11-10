@@ -378,8 +378,9 @@ class InscriptionTracer internal constructor(
             run.serverCall()
             blockHash = source.blockHash(coinbase.height)
         }
+        //The listing's first request counts here, each later page through the hook (one lookup per request)
         run.serverCall()
-        val listed = if(blockHash == null) null else source.blockFees(coinbase.height, blockHash)
+        val listed = if(blockHash == null) null else source.blockFees(coinbase.height, blockHash) { run.serverCall() }
         if(listed != null || !run.walkBlocks) {
             return listed
         }

@@ -75,6 +75,9 @@ interface ChainBackend {
      */
     suspend fun blockFees(blockHash: String): List<BlockFee>? = null
 
+    /** As the other [blockFees], telling [extraRequest] before each request past the first (it may throw to stop). */
+    suspend fun blockFees(blockHash: String, extraRequest: () -> Unit): List<BlockFee>? = blockFees(blockHash)
+
     /** Where [txid] is mined, from the server. Unconfirmed gives height 0. */
     suspend fun transactionAt(txid: String): TxAt = throw UnsupportedOperationException("This backend cannot place a transaction in a block")
 

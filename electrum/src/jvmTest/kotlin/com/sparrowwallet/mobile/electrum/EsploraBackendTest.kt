@@ -22,6 +22,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.thread
 import kotlin.test.AfterTest
 import kotlin.test.Test
+import kotlinx.coroutines.withContext
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
@@ -194,6 +195,29 @@ class EsploraBackendTest {
         val b = EsploraBackend(base, params).also { it.connect() }
         assertEquals(emptyList(), b.history(script))
         assertEquals(2, tries)
+    }
+
+    /**
+     * Review I3: in the inscription check's context a 429 fails at once, as a [RateLimitedException]: no wait, no
+     * retry, no /raw fallback. The wallet's own calls outside it still wait (see the test above).
+     */
+    @Test fun aCheckCallFailsAtOnceOnARateLimit(): Unit = runBlocking {
+        var limited = false
+        routes = { _, path, _ -> if(path == "/blocks/tip/height" && !limited) 200 to "5" else 429 to "Too Many Requests" }
+        val b = EsploraBackend(base, params).also { it.connect() }
+        limited = true
+        requests.clear()
+        val started = System.nanoTime()
+        withContext(NoRateLimitWait) {
+            assertFailsWith<RateLimitedException> { b.rawTransaction(T1) }
+            assertFailsWith<RateLimitedException> { b.blockHash(7) }
+            assertFailsWith<RateLimitedException> { b.transactionAt(T1) }
+            assertFailsWith<RateLimitedException> { b.blockFees(H) }
+            assertFailsWith<RateLimitedException> { b.tipHeight() }
+        }
+        assertTrue(System.nanoTime() - started < 900_000_000L, "no Retry-After wait")
+        assertEquals(listOf("GET /tx/$T1/hex", "GET /block-height/7", "GET /tx/$T1/status", "GET /block/$H/txs/0", "GET /blocks/tip/height"),
+            requests.toList())
     }
 
     @Test fun unusedAddressSkipsTheHistoryRequest(): Unit = runBlocking {
@@ -441,7 +465,10 @@ class EsploraBackendTest {
             }
         }
         val b = EsploraBackend(base, params).also { it.connect() }
-        val fees = b.blockFees(H)!!
+        var extra = 0
+        val fees = b.blockFees(H) { extra++ }!!
+        //the second page and the count check, each counted against the trace's budget (the first is the tracer's own)
+        assertEquals(2, extra)
         assertEquals(29, fees.size)
         assertEquals(fee(id(1), 11), fees.first())
         assertEquals(fee(id(29), 39), fees.last())

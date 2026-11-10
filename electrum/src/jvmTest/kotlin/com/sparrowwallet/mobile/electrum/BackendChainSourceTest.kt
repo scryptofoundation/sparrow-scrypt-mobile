@@ -3,6 +3,7 @@ package com.sparrowwallet.mobile.electrum
 import com.sparrowwallet.mobile.crypto.RawTx
 import com.sparrowwallet.mobile.crypto.hexToBytes
 import com.sparrowwallet.mobile.crypto.track.BlockFee
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -52,6 +53,41 @@ class BackendChainSourceTest {
         assertEquals("t7", source.txidAt(7, 0))
         assertNull(source.txidAt(7, 1))
         assertEquals(listOf(BlockFee(hash, 5)), source.blockFees(7, hash))
+    }
+
+    /** Review I3: every call the trace makes runs without waiting out a rate limit; the backend sees that in its context. */
+    @Test fun traceCallsDoNotWaitOutARateLimit(): Unit = runBlocking {
+        val seen = ArrayList<Boolean>()
+        val backend = object : Bare(raw.hexToBytes()) {
+            suspend fun mark() { seen.add(currentCoroutineContext()[NoRateLimitWait] != null) }
+            override suspend fun rawTransaction(txid: String): ByteArray { mark(); return raw }
+            override suspend fun transactionAt(txid: String): TxAt { mark(); return TxAt(0, null, 0) }
+            override suspend fun blockHash(height: Int): String? { mark(); return null }
+            override suspend fun txidAt(height: Int, position: Int): String? { mark(); return null }
+            override suspend fun blockFees(blockHash: String, extraRequest: () -> Unit): List<BlockFee>? { mark(); return null }
+        }
+        val source = BackendChainSource(backend)
+        source.transaction(txid)
+        source.blockHash(1)
+        source.txidAt(1, 0)
+        source.blockFees(1, hash) {}
+        assertEquals(List(5) { true }, seen)
+        //and outside the source, nothing is marked
+        backend.blockHash(1)
+        assertEquals(false, seen.last())
+    }
+
+    /** Each listing request past the first is counted through the hook the tracer passes. */
+    @Test fun blockFeePagesReachTheTracersCounter(): Unit = runBlocking {
+        val backend = object : Bare() {
+            override suspend fun blockFees(blockHash: String, extraRequest: () -> Unit): List<BlockFee>? {
+                extraRequest(); extraRequest()
+                return emptyList()
+            }
+        }
+        var counted = 0
+        assertEquals(emptyList(), BackendChainSource(backend).blockFees(1, hash) { counted++ })
+        assertEquals(2, counted)
     }
 
     @Test fun backendWithoutTheCallsAnswersNull(): Unit = runBlocking {

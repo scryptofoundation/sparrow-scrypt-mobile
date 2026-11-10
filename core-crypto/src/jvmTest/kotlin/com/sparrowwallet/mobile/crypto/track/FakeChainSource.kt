@@ -41,6 +41,15 @@ class FakeChainSource : ChainSource {
         return fees[height]
     }
 
+    /** Requests past the first that a paged fee listing (Esplora's) makes, each reported to the tracer's counter. */
+    var extraFeeRequests = 0
+
+    override suspend fun blockFees(height: Int, blockHash: String, extraRequest: () -> Unit): List<BlockFee>? {
+        val fees = blockFees(height, blockHash)
+        repeat(extraFeeRequests) { extraRequest() }
+        return fees
+    }
+
     override suspend fun blockHash(height: Int): String? = hashes[height]
 
     override suspend fun txidAt(height: Int, position: Int): String? {
