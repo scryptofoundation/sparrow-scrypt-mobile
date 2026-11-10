@@ -45,6 +45,9 @@ class ElectrumBackend(private val client: ElectrumClient) : ChainBackend {
     /** Block hashes read so far by height, so several transactions of one block cost one header call. */
     private val hashes = HashMap<Int, String>()
 
+    /** The tip [transactionAt] places transactions against, read on first use and on a block-hash mismatch. */
+    private var placingTip: Long? = null
+
     /** The block hash from the header at [height]: the double SHA-256 of its first 80 bytes, reversed. */
     override suspend fun blockHash(height: Int): String =
         hashes[height] ?: blockHashOfHeader(client.getBlockHeader(height)).also { hashes[height] = it }
@@ -57,12 +60,13 @@ class ElectrumBackend(private val client: ElectrumClient) : ChainBackend {
     /**
      * Where the transaction is mined: height is the tip minus confirmations plus one, and the verbose answer's
      * blockhash must equal the hash of the header at that height, or the tip and the daemon disagree (a block
-     * one side has and the other lacks). One mismatch re-reads the tip and tries again, a second throws.
+     * one side has and the other lacks). The tip is read once per backend (one check run) and kept: one mismatch
+     * re-reads it (a block found since), keeps the new one and tries again, a second throws.
      * Without confirmations the height is 0 and the block hash null; confirmations without a blockhash throw.
      */
     override suspend fun transactionAt(txid: String): TxAt {
-        repeat(2) {
-            val tip = client.tipHeight()
+        repeat(2) { attempt ->
+            val tip = (if(attempt == 0) placingTip else null) ?: client.tipHeight().also { placingTip = it }
             val json = client.getTransactionVerbose(txid)
             val confirmations = json["confirmations"]?.jsonPrimitive?.longOrNull ?: 0L
             if(confirmations <= 0L) return TxAt(0, null, 0)

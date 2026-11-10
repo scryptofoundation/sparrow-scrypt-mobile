@@ -156,6 +156,31 @@ class ElectrumBackendBlocksTest {
         }
     }
 
+    /** Review I3: placing transactions reads the tip once per backend (one run), not once per transaction. */
+    @Test fun theTipIsReadOncePerRun() {
+        var tips = 0
+        withBackend(chain(tip = { tips++; 110 }) { verboseOf(11, hashAt(100)) }) { b ->
+            repeat(3) { assertEquals(TxAt(100, hashAt(100), 1761000000L), b.transactionAt(txid)) }
+            assertEquals(1, tips)
+        }
+    }
+
+    /** A block found after the tip was read: one re-read, kept for the transactions after it. */
+    @Test fun aTipThatMovesIsReadAgainOnceAndKept() {
+        var tip = 110
+        var tips = 0
+        var confirmations = 11
+        withBackend(chain(tip = { tips++; tip }) { verboseOf(confirmations, hashAt(100)) }) { b ->
+            assertEquals(100, b.transactionAt(txid).height)
+            tip = 111
+            confirmations = 12
+            assertEquals(100, b.transactionAt(txid).height)
+            assertEquals(2, tips)
+            assertEquals(100, b.transactionAt(txid).height)
+            assertEquals(2, tips, "the new tip is kept")
+        }
+    }
+
     @Test fun blockCallsRefuseWhenAirGapped() {
         withBackend({ _, _ -> "\"00\"" to "" }) { b ->
             NetworkPolicy.blocked = true
