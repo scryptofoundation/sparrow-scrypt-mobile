@@ -13,7 +13,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * which the electrum module cannot see).
  */
 object TrackFakes {
-    private val PLAIN = byteArrayOf(0x51)
+    val PLAIN = byteArrayOf(0x51)
     private val XONLY = ByteArray(32) { 4 }
 
     fun hash(n: Int): String = n.toString(16).padStart(64, '0')
@@ -26,12 +26,13 @@ object TrackFakes {
 
     private fun push(data: ByteArray): ByteArray = byteArrayOf(data.size.toByte()) + data
 
-    /** One input per spend (txid, vout), paying the outputs to a plain script; witnesses make it segwit. */
+    /** One input per spend (txid, vout), paying the outputs to a plain script (or to outputScripts); witnesses make it segwit. */
     fun tx(
         spends: List<Pair<String, Int>>,
         outputs: List<Long>,
         scriptSigs: List<ByteArray>? = null,
-        witnesses: List<List<ByteArray>>? = null
+        witnesses: List<List<ByteArray>>? = null,
+        outputScripts: List<ByteArray>? = null
     ): RawTx.Parsed {
         val segwit = witnesses != null && witnesses.any { it.isNotEmpty() }
         val body = ArrayList<Byte>()
@@ -47,8 +48,9 @@ object TrackFakes {
             add(le(0xFFFFFFFFL, 4))
         }
         add(varInt(outputs.size))
-        for(value in outputs) {
-            add(le(value, 8)); add(varInt(PLAIN.size)); add(PLAIN)
+        outputs.forEachIndexed { i, value ->
+            val script = outputScripts?.get(i) ?: PLAIN
+            add(le(value, 8)); add(varInt(script.size)); add(script)
         }
         if(segwit) {
             for(i in spends.indices) {

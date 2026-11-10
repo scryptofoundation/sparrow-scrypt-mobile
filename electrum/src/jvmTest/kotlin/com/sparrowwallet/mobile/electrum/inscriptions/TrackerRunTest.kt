@@ -234,10 +234,9 @@ class TrackerRunTest {
     private fun deadEnd(tx: RawTx.Parsed, reason: String, blockHash: String? = block(2_500_000)) =
         InscriptionCheck(tx.txid, 0, Verdict.UNCHECKED, InscriptionCheck.Source.BUILT_IN, false, emptyList(), reason, blockHash, emptyList())
 
-    /** Review I4: a coin whose trace ends at MWEB or an unresolvable mined coin meets it again every run; its row stands. */
+    /** Review I4: a coin whose trace ends at an unresolvable mined coin meets it again every run; its row stands. */
     @Test fun aStoredDeadEndCostsNoLookups() {
-        for(reason in listOf(InscriptionTracer.THROUGH_MWEB, InscriptionTracer.FEES_NEED_DEEPER, InscriptionTracer.DOES_NOT_ADD_UP,
-                             CheckPolicy.MAY_CARRY_RUNES)) {
+        for(reason in listOf(InscriptionTracer.FEES_NEED_DEEPER, InscriptionTracer.DOES_NOT_ADD_UP, CheckPolicy.MAY_CARRY_RUNES)) {
             val tx = cleanCoin(1)
             val stored = deadEnd(tx, reason)
             chain.calls = 0
@@ -257,27 +256,47 @@ class TrackerRunTest {
 
     @Test fun aChangedBlockRetracesADeadEnd() {
         val tx = cleanCoin(1)
-        val stored = deadEnd(tx, InscriptionTracer.THROUGH_MWEB, block(2_499_999))
+        val stored = deadEnd(tx, InscriptionTracer.FEES_NEED_DEEPER, block(2_499_999))
         run(listOf(coin(tx)), mapOf(stored.outpoint to stored))
         assertTrue(chain.calls > 0)
     }
 
+    /**
+     * A coin out of MWEB is clean since 2026-11-10 (the owner's rule), so a row stored as "Came through MWEB" before then
+     * does not stand on its unchanged block: it is traced again and comes out clean.
+     */
+    @Test fun aStoredMwebRowIsTracedAgainAndComesOutClean() {
+        val hogAddr = ByteArray(34)
+        hogAddr[0] = 0x58
+        hogAddr[1] = 0x20
+        val hogEx = chain.add(tx(listOf(hash(1) to 0), listOf(1_000_000L, 10_000L), outputScripts = listOf(hogAddr, TrackFakes.PLAIN)), 2_499_999)
+        val pegOut = chain.add(tx(listOf(hogEx.txid to 1), listOf(9_000L)), 2_500_000)
+        val stored = deadEnd(pegOut, InscriptionTracer.THROUGH_MWEB)
+        chain.calls = 0
+        val result = run(listOf(coin(pegOut)), mapOf(stored.outpoint to stored))
+        assertEquals(Verdict.CLEAN, result.getValue(stored.outpoint).verdict, result.toString())
+        assertEquals(2, chain.calls, "the coin and the HogEx")
+    }
+
     @Test fun aDeadEndWithoutABlockOrWithAnIndexedAnswerIsRetraced() {
         val tx = cleanCoin(1)
-        val unproven = deadEnd(tx, InscriptionTracer.THROUGH_MWEB, null)
+        val unproven = deadEnd(tx, InscriptionTracer.FEES_NEED_DEEPER, null)
         run(listOf(coin(tx)), mapOf(unproven.outpoint to unproven))
         assertTrue(chain.calls > 0, "no block")
 
         chain.calls = 0
-        val stored = deadEnd(tx, InscriptionTracer.THROUGH_MWEB)
+        val stored = deadEnd(tx, InscriptionTracer.FEES_NEED_DEEPER)
         val answer = IndexerAnswer(true, emptyList(), runes = false, unlisted = false)
         run(listOf(coin(tx)), mapOf(stored.outpoint to stored), answers = mapOf(stored.outpoint to answer), indexerSource = InscriptionCheck.Source.PUBLIC)
         assertTrue(chain.calls > 0, "an indexed answer")
     }
 
-    /** Budget, server-error and unknown-height rows are not dead ends: they are retried. */
+    /**
+     * Budget, server-error, unknown-height and MWEB rows are not dead ends: they are retried. (The phone's stop at an MWEB
+     * input, beyond drongo, still says "Came through MWEB", so such a coin is traced again each run.)
+     */
     @Test fun otherUncheckedRowsAreRetried() {
-        for(reason in listOf(budgetUsed, serverError + "connection reset", InscriptionTracer.HEIGHT_UNKNOWN)) {
+        for(reason in listOf(budgetUsed, serverError + "connection reset", InscriptionTracer.HEIGHT_UNKNOWN, InscriptionTracer.THROUGH_MWEB)) {
             val tx = cleanCoin(1)
             val stored = deadEnd(tx, reason)
             chain.calls = 0

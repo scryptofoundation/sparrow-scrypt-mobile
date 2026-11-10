@@ -37,12 +37,15 @@ class InscriptionTracerTest {
     /** A plain transaction at a height below Litecoin's first inscription, paying one output of the value. */
     private fun old(n: Int, value: Long): RawTx.Parsed = chain.add(spend(listOf(hash(n) to 0), value), 2_000_000)
 
-    /** A HogEx: input 0 spends output 0 of the previous one, output 0 pays OP_8 and a 32 byte push. */
-    private fun hogEx(): RawTx.Parsed {
+    /**
+     * A HogEx: input 0 spends output 0 of the previous one (then any peg-ins), output 0 (the MWEB pool) pays OP_8 and a 32
+     * byte push, the other outputs are peg-outs.
+     */
+    private fun hogEx(pegIns: List<Pair<String, Int>> = emptyList(), pegOut: Long = 10_000L): RawTx.Parsed {
         val hogAddr = ByteArray(34)
         hogAddr[0] = 0x58
         hogAddr[1] = 0x20
-        return tx(listOf(hash(1) to 0), listOf(1_000_000L, 10_000L), outputScripts = listOf(hogAddr, PLAIN))
+        return tx(listOf(hash(1) to 0) + pegIns, listOf(1_000_000L, pegOut), outputScripts = listOf(hogAddr, PLAIN))
     }
 
     private fun trace(tracer: InscriptionTracer, txid: String, vout: Int, resume: List<Piece> = emptyList(), budget: Int = InscriptionTracer.DEFAULT_BUDGET, walkBlocks: Boolean = false) =
@@ -132,15 +135,40 @@ class InscriptionTracerTest {
         assertEquals(Verdict.CLEAN, trace(litecoin(), coin.txid, 1).verdict)
     }
 
+    /** A coin that came out of MWEB has no history to follow: the piece ends clean at the HogEx (the owner's rule, 2026-11-10). */
     @Test
-    fun hogExIsUnchecked() {
+    fun hogExIsClean() {
         val hogEx = hogEx()
         assertTrue(InscriptionTracer.isHogEx(hogEx), "fixture is a HogEx")
         chain.add(hogEx, 2_500_000)
         val coin = chain.add(spend(listOf(hogEx.txid to 1), 9_000), 2_500_001)
         val result = trace(litecoin(), coin.txid, 0)
-        assertEquals(Verdict.UNCHECKED, result.verdict)
-        assertEquals("Came through MWEB", result.reason)
+        assertEquals(Verdict.CLEAN, result.verdict)
+        assertNull(result.reason)
+        assertTrue(result.open.isEmpty())
+        assertEquals(2, result.lookups)
+    }
+
+    /**
+     * An inscription moved into MWEB by a peg-in and a peg-out paying the wallet coin: the trace stops at the HogEx and never
+     * reaches the inscription, so the coin is clean (drongo's inscriptionThroughMwebIsClean).
+     */
+    @Test
+    fun inscriptionThroughMwebIsClean() {
+        val parent = old(1, 10_000)
+        val reveal = chain.add(reveal(listOf(parent.txid to 0), listOf(script(envelope("in"))), 10_000), 2_500_000)
+        val pegInScript = ByteArray(34)
+        pegInScript[0] = 0x59
+        pegInScript[1] = 0x20
+        val pegIn = chain.add(tx(listOf(reveal.txid to 0), listOf(9_000L), outputScripts = listOf(pegInScript)), 2_500_001)
+        val hogEx = chain.add(hogEx(listOf(pegIn.txid to 0), 9_000), 2_500_001)
+        assertTrue(InscriptionTracer.isHogEx(hogEx), "fixture is a HogEx")
+        val coin = chain.add(spend(listOf(hogEx.txid to 1), 9_000), 2_500_002)
+        assertEquals(Verdict.INSCRIBED, trace(litecoin(), pegIn.txid, 0).verdict, "the inscription went into MWEB")
+        val result = trace(litecoin(), coin.txid, 0)
+        assertEquals(Verdict.CLEAN, result.verdict, result.reason)
+        assertTrue(result.found.isEmpty())
+        assertEquals(2, result.lookups, "the trace stops at the HogEx")
     }
 
     /** Review C1: a trace that hit a dead end leaves nothing to resume, so a later resume cannot skip the dead end. */
@@ -152,14 +180,15 @@ class InscriptionTracerTest {
         assertTrue(cut.open.isEmpty(), "a dead end leaves nothing to resume: ${cut.open}")
     }
 
-    /** A coin spending a HogEx output and the end of a five transaction chain above the cutoff. */
+    /** A coin spending a coinbase the server gave no height for (a dead end) and the end of a five transaction chain above the cutoff. */
     private fun deadEndChain(): RawTx.Parsed {
-        val hogEx = chain.add(hogEx(), 2_500_000)
+        val unknownHeight = chain.add(tx(listOf(hash(0) to -1), listOf(10_000L), scriptSigs = listOf(byteArrayOf(0x01, 0x65))), 0)
+        assertTrue(unknownHeight.inputs.first().isCoinbase)
         var previous = old(2, 10_000)
         for(i in 0 until 5) {
             previous = chain.add(spend(listOf(previous.txid to 0), 10_000), 2_500_001 + i)
         }
-        return chain.add(spend(listOf(hogEx.txid to 1, previous.txid to 0), 20_000), 2_500_010)
+        return chain.add(spend(listOf(unknownHeight.txid to 0, previous.txid to 0), 20_000), 2_500_010)
     }
 
     /** Review I4: the inscription of a last Doginals step sits on the first unit of the flow, output 1 when output 0 holds nothing. */
@@ -224,7 +253,7 @@ class InscriptionTracerTest {
 
     // ---- Cases the phone adds ----
 
-    /** A trace cut off by budget after meeting MWEB, resumed with what it left open, meets MWEB again and is not clean. */
+    /** A trace cut off by budget after meeting a dead end, resumed with what it left open, meets the dead end again and is not clean. */
     @Test
     fun resumeKeepsDeadEnds() {
         val coin = deadEndChain()
@@ -235,7 +264,7 @@ class InscriptionTracerTest {
 
         val resumed = trace(litecoin(), coin.txid, 0, cut.open)
         assertEquals(Verdict.UNCHECKED, resumed.verdict)
-        assertEquals("Came through MWEB", resumed.reason)
+        assertEquals("Mined coin height unknown", resumed.reason)
     }
 
     /** The piece on an output KnownResults calls clean costs no lookup of its own: its parents are never fetched. */
@@ -254,10 +283,10 @@ class InscriptionTracerTest {
 
     /**
      * A transaction with the MWEB flag is a HogEx when its extension is the single byte 0, as drongo reads it; one that
-     * carries an MWEB transaction (a peg-in) is traced through like any other.
+     * carries an MWEB transaction (a peg-in) is traced through like any other. A HogEx ends its piece clean.
      */
     @Test
-    fun mwebFlaggedTxIsUnchecked() {
+    fun mwebFlaggedHogExIsCleanAndPegInIsTracedThrough() {
         //Output 0 pays an ordinary script: only the flag and the extension can make these a HogEx
         val hogParent = old(1, 10_000)
         val hogEx = tx(listOf(hogParent.txid to 0), listOf(10_000L), mwebExtension = byteArrayOf(0))
@@ -266,8 +295,9 @@ class InscriptionTracerTest {
         chain.add(hogEx, 2_500_000)
         val hogCoin = chain.add(spend(listOf(hogEx.txid to 0), 9_000), 2_500_001)
         val stopped = trace(litecoin(), hogCoin.txid, 0)
-        assertEquals(Verdict.UNCHECKED, stopped.verdict)
-        assertEquals("Came through MWEB", stopped.reason)
+        assertEquals(Verdict.CLEAN, stopped.verdict, stopped.reason)
+        //The coin and the HogEx: the HogEx's own input is never fetched
+        assertEquals(2, stopped.lookups)
 
         val pegParent = old(2, 10_000)
         val pegIn = tx(listOf(pegParent.txid to 0), listOf(10_000L), mwebExtension = byteArrayOf(1, 2, 3))

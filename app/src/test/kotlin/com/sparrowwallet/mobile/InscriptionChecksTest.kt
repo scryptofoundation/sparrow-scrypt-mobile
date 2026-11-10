@@ -337,7 +337,7 @@ class InscriptionChecksTest {
      */
     @Test
     fun theWorkerChecksOnlyWhenNeeded() {
-        val deadEnd = check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.crypto.track.InscriptionTracer.THROUGH_MWEB)
+        val deadEnd = check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.crypto.track.InscriptionTracer.FEES_NEED_DEEPER)
         val standing = mapOf("a" to clean, "b" to check(Verdict.INSCRIBED), "c" to deadEnd)
         assertFalse(inscriptionCheckNeeded(due = false, stored = standing))
         assertFalse(inscriptionCheckNeeded(due = false, stored = emptyMap()))
@@ -349,7 +349,9 @@ class InscriptionChecksTest {
             check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun.TIME_UP),
             check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.crypto.track.InscriptionTracer.HEIGHT_UNKNOWN),
             check(Verdict.CLEAN, blockHash = null),
-            check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.crypto.track.InscriptionTracer.THROUGH_MWEB, blockHash = null)
+            check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.crypto.track.InscriptionTracer.FEES_NEED_DEEPER, blockHash = null),
+            //A coin out of MWEB is clean since 2026-11-10, so an old "Came through MWEB" row is retried, block or not
+            check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.crypto.track.InscriptionTracer.THROUGH_MWEB)
         )) {
             assertTrue(inscriptionCheckNeeded(due = false, stored = standing + ("d" to retry)), retry.toString())
         }

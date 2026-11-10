@@ -30,13 +30,14 @@ object TrackerRun {
     }
 
     /**
-     * The reasons of an Unchecked row a new trace would only reach again while the coin's block is unchanged: MWEB, a
-     * mined coin whose fees need Check deeper or do not add up, and runes the policy cannot rule out over a Clean trace
-     * (the creating transaction's runestone does not change). "Mined coin height unknown", budget and server-error rows
-     * are not here: they are retried.
+     * The reasons of an Unchecked row a new trace would only reach again while the coin's block is unchanged: a mined
+     * coin whose fees need Check deeper or do not add up, and runes the policy cannot rule out over a Clean trace (the
+     * creating transaction's runestone does not change). "Mined coin height unknown", budget and server-error rows are not
+     * here: they are retried. Nor is "Came through MWEB": rows stored before coins out of MWEB counted clean (2026-11-10)
+     * must be traced again, and the phone's remaining MWEB stop (an MWEB input) is rare enough to retry each run.
      */
     val DEAD_ENDS: Set<String> = setOf(
-        InscriptionTracer.THROUGH_MWEB, InscriptionTracer.FEES_NEED_DEEPER, InscriptionTracer.DOES_NOT_ADD_UP, CheckPolicy.MAY_CARRY_RUNES
+        InscriptionTracer.FEES_NEED_DEEPER, InscriptionTracer.DOES_NOT_ADD_UP, CheckPolicy.MAY_CARRY_RUNES
     )
 
     /** An Unchecked row that met a dead end and knows its block: it stands while that block is the coin's. */
