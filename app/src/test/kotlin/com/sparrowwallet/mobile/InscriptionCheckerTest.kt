@@ -501,6 +501,20 @@ class InscriptionCheckerTest {
         assertEquals(stored, checker.cached(wallet))
     }
 
+    /** The worker learns whether its check ran: null when skipped (one is going) or failed. */
+    @Test fun tryRunSaysWhetherTheCheckRan(): Unit = runBlocking {
+        val checker = checker(newDir(), CheckerCipher())
+        assertEquals(emptyMap(), checker.tryRun(wallet) { emptyMap() })
+        assertNull(checker.tryRun(wallet) { throw IOException("server down") })
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val first = async { checker.tryRun(wallet) { started.complete(Unit); release.await(); emptyMap() } }
+        started.await()
+        assertNull(checker.tryRun(wallet) { emptyMap() })
+        release.complete(Unit)
+        first.await()
+    }
+
     @Test fun anOverlappingRunForTheSameWalletIsSkipped(): Unit = runBlocking {
         val checker = checker(newDir(), CheckerCipher())
         val started = CompletableDeferred<Unit>()

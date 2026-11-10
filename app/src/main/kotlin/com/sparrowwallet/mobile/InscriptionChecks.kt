@@ -7,6 +7,7 @@ import com.sparrowwallet.mobile.electrum.InscriptionIndex
 import com.sparrowwallet.mobile.electrum.WalletScanner
 import com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
+import com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun
 
 /**
  * Where a coin's inscription checks go, per coin and network like desktop: Off (the default; the local rule holds
@@ -129,6 +130,21 @@ internal suspend fun classifyCoins(coins: List<String>, results: Map<String, Ins
     }
     return CoinStates(states, checks.orEmpty().values.filter { it.verdict == Verdict.INSCRIBED }.map { it.outpoint }.toSet())
 }
+
+/**
+ * Whether a stored row is worth a new trace: it has no block (so it cannot stand), or it is Unchecked and not a dead
+ * end (budget, server error, time, unknown height). Clean, Inscribed and dead-end rows with their block stand.
+ */
+fun retryable(check: InscriptionCheck): Boolean =
+    check.blockHash == null || (check.verdict == Verdict.UNCHECKED && !TrackerRun.deadEnd(check))
+
+/**
+ * Whether the background worker runs a wallet's inscription check: [due] (its scan saw something new, see
+ * [SyncBaseline.inscriptionCheckDue]), no readable results file yet ([stored] null), or a [retryable] row. Otherwise
+ * it skips the check entirely: no second address walk, no block-hash calls.
+ */
+fun inscriptionCheckNeeded(due: Boolean, stored: Map<String, InscriptionCheck>?): Boolean =
+    due || stored == null || stored.values.any { retryable(it) }
 
 private fun coins(count: Int): String = "$count ${if(count == 1) "coin" else "coins"}"
 

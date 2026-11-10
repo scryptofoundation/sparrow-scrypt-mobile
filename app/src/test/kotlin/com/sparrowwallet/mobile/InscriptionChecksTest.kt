@@ -285,6 +285,30 @@ class InscriptionChecksTest {
         assertEquals(true, indexerCarries(serverAnswer = true) { false })
     }
 
+    /**
+     * Review I3: the worker runs a wallet's check only when its scan found something new (due), the wallet has no
+     * readable results, or a stored row can be retried. A wallet whose rows all stand costs nothing.
+     */
+    @Test
+    fun theWorkerChecksOnlyWhenNeeded() {
+        val deadEnd = check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.crypto.track.InscriptionTracer.THROUGH_MWEB)
+        val standing = mapOf("a" to clean, "b" to check(Verdict.INSCRIBED), "c" to deadEnd)
+        assertFalse(inscriptionCheckNeeded(due = false, stored = standing))
+        assertFalse(inscriptionCheckNeeded(due = false, stored = emptyMap()))
+        assertTrue(inscriptionCheckNeeded(due = true, stored = standing))
+        assertTrue(inscriptionCheckNeeded(due = false, stored = null), "no readable results file")
+        for(retry in listOf(
+            check(Verdict.UNCHECKED, reason = "Lookup budget used up; use Check deeper"),
+            check(Verdict.UNCHECKED, reason = "Server error, will retry next sync: HTTP 429"),
+            check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun.TIME_UP),
+            check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.crypto.track.InscriptionTracer.HEIGHT_UNKNOWN),
+            check(Verdict.CLEAN, blockHash = null),
+            check(Verdict.UNCHECKED, reason = com.sparrowwallet.mobile.crypto.track.InscriptionTracer.THROUGH_MWEB, blockHash = null)
+        )) {
+            assertTrue(inscriptionCheckNeeded(due = false, stored = standing + ("d" to retry)), retry.toString())
+        }
+    }
+
     @Test
     fun heldCopyNamesInscriptionsOnlyWhenEveryHeldCoinIsInscribed() {
         assertEquals("1 coin (0.0001 LTC) held back: they carry inscriptions.", heldCopy(1, "0.0001 LTC", inscribed = true, included = false))

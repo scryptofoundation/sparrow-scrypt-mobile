@@ -346,22 +346,27 @@ class WalletRepository(context: Context) {
     /**
      * The background worker's check of a wallet from its cached xpub alone, with the default budgets and the receive
      * addresses Home has shown (kept under the xpub's hash). [timeUp] stops it between coins, saving what it decided.
-     * Skipped while one is going for the wallet. Never throws but for cancellation.
+     * Returns the results, or null when it did not run: skipped (one is going for the wallet, or the wallet has no
+     * check) or failed. Never throws but for cancellation.
      */
-    suspend fun checkInscriptionsFromXpub(creds: SyncCredentials, timeUp: () -> Boolean = { false }): Map<String, InscriptionCheck> {
+    suspend fun checkInscriptionsFromXpub(creds: SyncCredentials, timeUp: () -> Boolean = { false }): Map<String, InscriptionCheck>? {
         val checker = inscriptionChecker
         val xpub = creds.xpub
         val coin = Coin.fromId(creds.coin)
         if(xpub == null || !checkApplies(creds.scriptType, coin)) {
-            return withContext(Dispatchers.IO) { checker.results(creds.name) }
+            return null
         }
         return withContext(Dispatchers.IO) {
-            checker.guarded(creds.name) {
+            checker.tryRun(creds.name) {
                 runCheck(creds.name, coin, Network.fromId(creds.network), creds.scriptType, emptySet(), timeUp,
                     XpubKey.fromXpub(xpub), prefs.getInt(receiveShownKey(xpub), 0))
             }
         }
     }
+
+    /** The stored results the worker reads to decide whether a wallet needs its check (see [inscriptionCheckNeeded]). */
+    suspend fun storedInscriptionResults(name: String): Map<String, InscriptionCheck>? =
+        withContext(Dispatchers.IO) { inscriptionChecker.storedResults(name) }
 
     private fun checkApplies(scriptType: String, coin: Coin): Boolean =
         scriptType != "MWEB" && ChainRules.covers(coin) && !NetworkPolicy.blocked
@@ -392,7 +397,8 @@ class WalletRepository(context: Context) {
             name = name, network = data.network, scriptType = data.scriptType, coin = data.coin,
             xpub = accountXpub(data),
             baselined = prior?.baselined ?: false,
-            knownTxids = prior?.knownTxids ?: emptyList()
+            knownTxids = prior?.knownTxids ?: emptyList(),
+            inscriptionCheckDue = prior?.inscriptionCheckDue ?: false
         )
         syncStore.save(creds)
     }

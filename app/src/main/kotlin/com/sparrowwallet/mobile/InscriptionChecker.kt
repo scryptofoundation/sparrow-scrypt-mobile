@@ -229,17 +229,21 @@ class InscriptionChecker(val store: InscriptionStore) {
      * cancellation is swallowed and the stored results stay as they were. Returns what [work] returned, or the stored
      * results when skipped or failed.
      */
-    suspend fun guarded(walletName: String, work: suspend () -> Map<String, InscriptionCheck>): Map<String, InscriptionCheck> {
+    suspend fun guarded(walletName: String, work: suspend () -> Map<String, InscriptionCheck>): Map<String, InscriptionCheck> =
+        tryRun(walletName, work) ?: results(walletName)
+
+    /** As [guarded], but null when skipped or failed, so the caller (the worker) knows whether the check ran. */
+    suspend fun tryRun(walletName: String, work: suspend () -> Map<String, InscriptionCheck>): Map<String, InscriptionCheck>? {
         val key = key(walletName)
         if(!running.add(key)) {
-            return results(walletName)
+            return null
         }
         try {
             return work()
         } catch(e: CancellationException) {
             throw e
         } catch(e: Exception) {
-            return results(walletName)
+            return null
         } finally {
             running.remove(key)
         }

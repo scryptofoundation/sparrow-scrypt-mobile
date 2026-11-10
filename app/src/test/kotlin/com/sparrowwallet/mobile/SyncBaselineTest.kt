@@ -3,11 +3,30 @@ package com.sparrowwallet.mobile
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class SyncBaselineTest {
     private fun creds(baselined: Boolean = false, knownTxids: List<String> = emptyList(), knownOutputIds: List<String> = emptyList()) =
         SyncCredentials(name = "w", network = "testnet", scriptType = "P2WPKH", baselined = baselined,
             knownTxids = knownTxids, knownOutputIds = knownOutputIds)
+
+    /** Review I3: the worker's inscription check is due when the scan saw a transaction the baseline lacks, until it runs. */
+    @Test
+    fun aTransactionNotInTheBaselineMakesTheInscriptionCheckDue() {
+        assertTrue(SyncBaseline.inscriptionCheckDue(creds(), listOf("a")), "first run with history")
+        assertFalse(SyncBaseline.inscriptionCheckDue(creds(), emptyList()), "first run, empty wallet")
+        assertTrue(SyncBaseline.inscriptionCheckDue(creds(baselined = true, knownTxids = listOf("a")), listOf("a", "spend")))
+        assertFalse(SyncBaseline.inscriptionCheckDue(creds(baselined = true, knownTxids = listOf("a", "b")), listOf("a", "b")))
+        //a check that did not run (skipped, cancelled) stays due although the baseline moved on
+        assertTrue(SyncBaseline.inscriptionCheckDue(creds(baselined = true, knownTxids = listOf("a")).copy(inscriptionCheckDue = true), listOf("a")))
+    }
+
+    @Test
+    fun theDueFlagSurvivesAFileWithoutIt() {
+        val old = """{"name":"w","network":"testnet","scriptType":"P2WPKH","baselined":true,"knownTxids":["a"]}"""
+        assertFalse(Json { ignoreUnknownKeys = true }.decodeFromString(SyncCredentials.serializer(), old).inscriptionCheckDue)
+    }
 
     @Test
     fun firstRunOnlyRecordsTheBaseline() {

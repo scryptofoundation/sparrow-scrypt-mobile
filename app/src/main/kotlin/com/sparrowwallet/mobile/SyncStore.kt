@@ -33,7 +33,12 @@ data class SyncCredentials(
     val baselined: Boolean = false,
     /** Baseline for "what's new" detection. */
     val knownTxids: List<String> = emptyList(),
-    val knownOutputIds: List<String> = emptyList()
+    val knownOutputIds: List<String> = emptyList(),
+    /**
+     * Set when a background scan saw a transaction the baseline lacked, cleared once the worker's inscription check has
+     * run: so a check that was skipped or cut off still runs next time, after the baseline has moved on.
+     */
+    val inscriptionCheckDue: Boolean = false
 )
 
 /** Decides what a background run reports for one wallet, given its stored baseline. */
@@ -47,6 +52,16 @@ object SyncBaseline {
         if(!isBaselined(creds)) return 0
         val known = creds.knownTxids.toSet()
         return history.filter { (txid, delta) -> txid !in known && delta > 0 }.sumOf { it.second }
+    }
+
+    /**
+     * Whether the worker's inscription check of a public wallet is due after a scan that saw [historyTxids]: one is
+     * not in the baseline (a new coin, or a spend whose change is new), or an earlier one never ran.
+     */
+    fun inscriptionCheckDue(creds: SyncCredentials, historyTxids: List<String>): Boolean {
+        if(creds.inscriptionCheckDue) return true
+        val known = creds.knownTxids.toSet()
+        return historyTxids.any { it !in known }
     }
 
     /** Sats newly received on the MWEB side: unspent outputs not in the baseline. */

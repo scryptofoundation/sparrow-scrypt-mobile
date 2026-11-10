@@ -77,7 +77,9 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         val snap = repo.scanXpub(creds)
                         val fresh = SyncBaseline.newlyReceived(creds, snap.history.map { it.txid to it.delta })
                         if(fresh > 0) received += "${formatAmount(Coin.fromId(creds.coin), fresh)} → ${creds.name}"
-                        store.save(creds.copy(baselined = true, knownTxids = snap.history.map { it.txid }))
+                        //read before the baseline below moves on: a transaction it lacks makes the inscription check due
+                        val due = SyncBaseline.inscriptionCheckDue(creds, snap.history.map { it.txid })
+                        store.save(creds.copy(baselined = true, knownTxids = snap.history.map { it.txid }, inscriptionCheckDue = due))
                         scanned += creds.name
                     }
                 } catch(t: Throwable) {
@@ -91,10 +93,16 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 
             // Then the inscription check of each public wallet whose scan just succeeded, after the funds notice so a
             // long check cannot hold it back. No notification; a failed check leaves what it saved and never fails or
-            // retries the worker. The pass keeps inside WorkManager's ten-minute window (see inscriptionPass).
-            val wallets = store.loadAll().filter { it.scriptType != "MWEB" && it.xpub != null && it.name in scanned }
+            // retries the worker. The pass keeps inside WorkManager's ten-minute window (see inscriptionPass). A wallet
+            // runs its check only when needed: something new, no results yet, or a row worth retrying.
+            val wallets = store.loadAll().filter {
+                it.scriptType != "MWEB" && it.xpub != null && it.name in scanned &&
+                    inscriptionCheckNeeded(it.inscriptionCheckDue, repo.storedInscriptionResults(it.name))
+            }
             inscriptionPass(wallets, startedAt, System::currentTimeMillis) { creds, timeUp ->
-                repo.checkInscriptionsFromXpub(creds, timeUp)
+                if(repo.checkInscriptionsFromXpub(creds, timeUp) != null) {
+                    store.load(creds.name)?.takeIf { it.inscriptionCheckDue }?.let { store.save(it.copy(inscriptionCheckDue = false)) }
+                }
             }
             return true
         }
