@@ -110,6 +110,7 @@ class WalletRepository(context: Context) {
     fun deleteWallet(name: String) {
         vaultFile(name).delete()
         metaFile(name).delete()
+        deleteWalletCaches(name, inscriptionStore, SyncStore.cacheFile(appContext.filesDir, name))
         sessionTotals.remove(safeName(name))
         sessionNames.values.removeAll { it == safeName(name) }
         pendingPsbts.drop(name)
@@ -285,6 +286,11 @@ class WalletRepository(context: Context) {
     }
 
     val syncStore by lazy { SyncStore(appContext) }
+
+    /** Per-wallet inscription check results, encrypted under their own Keystore key. */
+    val inscriptionStore by lazy {
+        InscriptionStore(File(appContext.filesDir, "inscriptions"), KeystoreCipher(InscriptionStore.KEY_ALIAS))
+    }
 
     /**
      * Caches view-only sync credentials (xpub / MWEB scan key — never seeds or spend

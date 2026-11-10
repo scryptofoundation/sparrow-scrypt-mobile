@@ -76,8 +76,7 @@ class SyncStore(private val context: Context) {
         set(value) { prefs.edit().putBoolean("notify", value).apply() }
 
     private fun dir() = File(context.filesDir, "synccache").apply { mkdirs() }
-    private fun fileFor(name: String) = File(dir(), safe(name) + ".bin")
-    private fun safe(name: String) = name.trim().replace(Regex("[^A-Za-z0-9 _-]"), "_")
+    private fun fileFor(name: String) = cacheFile(context.filesDir, name)
 
     fun save(creds: SyncCredentials) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -124,5 +123,11 @@ class SyncStore(private val context: Context) {
 
     companion object {
         private const val KEY_ALIAS = "sparrow-sync-cache"
+
+        /** The cache file for a wallet under the app's files dir. */
+        fun cacheFile(filesDir: File, name: String) = File(File(filesDir, "synccache"), safeFileName(name) + ".bin")
     }
 }
+
+/** The file-name form of a wallet name, shared by the per-wallet stores so they all name a wallet's file alike. */
+internal fun safeFileName(name: String) = name.trim().replace(Regex("[^A-Za-z0-9 _-]"), "_")
