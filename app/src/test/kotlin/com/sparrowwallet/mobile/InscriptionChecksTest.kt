@@ -188,8 +188,8 @@ class InscriptionChecksTest {
         coinState(clean, false, { asked++; true }, hasAnyResults = true, runeLike = true, runesIndexed = true)
         coinState(check(Verdict.INSCRIBED), null, { asked++; true }, hasAnyResults = true)
         coinState(null, true, { asked++; true }, hasAnyResults = true)
-        coinState(null, false, { asked++; true }, hasAnyResults = true)
-        coinState(check(Verdict.UNCHECKED), false, { asked++; true }, hasAnyResults = true)
+        coinState(null, false, { asked++; true }, hasAnyResults = true, runeLike = false)
+        coinState(check(Verdict.UNCHECKED), false, { asked++; true }, hasAnyResults = true, runeLike = false)
         coinState(null, false, { asked++; true }, hasAnyResults = false)
         assertEquals(0, asked)
         coinState(check(Verdict.UNCHECKED), null, { asked++; true }, hasAnyResults = true)
@@ -210,7 +210,8 @@ class InscriptionChecksTest {
 
     @Test
     fun uncheckedCoinTheIndexerClearedIsUnchecked() {
-        assertEquals(CoinState.UNCHECKED, coinState(check(Verdict.UNCHECKED, reason = "budget"), false, localMayCarry = true, hasAnyResults = true))
+        assertEquals(CoinState.UNCHECKED, coinState(check(Verdict.UNCHECKED, reason = "budget"), false, localMayCarry = true, hasAnyResults = true,
+            runeLike = false))
     }
 
     /** Rule 5: a coin newer than the last run that the local rule flags stays held until a check clears it. */
@@ -221,7 +222,52 @@ class InscriptionChecksTest {
 
     @Test
     fun newCoinTheIndexerClearedIsUnchecked() {
-        assertEquals(CoinState.UNCHECKED, coinState(null, false, localMayCarry = true, hasAnyResults = true))
+        assertEquals(CoinState.UNCHECKED, coinState(null, false, localMayCarry = true, hasAnyResults = true, runeLike = false))
+    }
+
+    /**
+     * Residual R1: rules 4 and 5 on a rune-like chain. A clean answer from an indexer that does not index the chain's
+     * tokens (Nintondo; or any indexer off Litecoin) does not release a coin the local rule flags: HELD on Dogecoin,
+     * UNCHECKED on Bellscoin. A runes-aware clean answer (Litecoin ord) still gives UNCHECKED. Rule 6 is unchanged.
+     */
+    @Test
+    fun anIndexersCleanThatIsNotRunesAwareDoesNotReleaseAFlaggedCoin() {
+        val doge = ChainRules.hasRuneLikeTokens(Coin.DOGECOIN)
+        val bells = ChainRules.hasRuneLikeTokens(Coin.BELLSCOIN)
+        val budget = check(Verdict.UNCHECKED, reason = "budget")
+        for(row in listOf(budget, null)) {
+            assertEquals(CoinState.HELD, coinState(row, false, localMayCarry = true, hasAnyResults = true, runeLike = doge, runesIndexed = false), "doge $row")
+            assertEquals(CoinState.UNCHECKED, coinState(row, false, localMayCarry = true, hasAnyResults = true, runeLike = bells, runesIndexed = false), "bells $row")
+            assertEquals(CoinState.UNCHECKED, coinState(row, false, localMayCarry = true, hasAnyResults = true, runeLike = true, runesIndexed = true), "ltc ord $row")
+            assertEquals(CoinState.UNCHECKED, coinState(row, false, localMayCarry = false, hasAnyResults = true, runeLike = doge, runesIndexed = false), "unflagged $row")
+        }
+        //rule 6 (no results file) keeps today's rule: the indexer's clean answer wins
+        assertEquals(CoinState.CLEAN, coinState(null, false, localMayCarry = true, hasAnyResults = false, runeLike = doge, runesIndexed = false))
+    }
+
+    /**
+     * Residual R1: only Litecoin's ord indexer counts as runes-aware. ord's /output reads `runes`, never dunes or junes,
+     * so on Dogecoin a custom ord indexer with `rune_index` on does not clear a postage-valued Clean coin or a
+     * "may carry runes" row; on Litecoin it still does. Nintondo never counts.
+     */
+    @Test
+    fun onlyLitecoinsOrdIndexerIsRunesAware(): Unit = runBlocking {
+        val ord = "http://192.168.1.5:8080"
+        assertTrue(runesAwareIndexer(Coin.LITECOIN, ord))
+        for(coin in listOf(Coin.DOGECOIN, Coin.PEPECOIN, Coin.JUNKCOIN, Coin.BELLSCOIN)) {
+            assertFalse(runesAwareIndexer(coin, ord), coin.toString())
+        }
+        assertFalse(runesAwareIndexer(Coin.LITECOIN, "https://doge-mainnet-api.nintondo.io"))
+        assertFalse(runesAwareIndexer(Coin.LITECOIN, null))
+
+        val a = clean.outpoint
+        val runes = check(Verdict.UNCHECKED, reason = CheckPolicy.MAY_CARRY_RUNES)
+        suspend fun state(coin: Coin, row: InscriptionCheck) = classifyCoins(listOf(a), mapOf(a to row), covered = true,
+            ChainRules.hasRuneLikeTokens(coin), runesAwareIndexer(coin, ord), { false }, { true }).state(a)
+        assertEquals(CoinState.HELD, state(Coin.DOGECOIN, clean))
+        assertEquals(CoinState.HELD, state(Coin.DOGECOIN, runes))
+        assertEquals(CoinState.CLEAN, state(Coin.LITECOIN, clean))
+        assertEquals(CoinState.CLEAN, state(Coin.LITECOIN, runes))
     }
 
     /** What the Send paths decide for a wallet's ready coins, from its stored results (null: no readable file). */

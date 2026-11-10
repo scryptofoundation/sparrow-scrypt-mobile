@@ -57,6 +57,15 @@ inline fun indexerCarries(serverAnswer: Boolean?, tokensIndexed: Boolean = true,
         null -> null
     }
 
+/**
+ * Whether the indexer at [url] counts as runes-aware for [coin] (see [coinState] rule 3 (b)): an ord indexer, and only
+ * on Litecoin. ord's /output answers clean only with its rune index on, but it reads `runes` alone, never dunes or
+ * junes, so off Litecoin a Runes index says nothing about the chain's tokens. Nintondo indexes inscriptions only.
+ * Until a dunes-aware parse exists, no other coin has one.
+ */
+fun runesAwareIndexer(coin: Coin, url: String?): Boolean =
+    url != null && !InscriptionIndex.isNintondo(url) && coin == Coin.LITECOIN
+
 /** What Send may do with a ready coin: spend it freely, hold it back, or use it last with a warning. */
 enum class CoinState { CLEAN, HELD, UNCHECKED }
 
@@ -69,8 +78,8 @@ enum class CoinState { CLEAN, HELD, UNCHECKED }
  * 3. Its check is Clean, complete and proven against a mined block: CLEAN when (a) the chain has no rune-like protocol
  *    ([runeLike] false), (b) an indexer that indexes runes answered clean, or (c) [localMayCarry] does not flag it;
  *    otherwise HELD. The trace cannot see runes, which reach a coin without a runestone in its creating transaction.
- * 4. Any other check for it (Unchecked, cut short, or a provisional Clean): HELD when no indexer answered and
- *    [localMayCarry] flags it, else UNCHECKED.
+ * 4. Any other check for it (Unchecked, cut short, or a provisional Clean): HELD when [localMayCarry] flags it and either
+ *    no indexer answered or, on a rune-like chain, the indexer's clean answer is not runes-aware; else UNCHECKED.
  * 5. No check for it but the wallet has results (a coin newer than the last run): the same as rule 4.
  * 6. The wallet has no results at all (never checked, or a coin the check does not cover): today's rule, the
  *    indexer's clean answer or else [localMayCarry].
@@ -88,7 +97,8 @@ inline fun coinState(check: InscriptionCheck?, indexerSaysCarries: Boolean?, loc
             if(!runesClean) CoinState.HELD else if(check.proven && check.found.isEmpty()) CoinState.CLEAN else CoinState.UNCHECKED
         check != null && check.verdict == Verdict.CLEAN && CheckPolicy.complete(check) && check.proven ->
             if(!runeLike || runesClean || !localMayCarry()) CoinState.CLEAN else CoinState.HELD
-        check != null || hasAnyResults -> if(indexerSaysCarries == null && localMayCarry()) CoinState.HELD else CoinState.UNCHECKED
+        check != null || hasAnyResults ->
+            if((indexerSaysCarries == null || (runeLike && !runesClean)) && localMayCarry()) CoinState.HELD else CoinState.UNCHECKED
         indexerSaysCarries == false -> CoinState.CLEAN
         localMayCarry() -> CoinState.HELD
         else -> CoinState.CLEAN

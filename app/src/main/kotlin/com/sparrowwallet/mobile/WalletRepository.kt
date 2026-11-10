@@ -719,8 +719,7 @@ class WalletRepository(context: Context) {
         val results = if(covered) loadInscriptionChecks(data) else null
         val url = inscriptionSetting(coin, network).url(coin, network)
         val tokensIndexed = url == null || !InscriptionIndex.isNintondo(url)
-        //ord's /output answers clean only with its rune index on (else no answer); Nintondo indexes inscriptions only
-        val runesIndexed = url != null && tokensIndexed
+        val runesIndexed = runesAwareIndexer(coin, url)
         val ready = scan.utxos.filter { spendable(data, tip, it) }.associateBy { outpoint(it) }
         return com.sparrowwallet.mobile.classifyCoins(ready.keys.toList(), results, covered, ChainRules.hasRuneLikeTokens(coin),
             runesIndexed, { op ->
