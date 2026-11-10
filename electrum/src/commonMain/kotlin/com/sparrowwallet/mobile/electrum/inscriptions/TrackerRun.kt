@@ -15,27 +15,35 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * One check of a wallet's unspent coins: stored results kept where still good, the rest traced and decided. Port of the
- * desktop's TrackerRun, with a cap on the lookups of the whole run and a stop at the first server error.
+ * desktop's TrackerRun, with a cap on the lookups of the run and a stop at the first server error.
  */
 object TrackerRun {
-    /** The most server lookups one run makes over all its coins. */
+    /** The most server lookups one run spends on coins that are not being checked deeper. */
     const val RUN_BUDGET = 600
-
-    internal const val BUDGET_USED = "Lookup budget used up; use Check deeper"
-    private const val SERVER_ERROR_PREFIX = "Server error, will retry next sync"
 
     /** An unspent coin to check: its outpoint and the hash of the block that confirmed its transaction (null when unconfirmed). */
     class Coin(val txid: String, val vout: Int, val confirmingBlock: String?) {
         val outpoint: String get() = "$txid:$vout"
     }
 
+    /** A failure of a call to the chain source, carrying its message. */
+    private class ServerFailure(message: String) : Exception(message)
+
+    /** The lookups spent so far and, once set, why no more server calls are made. */
+    private class State(val limit: Int) {
+        var used = 0
+        var stop: String? = null
+        fun exhausted(deep: Boolean): Boolean = !deep && used >= limit
+    }
+
     /**
      * Returns a check for every coin in utxos, in order, keyed by outpoint. A stored complete check stands while its
      * coin's confirming block is unchanged and the indexer's answer does not contradict it; a changed block (a reorg)
-     * drops it. Others are traced, resuming the open pieces of a stored UNCHECKED check, with the deeper budget and the
-     * block walk for outpoints in deeper. Each trace gets what is left of runBudget at most; once it is gone, or after a
-     * server error, no more server calls are made: a coin that would need one keeps its stored result, or is left
-     * UNCHECKED. progress is told (done, total) after each coin.
+     * drops it. Others are traced, resuming the open pieces of a stored UNCHECKED check. Coins in deeper are traced first,
+     * each with the full deeper budget and the block walk, outside runBudget; the rest share runBudget (their traces, an
+     * indexer reveal check and a creating transaction read each count). Once it is used up, or after a server error, no
+     * more server calls are made: a coin that would need one keeps its stored result when that proves nothing it should
+     * not, and is otherwise left UNCHECKED. progress is told (done, total) after each coin.
      */
     suspend fun run(
         coin: com.sparrowwallet.mobile.crypto.Coin,
@@ -50,7 +58,7 @@ object TrackerRun {
         runBudget: Int = RUN_BUDGET,
         progress: (done: Int, total: Int) -> Unit = { _, _ -> }
     ): Map<String, InscriptionCheck> {
-        val results = LinkedHashMap<String, InscriptionCheck>()
+        val results = HashMap<String, InscriptionCheck>()
         //The coin being traced is never its own known result (a row dropped for a reorg must not come back that way),
         //and only complete checks stand for their units
         var tracing: String? = null
@@ -61,11 +69,11 @@ object TrackerRun {
         }
         val tracer = InscriptionTracer(coin, network, source, known, cache)
 
-        var used = 0
-        var stopReason: String? = null
+        val state = State(runBudget)
         var done = 0
-        for(utxo in utxos) {
+        for(utxo in utxos.filter { it.outpoint in deeper } + utxos.filter { it.outpoint !in deeper }) {
             val outpoint = utxo.outpoint
+            val deep = outpoint in deeper
             val blockHash = utxo.confirmingBlock
             val answer = answers[outpoint]
             var previous = stored[outpoint]
@@ -73,33 +81,60 @@ object TrackerRun {
                 previous = null
             }
 
-            if(previous != null && CheckPolicy.complete(previous) && previous.blockHash != null && outpoint !in deeper && agrees(previous, answer)) {
+            if(previous != null && !deep && stands(previous, answer)) {
                 results[outpoint] = previous
-            } else if(stopReason != null || used >= runBudget) {
-                //No server call: keep what is stored, or say why nothing was checked
-                results[outpoint] = previous ?: InscriptionCheck(
-                    utxo.txid, utxo.vout, Verdict.UNCHECKED, indexerSource ?: InscriptionCheck.Source.BUILT_IN, false, emptyList(),
-                    stopReason ?: BUDGET_USED, blockHash, emptyList()
-                )
+            } else if(state.stop != null || state.exhausted(deep)) {
+                //No server call: keep what is stored unless it claims more than it can now show, or say why nothing was checked
+                results[outpoint] = if(previous != null && (!(previous.verdict == Verdict.CLEAN || CheckPolicy.complete(previous)) || stands(previous, answer))) {
+                    previous
+                } else {
+                    held(utxo, indexerSource, state.stop ?: InscriptionTracer.BUDGET_USED, blockHash, emptyList())
+                }
             } else {
-                val deep = outpoint in deeper
                 tracing = outpoint
                 //Only an UNCHECKED trace resumes; an INSCRIBED one that stopped short starts over, so what it found is found again
                 val resume: List<Piece> = if(previous != null && previous.verdict == Verdict.UNCHECKED) previous.open else emptyList()
                 val perCoin = if(deep) InscriptionTracer.DEEPER_BUDGET else InscriptionTracer.DEFAULT_BUDGET
-                val trace = tracer.trace(utxo.txid, utxo.vout, resume, minOf(perCoin, runBudget - used), deep)
-                used += trace.lookups
-                if(trace.reason?.startsWith(SERVER_ERROR_PREFIX) == true) {
-                    stopReason = trace.reason
+                val trace = tracer.trace(utxo.txid, utxo.vout, resume, if(deep) perCoin else minOf(perCoin, runBudget - state.used), deep)
+                if(!deep) {
+                    state.used += trace.lookups
                 }
-                results[outpoint] = decide(utxo, answer, indexerSource, trace, source, cache, blockHash) { stopReason = it }
+                if(trace.reason?.startsWith(InscriptionTracer.SERVER_ERROR_PREFIX) == true) {
+                    state.stop = trace.reason
+                }
+                results[outpoint] = finish(utxo, answer, indexerSource, trace, source, cache, blockHash, deep, state)
             }
             progress(++done, utxos.size)
         }
-        return results
+        val ordered = LinkedHashMap<String, InscriptionCheck>()
+        for(utxo in utxos) {
+            ordered[utxo.outpoint] = results.getValue(utxo.outpoint)
+        }
+        return ordered
     }
 
-    private suspend fun decide(
+    /** A stored check keeps standing for its coin: complete, from the coin's block, and not contradicted by the indexer. */
+    private fun stands(check: InscriptionCheck, answer: IndexerAnswer?): Boolean =
+        CheckPolicy.complete(check) && check.blockHash != null && agrees(check, answer)
+
+    private fun held(utxo: Coin, indexerSource: InscriptionCheck.Source?, reason: String, blockHash: String?, open: List<Piece>) =
+        InscriptionCheck(utxo.txid, utxo.vout, Verdict.UNCHECKED, indexerSource ?: InscriptionCheck.Source.BUILT_IN, false, emptyList(), reason, blockHash, open)
+
+    /** Runs a call to the chain source; any failure but cancellation becomes a [ServerFailure]. */
+    private suspend fun <T> server(call: suspend () -> T): T = try {
+        call()
+    } catch(e: CancellationException) {
+        throw e
+    } catch(e: Exception) {
+        throw ServerFailure(e.message ?: e.toString())
+    }
+
+    /**
+     * Decides one traced coin. What the decision needs from the chain beyond the trace (the indexer's reveal checks, and
+     * the creating transaction for a CLEAN trace without an indexer answer, which the runes rule reads) is required: if it
+     * cannot be had the coin is left UNCHECKED, for want of a server (the run stops) or of budget.
+     */
+    private suspend fun finish(
         utxo: Coin,
         answer: IndexerAnswer?,
         indexerSource: InscriptionCheck.Source?,
@@ -107,47 +142,50 @@ object TrackerRun {
         source: ChainSource,
         cache: TxCache,
         blockHash: String?,
-        stop: (String) -> Unit
+        deep: Boolean,
+        state: State
     ): InscriptionCheck {
         val indexed = if(answer != null && answer.indexed) answer else null
+        val reveals = HashMap<String, ChainTx?>()
+        var creating: RawTx.Parsed? = null
         try {
-            val reveals = HashMap<String, ChainTx?>()
             if(indexed != null) {
                 for(id in indexed.inscriptions) {
-                    reveals[id] = RevealCheck.reveal(id, source)
+                    state.stop?.let { return held(utxo, indexerSource, it, blockHash, trace.open) }
+                    if(state.exhausted(deep)) {
+                        return held(utxo, indexerSource, InscriptionTracer.BUDGET_USED, blockHash, trace.open)
+                    }
+                    if(!deep) {
+                        state.used++
+                    }
+                    reveals[id] = server { RevealCheck.reveal(id, source) }
+                }
+            } else if(trace.verdict == Verdict.CLEAN) {
+                val cached = cache.get(utxo.txid)
+                if(cached != null) {
+                    creating = cached.tx
+                } else {
+                    //A resumed trace starts from ancestors and never read the coin's own transaction
+                    if(state.exhausted(deep)) {
+                        return held(utxo, indexerSource, InscriptionTracer.BUDGET_USED, blockHash, emptyList())
+                    }
+                    val tx = server { source.transaction(utxo.txid) }
+                    if(tx.fromServer && !deep) {
+                        state.used++
+                    }
+                    if(!tx.tx.txid.equals(utxo.txid, ignoreCase = true)) {
+                        throw ServerFailure("The server returned another transaction for ${utxo.txid}")
+                    }
+                    cache.put(tx)
+                    creating = tx.tx
                 }
             }
-            return CheckPolicy.decide(utxo.txid, utxo.vout, indexed, indexerSource, trace, reveals, creatingTx(utxo, indexed, trace, source, cache), blockHash)
-        } catch(e: CancellationException) {
-            throw e
-        } catch(e: Exception) {
-            val reason = "$SERVER_ERROR_PREFIX: ${e.message ?: e.toString()}"
-            stop(reason)
-            return InscriptionCheck(
-                utxo.txid, utxo.vout, Verdict.UNCHECKED, indexerSource ?: InscriptionCheck.Source.BUILT_IN, false, emptyList(), reason, blockHash, emptyList()
-            )
+        } catch(e: ServerFailure) {
+            val reason = "${InscriptionTracer.SERVER_ERROR_PREFIX}: ${e.message}"
+            state.stop = reason
+            return held(utxo, indexerSource, reason, blockHash, trace.open)
         }
-    }
-
-    /**
-     * The transaction that created the coin, for the runes rule (only a CLEAN trace without an indexer answer reads it).
-     * The tracer has normally cached it already; a resumed trace may not have, and then it is read once. Null when it
-     * cannot be had. Not counted against the budget.
-     */
-    private suspend fun creatingTx(utxo: Coin, indexed: IndexerAnswer?, trace: TraceResult, source: ChainSource, cache: TxCache): RawTx.Parsed? {
-        if(indexed != null || trace.verdict != Verdict.CLEAN) {
-            return null
-        }
-        cache.get(utxo.txid)?.let { return it.tx }
-        return try {
-            val tx = source.transaction(utxo.txid)
-            cache.put(tx)
-            tx.tx
-        } catch(e: CancellationException) {
-            throw e
-        } catch(e: Exception) {
-            null
-        }
+        return CheckPolicy.decide(utxo.txid, utxo.vout, indexed, indexerSource, trace, reveals, creating, blockHash)
     }
 
     /** A stored result stands unless an indexer now answers otherwise about whether the coin carries something. */

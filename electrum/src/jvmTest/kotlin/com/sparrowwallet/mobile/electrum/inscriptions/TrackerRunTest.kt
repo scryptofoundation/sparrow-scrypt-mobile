@@ -15,8 +15,10 @@ import com.sparrowwallet.mobile.electrum.inscriptions.TrackFakes.reveal
 import com.sparrowwallet.mobile.electrum.inscriptions.TrackFakes.spend
 import com.sparrowwallet.mobile.electrum.inscriptions.TrackFakes.tx
 import kotlinx.coroutines.runBlocking
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -259,13 +261,144 @@ class TrackerRunTest {
         assertEquals(Verdict.CLEAN, walked.verdict, walked.toString())
         assertTrue(chain.positionCalls > 0)
 
-        //The deeper budget is still capped by what is left of the run
+        //The deeper budget is not the run budget: a small run budget does not cut it short
         val long = longCoin(30)
         val longOutpoint = long.txid + ":0"
-        chain.calls = 0
-        val capped = run(listOf(coin(long, height = longHeight)), deeper = setOf(longOutpoint), runBudget = 150).getValue(longOutpoint)
-        assertEquals(Verdict.UNCHECKED, capped.verdict)
-        assertEquals(150, chain.calls)
+        val free = run(listOf(coin(long, height = longHeight)), deeper = setOf(longOutpoint), runBudget = 150).getValue(longOutpoint)
+        assertEquals(Verdict.CLEAN, free.verdict)
+    }
+
+    @Test fun deeperCoinsAreCheckedFirstOutsideTheRunBudget() {
+        //Seven coins of 250 steps each (100 lookups apiece under the default budget) and a deeper one of 800 steps, listed last
+        val others = (1..7).map { longCoin(100 + it) }
+        val big = longCoin(200, depth = 800)
+        val bigOutpoint = big.txid + ":0"
+        val utxos = others.map { coin(it, height = longHeight) } + coin(big, height = 2_500_799)
+        val result = run(utxos, deeper = setOf(bigOutpoint))
+        assertEquals(utxos.map { it.outpoint }, result.keys.toList())
+        assertEquals(Verdict.CLEAN, result.getValue(bigOutpoint).verdict)
+        //About 800 for the deeper coin, then the full 600 for the rest: six coins traced, the seventh left alone
+        assertTrue(chain.calls in 1_400..1_410, "calls ${chain.calls}")
+        for(c in others.take(6)) {
+            assertTrue(result.getValue(c.txid + ":0").open.isNotEmpty())
+        }
+        val seventh = result.getValue(others[6].txid + ":0")
+        assertEquals(budgetUsed, seventh.reason)
+        assertTrue(seventh.open.isEmpty())
+    }
+
+    @Test fun aContradictedStoredCleanIsNotKeptWhenTheBudgetIsGone() {
+        val tx = cleanCoin(1)
+        val stored = clean(tx, block(2_500_000))
+        val answer = IndexerAnswer(true, emptyList(), runes = true, unlisted = false)
+        val check = run(listOf(coin(tx)), mapOf(stored.outpoint to stored), answers = mapOf(stored.outpoint to answer),
+            indexerSource = InscriptionCheck.Source.PUBLIC, runBudget = 0).getValue(stored.outpoint)
+        assertEquals(Verdict.UNCHECKED, check.verdict)
+        assertEquals(budgetUsed, check.reason)
+        assertEquals(0, chain.calls)
+    }
+
+    @Test fun aContradictedStoredInscribedIsNotKeptWhenTheBudgetIsGone() {
+        val tx = cleanCoin(1)
+        val stored = InscriptionCheck(tx.txid, 0, Verdict.INSCRIBED, InscriptionCheck.Source.BUILT_IN, false, listOf(found(hash(9) + "i0")), null, block(2_500_000), emptyList())
+        val answer = IndexerAnswer(true, emptyList(), runes = false, unlisted = false)
+        val check = run(listOf(coin(tx)), mapOf(stored.outpoint to stored), answers = mapOf(stored.outpoint to answer),
+            indexerSource = InscriptionCheck.Source.PUBLIC, runBudget = 0).getValue(stored.outpoint)
+        assertEquals(Verdict.UNCHECKED, check.verdict)
+        assertEquals(budgetUsed, check.reason)
+    }
+
+    @Test fun aStoredCleanWithoutABlockHashIsNotKeptWhenTheBudgetIsGone() {
+        val tx = cleanCoin(1)
+        val stored = clean(tx, null)
+        val check = run(listOf(coin(tx)), mapOf(stored.outpoint to stored), runBudget = 0).getValue(stored.outpoint)
+        assertEquals(Verdict.UNCHECKED, check.verdict)
+        assertEquals(budgetUsed, check.reason)
+    }
+
+    @Test fun aContradictedStoredCleanIsNotKeptAfterAServerError() {
+        val broken = cleanCoin(1)
+        chain.failing.add(broken.txid)
+        val tx = cleanCoin(2)
+        val stored = clean(tx, block(2_500_000))
+        val answer = IndexerAnswer(true, emptyList(), runes = true, unlisted = false)
+        val result = run(listOf(coin(broken), coin(tx)), mapOf(stored.outpoint to stored), answers = mapOf(stored.outpoint to answer),
+            indexerSource = InscriptionCheck.Source.PUBLIC)
+        val check = result.getValue(stored.outpoint)
+        assertEquals(Verdict.UNCHECKED, check.verdict)
+        assertEquals(serverError + "connection reset", check.reason)
+    }
+
+    /** A coin whose stored UNCHECKED result resumes from its parent: the trace never reads the coin's own transaction. */
+    private fun resumedCoin(n: Int): Pair<RawTx.Parsed, InscriptionCheck> {
+        val parent = chain.add(spend(hash(n), 10_000), 2_000_000)
+        val tx = chain.add(spend(parent.txid, 9_000), 2_500_000)
+        val stored = InscriptionCheck(
+            tx.txid, 0, Verdict.UNCHECKED, InscriptionCheck.Source.BUILT_IN, false, emptyList(), budgetUsed, block(2_500_000),
+            listOf(Piece(parent.txid, 0, UnitRange(0, 9_000), 0))
+        )
+        return tx to stored
+    }
+
+    @Test fun aResumedCleanTraceNeedsTheCreatingTransaction() {
+        val (tx, stored) = resumedCoin(1)
+        val result = run(listOf(coin(tx)), mapOf(stored.outpoint to stored))
+        assertEquals(Verdict.CLEAN, result.getValue(stored.outpoint).verdict)
+        //The parent, then the coin's own transaction for the runes rule
+        assertEquals(2, chain.calls)
+    }
+
+    @Test fun aFailedCreatingTransactionFetchLeavesTheCoinUncheckedAndStopsTheRun() {
+        val (tx, stored) = resumedCoin(1)
+        chain.failing.add(tx.txid)
+        val other = cleanCoin(2)
+        val result = run(listOf(coin(tx), coin(other)), mapOf(stored.outpoint to stored))
+        val check = result.getValue(stored.outpoint)
+        assertEquals(Verdict.UNCHECKED, check.verdict)
+        assertEquals(serverError + "connection reset", check.reason)
+        assertEquals(serverError + "connection reset", result.getValue(other.txid + ":0").reason)
+        //The parent and the failing call; nothing after
+        assertEquals(2, chain.calls)
+    }
+
+    @Test fun aCreatingTransactionWithAnotherTxidLeavesTheCoinUncheckedAndStopsTheRun() {
+        val (tx, stored) = resumedCoin(1)
+        val wrong = cleanCoin(5)
+        chain.txs[tx.txid] = chain.txs.getValue(wrong.txid)
+        val other = cleanCoin(2)
+        val callsBefore = chain.calls
+        val result = run(listOf(coin(tx), coin(other)), mapOf(stored.outpoint to stored))
+        val check = result.getValue(stored.outpoint)
+        assertEquals(Verdict.UNCHECKED, check.verdict)
+        assertTrue(check.reason!!.startsWith(serverError), check.reason)
+        assertTrue(result.getValue(other.txid + ":0").reason!!.startsWith(serverError))
+        assertEquals(callsBefore + 2, chain.calls)
+    }
+
+    @Test fun theCreatingTransactionReadIsBoundByTheRunBudget() {
+        val (tx, stored) = resumedCoin(1)
+        //One lookup for the parent uses the whole run budget
+        val check = run(listOf(coin(tx)), mapOf(stored.outpoint to stored), runBudget = 1).getValue(stored.outpoint)
+        assertEquals(Verdict.UNCHECKED, check.verdict)
+        assertEquals(budgetUsed, check.reason)
+        assertEquals(1, chain.calls)
+    }
+
+    @Test fun revealChecksCountAgainstTheRunBudget() {
+        val tx = cleanCoin(1)
+        val outpoint = tx.txid + ":0"
+        val answer = IndexerAnswer(true, listOf(hash(999) + "i0"), runes = false, unlisted = false)
+        //The trace takes the two lookups of the run budget, so no reveal call is made
+        val check = run(listOf(coin(tx)), answers = mapOf(outpoint to answer), indexerSource = InscriptionCheck.Source.PUBLIC, runBudget = 2).getValue(outpoint)
+        assertEquals(Verdict.UNCHECKED, check.verdict)
+        assertEquals(budgetUsed, check.reason)
+        assertEquals(2, chain.calls)
+    }
+
+    @Test fun cancellationIsNotAServerError() {
+        val tx = cleanCoin(1)
+        chain.cancelling.add(tx.txid)
+        assertFailsWith<CancellationException> { run(listOf(coin(tx))) }
     }
 
     @Test fun anIndexedAnswerNamingAnInscriptionIsCheckedAgainstTheChain() {

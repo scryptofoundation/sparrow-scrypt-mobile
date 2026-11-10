@@ -30,8 +30,10 @@ class InscriptionTracer internal constructor(
         const val DEFAULT_BUDGET = 100
         const val DEEPER_BUDGET = 1_000
 
-        internal const val BUDGET_USED = "Lookup budget used up; use Check deeper"
-        internal const val SERVER_ERROR = "Server error, will retry next sync: %s"
+        const val BUDGET_USED = "Lookup budget used up; use Check deeper"
+        /** What a reason starts with when the server failed; callers that must stop on a server error match this. */
+        const val SERVER_ERROR_PREFIX = "Server error, will retry next sync"
+        internal const val SERVER_ERROR = "$SERVER_ERROR_PREFIX: %s"
         internal const val FEES_NEED_DEEPER = "Mined coin fees need Check deeper"
         internal const val DOES_NOT_ADD_UP = "Mined coin does not add up"
         internal const val THROUGH_MWEB = "Came through MWEB"

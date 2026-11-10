@@ -6,6 +6,7 @@ import com.sparrowwallet.mobile.crypto.track.BlockFee
 import com.sparrowwallet.mobile.crypto.track.ChainSource
 import com.sparrowwallet.mobile.crypto.track.ChainTx
 import java.io.IOException
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * A small in-memory chain and transaction builders for the run tests (the minimum of core-crypto's test fixtures,
@@ -79,6 +80,7 @@ object TrackFakes {
         val txs = HashMap<String, ChainTx>()
         val positions = HashMap<Int, List<String>>()
         val failing = HashSet<String>()
+        val cancelling = HashSet<String>()
         var calls = 0
         var positionCalls = 0
 
@@ -89,6 +91,9 @@ object TrackFakes {
 
         override suspend fun transaction(txid: String): ChainTx {
             calls++
+            if(txid in cancelling) {
+                throw CancellationException("cancelled")
+            }
             if(txid in failing) {
                 throw IOException("connection reset")
             }
