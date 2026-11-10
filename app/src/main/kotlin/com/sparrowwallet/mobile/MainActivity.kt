@@ -1079,10 +1079,26 @@ private fun HomeScreen(
         )
     }
     LaunchedEffect(Unit) { if(!gapped) usdNow = PriceService.currentUsd(repo.coin(data)) }
+    // the inscription check's line, shown after the sync status only while a check runs
+    var checking by remember(data) { mutableStateOf<String?>(null) }
+    val checkJob = remember(data) { arrayOfNulls<kotlinx.coroutines.Job>(1) }
+
+    // After a public sync, checks the wallet's coins for inscriptions in the background of the screen
+    // (leaving the screen cancels it). One check at a time; a failed one leaves the stored results.
+    fun checkInscriptions() {
+        if(data.scriptType == "MWEB" || checkJob[0]?.isActive == true) return
+        checkJob[0] = scope.launch {
+            try {
+                repo.checkInscriptions(data) { done, total -> checking = "Checking inscriptions: $done of $total coins" }
+            } finally {
+                checking = null
+            }
+        }
+    }
 
     // One wallet in two layers: refresh syncs the public side and the linked private
     // side together, and the status line reports both.
-    fun refresh() {
+    fun refresh(checkAfter: Boolean = true) {
         syncing = true
         scope.launch {
             try {
@@ -1100,6 +1116,7 @@ private fun HomeScreen(
                     publicResult.fold({ "" }, { "sync failed — ${it.message}" }),
                     privateResult?.fold({ mwebStateText(it) }, { "unavailable — ${it.message}" })
                 )
+                if(checkAfter && publicResult.isSuccess) checkInscriptions()
             } finally {
                 syncing = false
             }
@@ -1121,7 +1138,7 @@ private fun HomeScreen(
             while(polls++ < 120) {
                 if(privateSnap?.initialScanComplete == true) break
                 kotlinx.coroutines.delay(6_000)
-                if(!syncing) refresh()
+                if(!syncing) refresh(checkAfter = false) // the first sync's check covers the public coins
             }
         }
     }
@@ -1153,10 +1170,10 @@ private fun HomeScreen(
                 pending = snapshot?.let { it.balance.unconfirmed + (privateSnap?.unconfirmed ?: 0) }
             )
         }
-        StatusSlot(status, when {
-            status == null -> PillState.OK
+        StatusSlot(statusWithCheck(status, checking), when {
+            status == null -> if(checking != null) PillState.SCAN else PillState.OK
             status!!.contains("failed", true) || status!!.contains("reconnect", true) -> PillState.IDLE
-            status!!.contains("scanning", true) || status!!.contains("syncing", true) || syncing -> PillState.SCAN
+            status!!.contains("scanning", true) || status!!.contains("syncing", true) || syncing || checking != null -> PillState.SCAN
             else -> PillState.OK
         })
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1830,6 +1847,13 @@ private fun pairStatus(publicState: String?, privateState: String?): String =
         publicState?.takeIf { it.isNotEmpty() }?.let { "Public: $it" },
         privateState?.takeIf { it.isNotEmpty() }?.let { "Private: $it" }
     ).joinToString(" • ").ifEmpty { "Synced" }
+
+/** The status line with a running inscription check after it; a bare "Synced" gives way to the check. */
+private fun statusWithCheck(status: String?, checking: String?): String? = when {
+    checking == null -> status
+    status == null || status == "Synced" -> checking
+    else -> "$status • $checking"
+}
 
 /** The private layer's noteworthy state, or "" when fully caught up. */
 private fun mwebStateText(s: MwebdService.MwebSnapshot): String = when {

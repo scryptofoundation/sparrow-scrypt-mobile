@@ -70,13 +70,16 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
         }
     }
 
-    /** Replaces the wallet's file. Callers pass only unspent coins, which is how spent ones drop out. */
+    /**
+     * Replaces the wallet's file. Callers pass only unspent coins, which is how spent ones drop out. Each write goes
+     * through its own temp file, so two writers (even through two stores) never mix; the last one wins.
+     */
     @Synchronized
     fun save(walletName: String, checks: Map<String, InscriptionCheck>) {
         dir.mkdirs()
         val sealed = cipher.seal(json.encodeToString(InscriptionFile.serializer(), InscriptionFile(VERSION, checks)).encodeToByteArray())
         val target = fileFor(walletName)
-        val temp = File(dir, target.name + ".tmp")
+        val temp = File.createTempFile(target.name + ".", ".tmp", dir)
         try {
             temp.writeBytes(sealed)
             try {

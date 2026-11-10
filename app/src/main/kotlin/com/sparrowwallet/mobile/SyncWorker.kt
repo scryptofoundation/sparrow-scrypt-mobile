@@ -83,6 +83,19 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             if(received.isNotEmpty() && store.notifyEnabled) {
                 notifyReceived(context, received)
             }
+
+            // Then each public wallet's inscription check, after the funds notice so a long check cannot hold it back.
+            // No notification; a failed check leaves the stored results and never fails or retries the worker.
+            for(creds in store.loadAll()) {
+                if(creds.scriptType == "MWEB" || creds.xpub == null) continue
+                try {
+                    repo.checkInscriptionsFromXpub(creds)
+                } catch(e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch(t: Throwable) {
+                    // checkInscriptionsFromXpub already swallows failures; this keeps the worker safe regardless
+                }
+            }
             return true
         }
 

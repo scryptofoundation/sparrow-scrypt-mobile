@@ -11,6 +11,8 @@ import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
+import com.sparrowwallet.mobile.crypto.NetworkPolicy
+import com.sparrowwallet.mobile.crypto.Bip32Pub
 import com.sparrowwallet.mobile.crypto.Psbt
 import com.sparrowwallet.mobile.crypto.PsbtReview
 import com.sparrowwallet.mobile.crypto.PsbtSigner
@@ -30,6 +32,8 @@ import com.sparrowwallet.mobile.electrum.ChainBackend
 import com.sparrowwallet.mobile.electrum.SocksProxy
 import com.sparrowwallet.mobile.electrum.WalletScanner
 import com.sparrowwallet.mobile.electrum.WalletSnapshot
+import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
+import com.sparrowwallet.mobile.crypto.track.ChainRules
 import com.sparrowwallet.mobile.storage.MwebHistoryEntry
 import com.sparrowwallet.mobile.storage.SparrowExport
 import com.sparrowwallet.mobile.storage.SparrowImport
@@ -111,6 +115,7 @@ class WalletRepository(context: Context) {
         vaultFile(name).delete()
         metaFile(name).delete()
         deleteWalletCaches(name, inscriptionStore, SyncStore.cacheFile(appContext.filesDir, name))
+        inscriptionChecker.forget(name)
         sessionTotals.remove(safeName(name))
         sessionNames.values.removeAll { it == safeName(name) }
         pendingPsbts.drop(name)
@@ -287,9 +292,48 @@ class WalletRepository(context: Context) {
 
     val syncStore by lazy { SyncStore(appContext) }
 
+    /** The process's one inscription checker: Home and the background worker each build a repository, but share it. */
+    private val inscriptionChecker: InscriptionChecker get() = sharedInscriptionChecker(appContext)
+
     /** Per-wallet inscription check results, encrypted under their own Keystore key. */
-    val inscriptionStore by lazy {
-        InscriptionStore(File(appContext.filesDir, "inscriptions"), KeystoreCipher(InscriptionStore.KEY_ALIAS))
+    val inscriptionStore: InscriptionStore get() = inscriptionChecker.store
+
+    /** The wallet's stored inscription checks by outpoint, from memory after the first read (empty when never checked). */
+    fun inscriptionChecks(data: VaultData): Map<String, InscriptionCheck> =
+        sessionNames[data]?.let { inscriptionChecker.results(it) } ?: emptyMap()
+
+    /**
+     * Checks an open public wallet's coins for inscriptions on one server connection: lists its unspent coins, then runs
+     * the built-in check, with the coins in [deeper] checked deeper. Never throws but for cancellation: a skipped (one
+     * is already going for the wallet) or failed check returns the stored results unchanged. MWEB wallets, uncovered
+     * coins and air-gapped mode open no connection.
+     */
+    suspend fun checkInscriptions(data: VaultData, deeper: Set<String> = emptySet(),
+                                  progress: (done: Int, total: Int) -> Unit = { _, _ -> }): Map<String, InscriptionCheck> {
+        val name = sessionNames[data] ?: return emptyMap()
+        return checkCoins(name, coin(data), network(data), data.scriptType, deeper, progress) { accountKey(data) }
+    }
+
+    /** The background worker's check of a wallet from its cached xpub alone, with the default budgets. Never throws but for cancellation. */
+    suspend fun checkInscriptionsFromXpub(creds: SyncCredentials): Map<String, InscriptionCheck> {
+        val xpub = creds.xpub ?: return inscriptionChecker.results(creds.name)
+        return checkCoins(creds.name, Coin.fromId(creds.coin), Network.fromId(creds.network), creds.scriptType, emptySet(), { _, _ -> }) {
+            XpubKey.fromXpub(xpub)
+        }
+    }
+
+    private suspend fun checkCoins(name: String, coin: Coin, network: Network, scriptType: String, deeper: Set<String>,
+                                   progress: (Int, Int) -> Unit, key: () -> Bip32Pub): Map<String, InscriptionCheck> {
+        val checker = inscriptionChecker
+        if(scriptType == "MWEB" || !ChainRules.covers(coin) || NetworkPolicy.blocked) {
+            return checker.results(name)
+        }
+        return checker.guarded(name) {
+            withBackend(coin, network) { client ->
+                val utxos = WalletScanner(client, walletScriptType(scriptType)).utxos(key()).utxos.map { it.utxo }
+                checker.check(name, coin, network, client, utxos, deeper, progress)
+            }
+        }
     }
 
     /**
@@ -1176,3 +1220,14 @@ class WalletRepository(context: Context) {
         }
     }
 }
+
+private val inscriptionCheckerLock = Any()
+@Volatile private var inscriptionCheckerInstance: InscriptionChecker? = null
+
+/** The one [InscriptionChecker] (and so one [InscriptionStore]) of the process. */
+private fun sharedInscriptionChecker(context: Context): InscriptionChecker =
+    inscriptionCheckerInstance ?: synchronized(inscriptionCheckerLock) {
+        inscriptionCheckerInstance ?: InscriptionChecker(
+            InscriptionStore(File(context.filesDir, "inscriptions"), KeystoreCipher(InscriptionStore.KEY_ALIAS))
+        ).also { inscriptionCheckerInstance = it }
+    }

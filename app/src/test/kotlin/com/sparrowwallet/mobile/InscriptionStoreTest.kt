@@ -86,6 +86,45 @@ class InscriptionStoreTest {
     }
 
     @Test
+    fun twoSavesInARowLeaveNoTempFileAndTheLastContent() {
+        val (store, dir) = newStore()
+        store.save("w", mapOf(check(0).outpoint to check(0)))
+        store.save("w", mapOf(check(1).outpoint to check(1, Verdict.INSCRIBED)))
+        assertEquals(mapOf(check(1).outpoint to check(1, Verdict.INSCRIBED)), store.load("w"))
+        assertEquals(listOf("w.bin"), dir.list()!!.toList())
+    }
+
+    /** Home and the background worker can save one wallet at once, each through its own store: neither may fail or corrupt the file. */
+    @Test
+    fun overlappingSavesNeverShareATempFile() {
+        val dir = java.nio.file.Files.createTempDirectory("insc").toFile()
+        val cipher = MemoryCipher()
+        val stores = listOf(InscriptionStore(dir, cipher), InscriptionStore(dir, cipher))
+        val contents = (0 until 4).map { n -> mapOf(check(n).outpoint to check(n)) }
+        val failures = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+        val start = java.util.concurrent.CountDownLatch(1)
+        val threads = (0 until 4).map { t ->
+            Thread {
+                start.await()
+                repeat(200) {
+                    try {
+                        stores[t % 2].save("w", contents[t])
+                    } catch(e: Throwable) {
+                        failures.add(e)
+                    }
+                }
+            }.apply { start() }
+        }
+        start.countDown()
+        threads.forEach { it.join() }
+        assertTrue(failures.isEmpty(), "saves failed: ${failures.firstOrNull()}")
+        assertTrue(store(dir, cipher).load("w") in contents)
+        assertEquals(listOf("w.bin"), dir.list()!!.toList())
+    }
+
+    private fun store(dir: File, cipher: StoreCipher) = InscriptionStore(dir, cipher)
+
+    @Test
     fun fileIsNotPlaintext() {
         val (store, dir) = newStore()
         store.save("w", mapOf(check(0).outpoint to check(0)))
