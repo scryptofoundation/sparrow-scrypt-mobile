@@ -62,29 +62,41 @@ enum class CoinState { CLEAN, HELD, UNCHECKED }
 /**
  * A coin's [CoinState]; the first rule that matches decides.
  * 1. The indexer (today's setting, Public or Custom) says it carries, its tokens caveat included: HELD.
- * 2. Its check is Inscribed, or it may carry runes: HELD.
- * 3. Its check is Clean, complete and proven against a mined block: CLEAN, whatever the local rule says.
+ * 2. Its check is Inscribed, or the indexer reported runes on it: HELD. A "may carry runes" check (a runestone or
+ *    dunestone in its creating transaction, over a Clean trace) is HELD unless an indexer that indexes runes
+ *    ([runesIndexed]) answered clean: then CLEAN when the check is proven against its block, else UNCHECKED.
+ * 3. Its check is Clean, complete and proven against a mined block: CLEAN when (a) the chain has no rune-like protocol
+ *    ([runeLike] false), (b) an indexer that indexes runes answered clean, or (c) [localMayCarry] does not flag it;
+ *    otherwise HELD. The trace cannot see runes, which reach a coin without a runestone in its creating transaction.
  * 4. Any other check for it (Unchecked, cut short, or a provisional Clean): HELD when no indexer answered and
  *    [localMayCarry] flags it, else UNCHECKED.
  * 5. No check for it but the wallet has results (a coin newer than the last run): the same as rule 4.
  * 6. The wallet has no results at all (never checked, or a coin the check does not cover): today's rule, the
  *    indexer's clean answer or else [localMayCarry].
  * So a coin the local rule flags stays held until a proven check or the indexer clears it. [localMayCarry] is asked
- * only when nothing else decides.
+ * only when nothing else decides. The defaults are the safe side: a rune-like chain and no runes-aware indexer.
  */
 inline fun coinState(check: InscriptionCheck?, indexerSaysCarries: Boolean?, localMayCarry: () -> Boolean,
-                     hasAnyResults: Boolean): CoinState = when {
-    indexerSaysCarries == true -> CoinState.HELD
-    check != null && (check.verdict == Verdict.INSCRIBED || check.runes || check.reason == CheckPolicy.MAY_CARRY_RUNES) -> CoinState.HELD
-    check != null && check.verdict == Verdict.CLEAN && CheckPolicy.complete(check) && check.proven -> CoinState.CLEAN
-    check != null || hasAnyResults -> if(indexerSaysCarries == null && localMayCarry()) CoinState.HELD else CoinState.UNCHECKED
-    indexerSaysCarries == false -> CoinState.CLEAN
-    localMayCarry() -> CoinState.HELD
-    else -> CoinState.CLEAN
+                     hasAnyResults: Boolean, runeLike: Boolean = true, runesIndexed: Boolean = false): CoinState {
+    val runesClean = runesIndexed && indexerSaysCarries == false
+    return when {
+        indexerSaysCarries == true -> CoinState.HELD
+        check != null && (check.verdict == Verdict.INSCRIBED || check.runes) -> CoinState.HELD
+        //CheckPolicy writes this reason only over a Clean trace, so with the runes question answered it is that trace's verdict
+        check != null && check.reason == CheckPolicy.MAY_CARRY_RUNES ->
+            if(!runesClean) CoinState.HELD else if(check.proven && check.found.isEmpty()) CoinState.CLEAN else CoinState.UNCHECKED
+        check != null && check.verdict == Verdict.CLEAN && CheckPolicy.complete(check) && check.proven ->
+            if(!runeLike || runesClean || !localMayCarry()) CoinState.CLEAN else CoinState.HELD
+        check != null || hasAnyResults -> if(indexerSaysCarries == null && localMayCarry()) CoinState.HELD else CoinState.UNCHECKED
+        indexerSaysCarries == false -> CoinState.CLEAN
+        localMayCarry() -> CoinState.HELD
+        else -> CoinState.CLEAN
+    }
 }
 
-fun coinState(check: InscriptionCheck?, indexerSaysCarries: Boolean?, localMayCarry: Boolean, hasAnyResults: Boolean): CoinState =
-    coinState(check, indexerSaysCarries, { localMayCarry }, hasAnyResults)
+fun coinState(check: InscriptionCheck?, indexerSaysCarries: Boolean?, localMayCarry: Boolean, hasAnyResults: Boolean,
+              runeLike: Boolean = true, runesIndexed: Boolean = false): CoinState =
+    coinState(check, indexerSaysCarries, { localMayCarry }, hasAnyResults, runeLike, runesIndexed)
 
 /** What Send may do with each ready coin, by outpoint, from [classifyCoins]. */
 internal class CoinStates(private val states: Map<String, CoinState>, private val inscribed: Set<String>) {
@@ -102,15 +114,18 @@ internal class CoinStates(private val states: Map<String, CoinState>, private va
 /**
  * Decides each of the ready [coins] (outpoints) by [coinState]. [results] are the wallet's stored checks, or null when it
  * has no readable results file (never checked): an empty map still counts as checked. A coin the check does not
- * [covered] (Luckycoin, Dingocoin) ignores any results and keeps today's rule. [indexer] is the old setting's answer
- * (see [indexerCarries]); [localMayCarry] the local guess, asked only when nothing else decides.
+ * [covered] (Luckycoin, Dingocoin) ignores any results and keeps today's rule. [runeLike] is
+ * [com.sparrowwallet.mobile.crypto.track.ChainRules.hasRuneLikeTokens] of the coin, [runesIndexed] whether the indexer
+ * (if it answers) indexes runes. [indexer] is the old setting's answer (see [indexerCarries]); [localMayCarry] the local
+ * guess, asked only when nothing else decides.
  */
 internal suspend fun classifyCoins(coins: List<String>, results: Map<String, InscriptionCheck>?, covered: Boolean,
+                                   runeLike: Boolean, runesIndexed: Boolean,
                                    indexer: suspend (String) -> Boolean?, localMayCarry: suspend (String) -> Boolean): CoinStates {
     val checks = if(covered) results?.values?.associateBy { it.outpoint } else null
     val states = HashMap<String, CoinState>()
     for(coin in coins) {
-        states[coin] = coinState(checks?.get(coin), indexer(coin), { localMayCarry(coin) }, checks != null)
+        states[coin] = coinState(checks?.get(coin), indexer(coin), { localMayCarry(coin) }, checks != null, runeLike, runesIndexed)
     }
     return CoinStates(states, checks.orEmpty().values.filter { it.verdict == Verdict.INSCRIBED }.map { it.outpoint }.toSet())
 }

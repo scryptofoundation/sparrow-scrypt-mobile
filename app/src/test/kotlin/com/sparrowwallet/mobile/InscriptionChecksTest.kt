@@ -2,6 +2,7 @@ package com.sparrowwallet.mobile
 
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
+import com.sparrowwallet.mobile.crypto.track.ChainRules
 import com.sparrowwallet.mobile.crypto.track.Piece
 import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy
@@ -81,10 +82,70 @@ class InscriptionChecksTest {
         assertEquals(CoinState.HELD, coinState(check(Verdict.UNCHECKED, reason = CheckPolicy.MAY_CARRY_RUNES), null, false, true))
     }
 
+    /**
+     * A proven Clean check frees a postage-valued coin only where the trace sees everything: on a chain without a rune-like
+     * protocol (Bellscoin), or where an indexer that indexes runes answered clean for it.
+     */
     @Test
     fun cleanCheckFreesAPostageValuedCoin() {
-        assertEquals(CoinState.CLEAN, coinState(clean, indexerSaysCarries = null, localMayCarry = true, hasAnyResults = true))
-        assertEquals(CoinState.CLEAN, coinState(clean, indexerSaysCarries = false, localMayCarry = true, hasAnyResults = true))
+        val bells = ChainRules.hasRuneLikeTokens(Coin.BELLSCOIN)
+        assertEquals(CoinState.CLEAN, coinState(clean, indexerSaysCarries = null, localMayCarry = true, hasAnyResults = true, runeLike = bells, runesIndexed = false))
+        assertEquals(CoinState.CLEAN, coinState(clean, indexerSaysCarries = false, localMayCarry = true, hasAnyResults = true, runeLike = bells, runesIndexed = false))
+        assertEquals(CoinState.CLEAN, coinState(clean, indexerSaysCarries = false, localMayCarry = true, hasAnyResults = true, runeLike = true, runesIndexed = true))
+    }
+
+    /**
+     * Rule 3 on a chain with a rune-like protocol: runes move to a coin with no runestone in its creating transaction, and
+     * the trace cannot see them. A proven Clean frees the coin only when (a) the chain has no rune-like protocol, (b) an
+     * indexer that indexes runes answered clean, or (c) the local rule does not flag it; otherwise it is held, whatever
+     * an inscriptions-only indexer (Nintondo) said.
+     */
+    @Test
+    fun cleanCheckOnARuneChainNeedsARunesAnswerOrAnUnflaggedCoin() {
+        fun state(coin: Coin, answer: Boolean?, runesIndexed: Boolean, local: Boolean) =
+            coinState(clean, answer, local, hasAnyResults = true, runeLike = ChainRules.hasRuneLikeTokens(coin), runesIndexed = runesIndexed)
+        for(coin in listOf(Coin.LITECOIN, Coin.BELLSCOIN)) {
+            val runeLike = coin == Coin.LITECOIN
+            //all three false (only (a) for Bellscoin)
+            assertEquals(if(runeLike) CoinState.HELD else CoinState.CLEAN, state(coin, null, runesIndexed = false, local = true), "$coin none")
+            //(b) a runes-aware indexer said clean
+            assertEquals(CoinState.CLEAN, state(coin, false, runesIndexed = true, local = true), "$coin b")
+            //an inscriptions-only indexer's clean is not (b)
+            assertEquals(if(runeLike) CoinState.HELD else CoinState.CLEAN, state(coin, false, runesIndexed = false, local = true), "$coin nintondo")
+            //a runes-aware indexer that gave no answer is not (b) either
+            assertEquals(if(runeLike) CoinState.HELD else CoinState.CLEAN, state(coin, null, runesIndexed = true, local = true), "$coin no answer")
+            //(c) the local rule does not flag it
+            assertEquals(CoinState.CLEAN, state(coin, null, runesIndexed = false, local = false), "$coin c")
+            assertEquals(CoinState.CLEAN, state(coin, false, runesIndexed = true, local = false), "$coin b and c")
+            //an indexer that says it carries still holds it
+            assertEquals(CoinState.HELD, state(coin, true, runesIndexed = true, local = false), "$coin carries")
+        }
+    }
+
+    /** The safe side by default: a caller that does not say otherwise gets a rune-like chain and no runes answer. */
+    @Test
+    fun ruleThreeDefaultsToTheRuneChainRule() {
+        assertEquals(CoinState.HELD, coinState(clean, null, localMayCarry = true, hasAnyResults = true))
+        assertEquals(CoinState.CLEAN, coinState(clean, null, localMayCarry = false, hasAnyResults = true))
+    }
+
+    /**
+     * Review M1: "May carry runes" is written only over a Clean trace (a runestone or dunestone in the creating
+     * transaction). A runes-aware indexer's clean answer settles it: Clean when the row is proven against its block,
+     * Unchecked when not. Without such an answer it stays held.
+     */
+    @Test
+    fun mayCarryRunesFollowsARunesAwareCleanAnswer() {
+        val runes = check(Verdict.UNCHECKED, reason = CheckPolicy.MAY_CARRY_RUNES)
+        assertEquals(CoinState.CLEAN, coinState(runes, false, localMayCarry = true, hasAnyResults = true, runeLike = true, runesIndexed = true))
+        assertEquals(CoinState.UNCHECKED, coinState(check(Verdict.UNCHECKED, reason = CheckPolicy.MAY_CARRY_RUNES, blockHash = null), false,
+            localMayCarry = true, hasAnyResults = true, runeLike = true, runesIndexed = true))
+        assertEquals(CoinState.HELD, coinState(runes, false, localMayCarry = false, hasAnyResults = true, runeLike = true, runesIndexed = false))
+        assertEquals(CoinState.HELD, coinState(runes, null, localMayCarry = false, hasAnyResults = true, runeLike = true, runesIndexed = true))
+        assertEquals(CoinState.HELD, coinState(runes, true, localMayCarry = false, hasAnyResults = true, runeLike = true, runesIndexed = true))
+        //runes the indexer itself reported still hold
+        assertEquals(CoinState.HELD, coinState(check(Verdict.CLEAN, runes = true), false, localMayCarry = false, hasAnyResults = true,
+            runeLike = true, runesIndexed = true))
     }
 
     @Test
@@ -123,7 +184,8 @@ class InscriptionChecksTest {
     @Test
     fun localRuleIsAskedOnlyWhenNothingElseDecides() {
         var asked = 0
-        coinState(clean, null, { asked++; true }, hasAnyResults = true)
+        coinState(clean, null, { asked++; true }, hasAnyResults = true, runeLike = false, runesIndexed = false)
+        coinState(clean, false, { asked++; true }, hasAnyResults = true, runeLike = true, runesIndexed = true)
         coinState(check(Verdict.INSCRIBED), null, { asked++; true }, hasAnyResults = true)
         coinState(null, true, { asked++; true }, hasAnyResults = true)
         coinState(null, false, { asked++; true }, hasAnyResults = true)
@@ -134,6 +196,9 @@ class InscriptionChecksTest {
         coinState(null, null, { asked++; true }, hasAnyResults = true)
         coinState(null, null, { asked++; true }, hasAnyResults = false)
         assertEquals(3, asked)
+        //on a rune-like chain without a runes-aware clean answer, a proven Clean asks it once, last
+        coinState(clean, null, { asked++; true }, hasAnyResults = true, runeLike = true, runesIndexed = false)
+        assertEquals(4, asked)
     }
 
     /** Rule 4: an Unchecked check does not release a coin the local rule flags, unless the indexer cleared it. */
@@ -164,11 +229,11 @@ class InscriptionChecksTest {
     fun aWalletCheckedWhileEmptyCountsAsChecked(): Unit = runBlocking {
         val new = "cc".repeat(32) + ":0"
         //a readable file holding no results: a new coin is Unchecked, or held when the local rule flags it
-        assertEquals(CoinState.UNCHECKED, classifyCoins(listOf(new), emptyMap(), covered = true, { null }, { false }).state(new))
-        assertEquals(CoinState.HELD, classifyCoins(listOf(new), emptyMap(), covered = true, { null }, { true }).state(new))
+        assertEquals(CoinState.UNCHECKED, classifyCoins(listOf(new), emptyMap(), covered = true, true, false, { null }, { false }).state(new))
+        assertEquals(CoinState.HELD, classifyCoins(listOf(new), emptyMap(), covered = true, true, false, { null }, { true }).state(new))
         //no readable file (never checked, or lost): today's rule
-        assertEquals(CoinState.CLEAN, classifyCoins(listOf(new), null, covered = true, { null }, { false }).state(new))
-        assertEquals(CoinState.HELD, classifyCoins(listOf(new), null, covered = true, { null }, { true }).state(new))
+        assertEquals(CoinState.CLEAN, classifyCoins(listOf(new), null, covered = true, true, false, { null }, { false }).state(new))
+        assertEquals(CoinState.HELD, classifyCoins(listOf(new), null, covered = true, true, false, { null }, { true }).state(new))
     }
 
     @Test
@@ -178,7 +243,7 @@ class InscriptionChecksTest {
         val inscribed = check(Verdict.INSCRIBED).copy(txid = "dd".repeat(32), vout = 1)
         //keyed oddly on purpose: the results are matched by each check's own outpoint
         val results = mapOf("x" to clean, "y" to inscribed)
-        val states = classifyCoins(listOf(a, b), results, covered = true, { null }, { true })
+        val states = classifyCoins(listOf(a, b), results, covered = true, runeLike = false, runesIndexed = false, { null }, { true })
         assertEquals(CoinState.CLEAN, states.state(a))
         assertEquals(CoinState.HELD, states.state(b))
         assertTrue(states.inscribed(b))
@@ -191,10 +256,21 @@ class InscriptionChecksTest {
     @Test
     fun uncoveredCoinKeepsTodaysRule(): Unit = runBlocking {
         val a = clean.outpoint
-        val states = classifyCoins(listOf(a), mapOf(a to check(Verdict.INSCRIBED)), covered = false, { null }, { false })
+        val states = classifyCoins(listOf(a), mapOf(a to check(Verdict.INSCRIBED)), covered = false, false, false, { null }, { false })
         assertEquals(CoinState.CLEAN, states.state(a))
         assertFalse(states.inscribed(a))
-        assertEquals(CoinState.HELD, classifyCoins(listOf(a), emptyMap(), covered = false, { true }, { false }).state(a))
+        assertEquals(CoinState.HELD, classifyCoins(listOf(a), emptyMap(), covered = false, false, false, { true }, { false }).state(a))
+    }
+
+    /** The Send paths' classification passes the chain's runes facts on to rule 3. */
+    @Test
+    fun classificationAppliesTheRuneChainRule(): Unit = runBlocking {
+        val a = clean.outpoint
+        val results = mapOf(a to clean)
+        assertEquals(CoinState.HELD, classifyCoins(listOf(a), results, covered = true, runeLike = true, runesIndexed = false, { null }, { true }).state(a))
+        assertEquals(CoinState.CLEAN, classifyCoins(listOf(a), results, covered = true, runeLike = true, runesIndexed = true, { false }, { true }).state(a))
+        assertEquals(CoinState.HELD, classifyCoins(listOf(a), results, covered = true, runeLike = true, runesIndexed = false, { false }, { true }).state(a))
+        assertEquals(CoinState.CLEAN, classifyCoins(listOf(a), results, covered = true, runeLike = false, runesIndexed = false, { null }, { true }).state(a))
     }
 
     /** The Nintondo caveat survives a Clean check: an inscriptions-only indexer cannot clear a token coin. */

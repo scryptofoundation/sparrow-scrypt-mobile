@@ -47,6 +47,15 @@ class ChainRulesTest {
         }
     }
 
+    /** Runes on Litecoin, Dunes on Dogecoin and Pepecoin, junes on Junkcoin; Bellscoin has none. */
+    @Test
+    fun runeLikeTokens() {
+        for(coin in listOf(Coin.LITECOIN, Coin.DOGECOIN, Coin.PEPECOIN, Coin.JUNKCOIN)) {
+            assertTrue(ChainRules.hasRuneLikeTokens(coin), coin.toString())
+        }
+        assertFalse(ChainRules.hasRuneLikeTokens(Coin.BELLSCOIN))
+    }
+
     @Test
     fun covers() {
         for(coin in listOf(Coin.LITECOIN, Coin.DOGECOIN, Coin.PEPECOIN, Coin.BELLSCOIN, Coin.JUNKCOIN)) {
