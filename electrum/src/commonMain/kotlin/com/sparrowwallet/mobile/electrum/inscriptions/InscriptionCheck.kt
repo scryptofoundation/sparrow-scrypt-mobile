@@ -9,6 +9,10 @@ import kotlinx.serialization.Serializable
  * What was decided for one coin: its verdict, who said so, whether it may carry runes, the inscriptions found on it, and
  * (for an UNCHECKED or cut-short INSCRIBED coin) the reason and the pieces still to trace. blockHash is the block of the
  * transaction that created the coin, so a reorg can be told from a stale result.
+ *
+ * mwebPegOut says whether the coin's creating transaction is a confirmed HogEx with the MWEB flag and the null
+ * extension (see [TrackerRun.mwebPegOut]): true, it is (the coin came straight out of MWEB, with no history to carry
+ * anything); false, it is not; null, not known (a row stored before 2026-11-10, or a result that is not Clean).
  */
 @Serializable
 data class InscriptionCheck(
@@ -20,7 +24,8 @@ data class InscriptionCheck(
     val found: List<Found>,
     val reason: String?,
     val blockHash: String?,
-    val open: List<Piece>
+    val open: List<Piece>,
+    val mwebPegOut: Boolean? = null
 ) {
     /** Who gave the answer: the wallet's own trace, a public indexer, the user's own indexer, or the built-in tracer on the coin's server. */
     enum class Source { OWN, PUBLIC, YOUR_OWN, BUILT_IN }

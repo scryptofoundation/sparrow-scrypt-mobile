@@ -56,6 +56,73 @@ object TrackerRun {
         return if(deadEnd(check)) answer == null || !answer.indexed else stands(check, answer)
     }
 
+    /**
+     * Whether a coin's creating transaction is a real MWEB peg-out: exactly the tracer's test for a piece that ends clean
+     * at a HogEx (a confirmed transaction with the MWEB flag and the null extension), and only on a chain with MWEB. The
+     * output script shape alone, which anyone can build, never counts.
+     */
+    fun mwebPegOut(coin: com.sparrowwallet.mobile.crypto.Coin, creating: ChainTx): Boolean =
+        coin.mweb && creating.height > 0 && creating.tx.mwebNullExtension
+
+    /**
+     * The [InscriptionCheck.mwebPegOut] to record from a creating transaction: [mwebPegOut], except null (not known) for
+     * one with the null extension but no height, which a later read may confirm. Without the extension it is false at
+     * any height.
+     */
+    private fun pegOutFlag(coin: com.sparrowwallet.mobile.crypto.Coin, creating: ChainTx): Boolean? =
+        if(coin.mweb && creating.tx.mwebNullExtension && creating.height <= 0) null else mwebPegOut(coin, creating)
+
+    /** A stored row that stands but was saved before [InscriptionCheck.mwebPegOut] existed: proven, complete and Clean. */
+    private fun lacksPegOutFlag(check: InscriptionCheck): Boolean =
+        check.mwebPegOut == null && check.verdict == Verdict.CLEAN && CheckPolicy.complete(check) && check.proven
+
+    /**
+     * Fills [InscriptionCheck.mwebPegOut] into a standing row without a trace: from the cache, or one read of the coin's
+     * creating transaction, which counts against the run budget. When the budget or time is gone, the run has stopped,
+     * the read fails (a server error stops the run, as any other does) or the server gives no height for a transaction
+     * with the null extension (see [pegOutFlag]), the row is returned as it was.
+     */
+    private suspend fun fillPegOut(
+        coin: com.sparrowwallet.mobile.crypto.Coin,
+        check: InscriptionCheck,
+        source: ChainSource,
+        cache: TxCache,
+        state: State,
+        timeUp: () -> Boolean
+    ): InscriptionCheck {
+        if(!coin.mweb) {
+            return check
+        }
+        val creating = cache.get(check.txid) ?: readCreating(check, source, cache, state, timeUp) ?: return check
+        val flag = pegOutFlag(coin, creating) ?: return check
+        return check.copy(mwebPegOut = flag)
+    }
+
+    /** One read of a standing row's creating transaction for [fillPegOut], or null when it cannot be had. */
+    private suspend fun readCreating(check: InscriptionCheck, source: ChainSource, cache: TxCache, state: State,
+                                     timeUp: () -> Boolean): ChainTx? {
+        if(state.stop == null && timeUp()) {
+            state.stop = TIME_UP
+        }
+        if(state.stop != null || state.exhausted(false)) {
+            return null
+        }
+        return try {
+            val tx = server { source.transaction(check.txid) }
+            if(tx.fromServer) {
+                state.used++
+            }
+            if(!tx.tx.txid.equals(check.txid, ignoreCase = true)) {
+                throw ServerFailure("The server returned another transaction for ${check.txid}")
+            }
+            cache.put(tx)
+            tx
+        } catch(e: ServerFailure) {
+            state.stop = "${InscriptionTracer.SERVER_ERROR_PREFIX}: ${e.message}"
+            null
+        }
+    }
+
     /** A failure of a call to the chain source, carrying its message. */
     private class ServerFailure(message: String) : Exception(message)
 
@@ -69,7 +136,8 @@ object TrackerRun {
     /**
      * Returns a check for every coin in utxos, in order, keyed by outpoint. A stored complete check stands while its
      * coin's confirming block is unchanged and the indexer's answer does not contradict it; a changed block (a reorg)
-     * drops it. Others are traced, resuming the open pieces of a stored UNCHECKED check. Coins in deeper are traced first,
+     * drops it; a standing Clean row stored without [InscriptionCheck.mwebPegOut] gets it filled once (see [fillPegOut]),
+     * with no trace. Others are traced, resuming the open pieces of a stored UNCHECKED check. Coins in deeper are traced first,
      * each with the full deeper budget and the block walk, outside runBudget; the rest share runBudget (their traces, an
      * indexer reveal check and a creating transaction read each count). Once it is used up, or after a server error, no
      * more server calls are made: a coin that would need one keeps its stored result when that proves nothing it should
@@ -121,7 +189,7 @@ object TrackerRun {
                 state.stop = TIME_UP
             }
             if(stands) {
-                results[outpoint] = previous!!
+                results[outpoint] = if(lacksPegOutFlag(previous!!)) fillPegOut(coin, previous, source, cache, state, timeUp) else previous
             } else if(state.stop != null || state.exhausted(deep)) {
                 //No server call: keep what is stored unless it claims more than it can now show, or say why nothing was checked
                 results[outpoint] = if(previous != null && (!(previous.verdict == Verdict.CLEAN || CheckPolicy.complete(previous)) || stands(previous, answer))) {
@@ -141,7 +209,7 @@ object TrackerRun {
                 if(trace.reason?.startsWith(InscriptionTracer.SERVER_ERROR_PREFIX) == true) {
                     state.stop = trace.reason
                 }
-                results[outpoint] = finish(utxo, answer, indexerSource, trace, source, cache, blockHash, deep, state)
+                results[outpoint] = finish(coin, utxo, answer, indexerSource, trace, source, cache, blockHash, deep, state)
             }
             onResult(outpoint, results.getValue(outpoint))
             progress(++done, utxos.size)
@@ -180,9 +248,11 @@ object TrackerRun {
     /**
      * Decides one traced coin. What the decision needs from the chain beyond the trace (the indexer's reveal checks, and
      * the creating transaction for a CLEAN trace without an indexer answer, which the runes rule reads) is required: if it
-     * cannot be had the coin is left UNCHECKED, for want of a server (the run stops) or of budget.
+     * cannot be had the coin is left UNCHECKED, for want of a server (the run stops) or of budget. A CLEAN result records
+     * [InscriptionCheck.mwebPegOut] from the creating transaction when the run holds it (read here, or in the cache).
      */
     private suspend fun finish(
+        coin: com.sparrowwallet.mobile.crypto.Coin,
         utxo: Coin,
         answer: IndexerAnswer?,
         indexerSource: InscriptionCheck.Source?,
@@ -196,6 +266,7 @@ object TrackerRun {
         val indexed = if(answer != null && answer.indexed) answer else null
         val reveals = HashMap<String, ChainTx?>()
         var creating: RawTx.Parsed? = null
+        var creatingChain: ChainTx? = null
         try {
             if(indexed != null) {
                 for(id in indexed.inscriptions) {
@@ -212,6 +283,7 @@ object TrackerRun {
                 val cached = cache.get(utxo.txid)
                 if(cached != null) {
                     creating = cached.tx
+                    creatingChain = cached
                 } else {
                     //A resumed trace starts from ancestors and never read the coin's own transaction
                     if(state.exhausted(deep)) {
@@ -226,6 +298,7 @@ object TrackerRun {
                     }
                     cache.put(tx)
                     creating = tx.tx
+                    creatingChain = tx
                 }
             }
         } catch(e: ServerFailure) {
@@ -233,7 +306,12 @@ object TrackerRun {
             state.stop = reason
             return held(utxo, indexerSource, reason, blockHash, trace)
         }
-        return CheckPolicy.decide(utxo.txid, utxo.vout, indexed, indexerSource, trace, reveals, creating, blockHash)
+        val decided = CheckPolicy.decide(utxo.txid, utxo.vout, indexed, indexerSource, trace, reveals, creating, blockHash)
+        if(decided.verdict != Verdict.CLEAN) {
+            return decided
+        }
+        val chainTx = creatingChain ?: cache.get(utxo.txid) ?: return decided
+        return decided.copy(mwebPegOut = pegOutFlag(coin, chainTx))
     }
 
     /** A stored result stands unless an indexer now answers otherwise about whether the coin carries something. */

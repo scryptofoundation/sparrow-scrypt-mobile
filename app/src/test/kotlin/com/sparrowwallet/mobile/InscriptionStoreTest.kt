@@ -70,6 +70,33 @@ class InscriptionStoreTest {
         assertEquals(emptyMap(), store.loadBlocks("none"))
     }
 
+    /** The MWEB peg-out flag round-trips; a file written before it existed loads with it unknown, in the same version. */
+    @Test
+    fun mwebPegOutRoundTripsAndOldRowsLoadWithoutIt() {
+        val dir = java.nio.file.Files.createTempDirectory("insc").toFile()
+        val cipher = MemoryCipher()
+        val store = InscriptionStore(dir, cipher)
+        val block = "cd".repeat(32)
+        val checks = mapOf(
+            check(0).copy(blockHash = block, mwebPegOut = true).let { it.outpoint to it },
+            check(1).copy(blockHash = block, mwebPegOut = false).let { it.outpoint to it },
+            check(2).copy(blockHash = block).let { it.outpoint to it }
+        )
+        store.save("w", checks)
+        val loaded = store.load("w")
+        assertEquals(checks, loaded)
+        assertEquals(true, loaded.getValue("$txid:0").mwebPegOut)
+        assertEquals(false, loaded.getValue("$txid:1").mwebPegOut)
+        assertNull(loaded.getValue("$txid:2").mwebPegOut)
+
+        val old = """{"v":1,"checks":{"$txid:3":{"txid":"$txid","vout":3,"verdict":"CLEAN","source":"BUILT_IN","runes":false,""" +
+            """"found":[],"reason":null,"blockHash":"$block","open":[]}}}"""
+        File(dir, "old.bin").writeBytes(cipher.seal(old.encodeToByteArray()))
+        val row = store.loadOrNull("old")!!.getValue("$txid:3")
+        assertEquals(check(3).copy(blockHash = block), row)
+        assertNull(row.mwebPegOut)
+    }
+
     @Test
     fun missingAndUnreadableLoadEmpty() {
         val (store, dir) = newStore()

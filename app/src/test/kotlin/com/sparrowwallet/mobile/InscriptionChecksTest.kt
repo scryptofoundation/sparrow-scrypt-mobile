@@ -122,6 +122,46 @@ class InscriptionChecksTest {
         }
     }
 
+    /**
+     * A coin straight out of MWEB (its creating transaction a confirmed, flagged HogEx) has no history to carry an
+     * inscription or runes: with a proven complete Clean check it is Clean whatever its value, with no indexer.
+     */
+    @Test
+    fun aProvenCleanMwebPegOutIsCleanWhateverItsValue() {
+        val ltc = ChainRules.hasRuneLikeTokens(Coin.LITECOIN)
+        assertTrue(ltc)
+        val pegOut = clean.copy(mwebPegOut = true)
+        var asked = 0
+        assertEquals(CoinState.CLEAN, coinState(pegOut, null, { asked++; true }, hasAnyResults = true, runeLike = ltc, runesIndexed = false))
+        assertEquals(0, asked, "the postage rule is not consulted")
+        //not known to be one: the postage rule holds it, as before
+        for(flag in listOf(false, null)) {
+            assertEquals(CoinState.HELD, coinState(clean.copy(mwebPegOut = flag), null, localMayCarry = true, hasAnyResults = true,
+                runeLike = ltc, runesIndexed = false), "$flag")
+        }
+        //an indexer that says it carries still holds it (rule 1)
+        assertEquals(CoinState.HELD, coinState(pegOut, indexerSaysCarries = true, localMayCarry = false, hasAnyResults = true,
+            runeLike = ltc, runesIndexed = true))
+    }
+
+    /** The flag frees only a proven complete Clean row: any other row with it follows its own rule as before. */
+    @Test
+    fun theMwebPegOutFlagFreesOnlyAProvenCompleteCleanRow() {
+        val ltc = ChainRules.hasRuneLikeTokens(Coin.LITECOIN)
+        fun state(row: InscriptionCheck, answer: Boolean? = null, local: Boolean = true) =
+            coinState(row.copy(mwebPegOut = true), answer, local, hasAnyResults = true, runeLike = ltc, runesIndexed = false)
+        //rules 4 and 5: Unchecked, provisional or cut-short Clean rows
+        assertEquals(CoinState.HELD, state(check(Verdict.UNCHECKED, reason = "budget")))
+        assertEquals(CoinState.UNCHECKED, state(check(Verdict.UNCHECKED, reason = "budget"), local = false))
+        assertEquals(CoinState.HELD, state(check(Verdict.CLEAN, blockHash = null)))
+        assertEquals(CoinState.UNCHECKED, state(check(Verdict.CLEAN, blockHash = null), local = false))
+        assertEquals(CoinState.HELD, state(check(Verdict.CLEAN, reason = "cut short")))
+        //rule 2: runes on it, or a "may carry runes" row
+        assertEquals(CoinState.HELD, state(check(Verdict.CLEAN, runes = true), local = false))
+        assertEquals(CoinState.HELD, state(check(Verdict.UNCHECKED, reason = CheckPolicy.MAY_CARRY_RUNES), local = false))
+        assertEquals(CoinState.HELD, state(check(Verdict.INSCRIBED), local = false))
+    }
+
     /** The safe side by default: a caller that does not say otherwise gets a rune-like chain and no runes answer. */
     @Test
     fun ruleThreeDefaultsToTheRuneChainRule() {

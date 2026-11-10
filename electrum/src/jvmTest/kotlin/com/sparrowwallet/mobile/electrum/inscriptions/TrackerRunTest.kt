@@ -102,7 +102,8 @@ class TrackerRunTest {
 
     @Test fun storedFinalRowIsKeptWithoutLookups() {
         val tx = cleanCoin(1)
-        val stored = clean(tx, block(2_500_000))
+        //a row stored since the MWEB peg-out flag exists: nothing to fill (a row without it is filled once, see below)
+        val stored = clean(tx, block(2_500_000)).copy(mwebPegOut = false)
         val result = run(listOf(coin(tx)), mapOf(stored.outpoint to stored))
         assertSame(stored, result[stored.outpoint])
         assertEquals(0, chain.calls)
@@ -278,6 +279,112 @@ class TrackerRunTest {
         val result = run(listOf(coin(pegOut)), mapOf(stored.outpoint to stored))
         assertEquals(Verdict.CLEAN, result.getValue(stored.outpoint).verdict, result.toString())
         assertEquals(2, chain.calls, "the coin and the HogEx")
+    }
+
+    private val hogAddr = ByteArray(34).also { it[0] = 0x58; it[1] = 0x20 }
+
+    /** A HogEx paying the MWEB pool (output 0) and a peg-out (output 1); [flagged] sets the MWEB flag with the null extension. */
+    private fun hogEx(n: Int, height: Int, flagged: Boolean = true): RawTx.Parsed =
+        chain.add(tx(listOf(hash(n) to 0), listOf(1_000_000L, 10_000L), outputScripts = listOf(hogAddr, TrackFakes.PLAIN),
+            mwebExtension = if(flagged) byteArrayOf(0) else null), height)
+
+    private fun pegOutCoin(tx: RawTx.Parsed, height: Int = 2_500_000) = TrackerRun.Coin(tx.txid, 1, block(height))
+
+    private fun storedClean(tx: RawTx.Parsed, vout: Int, source: InscriptionCheck.Source = InscriptionCheck.Source.PUBLIC) =
+        InscriptionCheck(tx.txid, vout, Verdict.CLEAN, source, false, emptyList(), null, block(2_500_000), emptyList())
+
+    /** A coin made by a confirmed, flagged HogEx (a peg-out straight out of MWEB) is recorded as one. */
+    @Test fun aCoinMadeByAConfirmedFlaggedHogExIsAnMwebPegOut() {
+        val hog = hogEx(1, 2_500_000)
+        assertTrue(hog.mwebNullExtension, "fixture is a flagged HogEx")
+        val check = run(listOf(pegOutCoin(hog))).getValue(hog.txid + ":1")
+        assertEquals(Verdict.CLEAN, check.verdict, check.toString())
+        assertEquals(true, check.mwebPegOut)
+        assertEquals(1, chain.calls, "the HogEx, read once")
+    }
+
+    /** An ordinary Clean coin is recorded as not one. */
+    @Test fun anOrdinaryCleanCoinIsNotAnMwebPegOut() {
+        val tx = cleanCoin(1)
+        val check = run(listOf(coin(tx))).getValue(tx.txid + ":0")
+        assertEquals(Verdict.CLEAN, check.verdict)
+        assertEquals(false, check.mwebPegOut)
+    }
+
+    /**
+     * Only the tracer's own test counts: a look-alike (the HogEx output shape without the MWEB flag) or an unconfirmed
+     * flagged HogEx is never a peg-out, whether traced fresh or filled into a stored Clean row.
+     */
+    @Test fun aLookAlikeOrAnUnconfirmedHogExIsNeverAnMwebPegOut() {
+        val lookAlike = hogEx(1, 2_500_000, flagged = false)
+        assertFalse(lookAlike.mwebNullExtension)
+        val fresh = run(listOf(pegOutCoin(lookAlike))).getValue(lookAlike.txid + ":1")
+        assertTrue(fresh.mwebPegOut != true, fresh.toString())
+        val stored = storedClean(lookAlike, 1)
+        val filled = run(listOf(pegOutCoin(lookAlike)), mapOf(stored.outpoint to stored)).getValue(stored.outpoint)
+        assertEquals(stored.copy(mwebPegOut = false), filled)
+
+        //a flagged HogEx the server says is unconfirmed: never true; its row keeps the flag unknown
+        val unconfirmed = hogEx(2, 0)
+        val freshUnconfirmed = run(listOf(TrackerRun.Coin(unconfirmed.txid, 1, null))).getValue(unconfirmed.txid + ":1")
+        assertTrue(freshUnconfirmed.mwebPegOut != true, freshUnconfirmed.toString())
+        val storedUnconfirmed = storedClean(unconfirmed, 1)
+        val filledUnconfirmed = run(listOf(pegOutCoin(unconfirmed)), mapOf(storedUnconfirmed.outpoint to storedUnconfirmed))
+            .getValue(storedUnconfirmed.outpoint)
+        assertEquals(storedUnconfirmed, filledUnconfirmed)
+        assertNull(filledUnconfirmed.mwebPegOut)
+    }
+
+    /** A Clean row stored before the flag existed gets it filled once: one read of its creating transaction, no trace. */
+    @Test fun aStoredCleanRowWithoutTheFlagIsFilledWithOneLookup() {
+        val hog = hogEx(1, 2_500_000)
+        val stored = storedClean(hog, 1)
+        val told = ArrayList<InscriptionCheck>()
+        val check = run(listOf(pegOutCoin(hog)), mapOf(stored.outpoint to stored), onResult = { _, c -> told.add(c) }).getValue(stored.outpoint)
+        assertEquals(stored.copy(mwebPegOut = true), check, "the stored row with the flag, not a new trace (a trace says BUILT_IN)")
+        assertEquals(listOf(check), told, "handed on, so the filled flag is saved")
+        assertEquals(1, chain.calls)
+
+        //an ordinary coin: one lookup (its trace would take two), and false
+        chain.calls = 0
+        val tx = cleanCoin(2)
+        val plain = storedClean(tx, 0)
+        assertEquals(plain.copy(mwebPegOut = false), run(listOf(coin(tx)), mapOf(plain.outpoint to plain)).getValue(plain.outpoint))
+        assertEquals(1, chain.calls)
+    }
+
+    /** With the run budget gone, or after a failed read, the stored row is returned unchanged with the flag unknown. */
+    @Test fun aStoredCleanRowWithoutTheFlagStaysAsItIsWhenItCannotBeFilled() {
+        val hog = hogEx(1, 2_500_000)
+        val stored = storedClean(hog, 1)
+        assertSame(stored, run(listOf(pegOutCoin(hog)), mapOf(stored.outpoint to stored), runBudget = 0).getValue(stored.outpoint))
+        assertEquals(0, chain.calls)
+
+        chain.failing.add(hog.txid)
+        val other = cleanCoin(2)
+        val result = run(listOf(pegOutCoin(hog), coin(other)), mapOf(stored.outpoint to stored))
+        assertSame(stored, result.getValue(stored.outpoint))
+        //a failed read is a server error like any other: no server call after it
+        assertEquals(serverError + "connection reset", result.getValue(other.txid + ":0").reason)
+        assertEquals(1, chain.calls)
+    }
+
+    /** A creating transaction without the MWEB null extension is not a peg-out at any height, so a missing height still fills false. */
+    @Test fun aStoredRowWhoseTransactionLacksTheNullExtensionFillsFalseWithoutAHeight() {
+        val tx = cleanCoin(1)
+        chain.add(tx, 0)
+        val stored = storedClean(tx, 0)
+        assertEquals(stored.copy(mwebPegOut = false), run(listOf(coin(tx)), mapOf(stored.outpoint to stored)).getValue(stored.outpoint))
+        assertEquals(1, chain.calls)
+    }
+
+    /** Only a proven, complete Clean row is filled: other rows are not read for it. */
+    @Test fun onlyAStoredProvenCleanRowIsFilled() {
+        val hog = hogEx(1, 2_500_000)
+        val deadEnd = InscriptionCheck(hog.txid, 1, Verdict.UNCHECKED, InscriptionCheck.Source.BUILT_IN, false, emptyList(),
+            InscriptionTracer.FEES_NEED_DEEPER, block(2_500_000), emptyList())
+        assertSame(deadEnd, run(listOf(pegOutCoin(hog)), mapOf(deadEnd.outpoint to deadEnd)).getValue(deadEnd.outpoint))
+        assertEquals(0, chain.calls)
     }
 
     @Test fun aDeadEndWithoutABlockOrWithAnIndexedAnswerIsRetraced() {

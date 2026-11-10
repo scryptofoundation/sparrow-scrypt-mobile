@@ -75,9 +75,11 @@ enum class CoinState { CLEAN, HELD, UNCHECKED }
  * 2. Its check is Inscribed, or the indexer reported runes on it: HELD. A "may carry runes" check (a runestone or
  *    dunestone in its creating transaction, over a Clean trace) is HELD unless an indexer that indexes runes
  *    ([runesIndexed]) answered clean: then CLEAN when the check is proven against its block, else UNCHECKED.
- * 3. Its check is Clean, complete and proven against a mined block: CLEAN when (a) the chain has no rune-like protocol
- *    ([runeLike] false), (b) an indexer that indexes runes answered clean, or (c) [localMayCarry] does not flag it;
- *    otherwise HELD. The trace cannot see runes, which reach a coin without a runestone in its creating transaction.
+ * 3. Its check is Clean, complete and proven against a mined block: CLEAN when the coin came straight out of MWEB (its
+ *    check's [InscriptionCheck.mwebPegOut]: its creating transaction is a confirmed HogEx, so it has no history to carry
+ *    an inscription or runes, whatever its value), (a) the chain has no rune-like protocol ([runeLike] false), (b) an
+ *    indexer that indexes runes answered clean, or (c) [localMayCarry] does not flag it; otherwise HELD. The trace
+ *    cannot see runes, which reach a coin without a runestone in its creating transaction.
  * 4. Any other check for it (Unchecked, cut short, or a provisional Clean): HELD when [localMayCarry] flags it and either
  *    no indexer answered or, on a rune-like chain, the indexer's clean answer is not runes-aware; else UNCHECKED.
  * 5. No check for it but the wallet has results (a coin newer than the last run): the same as rule 4.
@@ -96,7 +98,7 @@ inline fun coinState(check: InscriptionCheck?, indexerSaysCarries: Boolean?, loc
         check != null && check.reason == CheckPolicy.MAY_CARRY_RUNES ->
             if(!runesClean) CoinState.HELD else if(check.proven && check.found.isEmpty()) CoinState.CLEAN else CoinState.UNCHECKED
         check != null && check.verdict == Verdict.CLEAN && CheckPolicy.complete(check) && check.proven ->
-            if(!runeLike || runesClean || !localMayCarry()) CoinState.CLEAN else CoinState.HELD
+            if(check.mwebPegOut == true || !runeLike || runesClean || !localMayCarry()) CoinState.CLEAN else CoinState.HELD
         check != null || hasAnyResults ->
             if((indexerSaysCarries == null || (runeLike && !runesClean)) && localMayCarry()) CoinState.HELD else CoinState.UNCHECKED
         indexerSaysCarries == false -> CoinState.CLEAN
