@@ -4,6 +4,7 @@ import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.RawTx
 import com.sparrowwallet.mobile.crypto.track.Found
+import com.sparrowwallet.mobile.crypto.track.InscriptionTracer
 import com.sparrowwallet.mobile.crypto.track.Piece
 import com.sparrowwallet.mobile.crypto.track.TxCache
 import com.sparrowwallet.mobile.crypto.track.UnitRange
@@ -195,6 +196,62 @@ class TrackerRunTest {
         val stored = clean(tx, null)
         run(listOf(coin(tx)), mapOf(stored.outpoint to stored))
         assertTrue(chain.calls > 0)
+    }
+
+    /** A stored Unchecked row whose trace met a dead end, on the coin's current block. */
+    private fun deadEnd(tx: RawTx.Parsed, reason: String, blockHash: String? = block(2_500_000)) =
+        InscriptionCheck(tx.txid, 0, Verdict.UNCHECKED, InscriptionCheck.Source.BUILT_IN, false, emptyList(), reason, blockHash, emptyList())
+
+    /** Review I4: a coin whose trace ends at MWEB or an unresolvable mined coin meets it again every run; its row stands. */
+    @Test fun aStoredDeadEndCostsNoLookups() {
+        for(reason in listOf(InscriptionTracer.THROUGH_MWEB, InscriptionTracer.FEES_NEED_DEEPER, InscriptionTracer.DOES_NOT_ADD_UP,
+                             CheckPolicy.MAY_CARRY_RUNES)) {
+            val tx = cleanCoin(1)
+            val stored = deadEnd(tx, reason)
+            chain.calls = 0
+            val result = run(listOf(coin(tx)), mapOf(stored.outpoint to stored))
+            assertSame(stored, result.getValue(stored.outpoint), reason)
+            assertEquals(0, chain.calls, reason)
+        }
+    }
+
+    @Test fun checkDeeperRetracesADeadEnd() {
+        val tx = cleanCoin(1)
+        val stored = deadEnd(tx, InscriptionTracer.FEES_NEED_DEEPER)
+        val result = run(listOf(coin(tx)), mapOf(stored.outpoint to stored), deeper = setOf(stored.outpoint))
+        assertTrue(chain.calls > 0)
+        assertEquals(Verdict.CLEAN, result.getValue(stored.outpoint).verdict)
+    }
+
+    @Test fun aChangedBlockRetracesADeadEnd() {
+        val tx = cleanCoin(1)
+        val stored = deadEnd(tx, InscriptionTracer.THROUGH_MWEB, block(2_499_999))
+        run(listOf(coin(tx)), mapOf(stored.outpoint to stored))
+        assertTrue(chain.calls > 0)
+    }
+
+    @Test fun aDeadEndWithoutABlockOrWithAnIndexedAnswerIsRetraced() {
+        val tx = cleanCoin(1)
+        val unproven = deadEnd(tx, InscriptionTracer.THROUGH_MWEB, null)
+        run(listOf(coin(tx)), mapOf(unproven.outpoint to unproven))
+        assertTrue(chain.calls > 0, "no block")
+
+        chain.calls = 0
+        val stored = deadEnd(tx, InscriptionTracer.THROUGH_MWEB)
+        val answer = IndexerAnswer(true, emptyList(), runes = false, unlisted = false)
+        run(listOf(coin(tx)), mapOf(stored.outpoint to stored), answers = mapOf(stored.outpoint to answer), indexerSource = InscriptionCheck.Source.PUBLIC)
+        assertTrue(chain.calls > 0, "an indexed answer")
+    }
+
+    /** Budget, server-error and unknown-height rows are not dead ends: they are retried. */
+    @Test fun otherUncheckedRowsAreRetried() {
+        for(reason in listOf(budgetUsed, serverError + "connection reset", InscriptionTracer.HEIGHT_UNKNOWN)) {
+            val tx = cleanCoin(1)
+            val stored = deadEnd(tx, reason)
+            chain.calls = 0
+            run(listOf(coin(tx)), mapOf(stored.outpoint to stored))
+            assertTrue(chain.calls > 0, reason)
+        }
     }
 
     @Test fun serverErrorLeavesTheRestUnchecked() {

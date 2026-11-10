@@ -34,10 +34,15 @@ class InscriptionTracer internal constructor(
         /** What a reason starts with when the server failed; callers that must stop on a server error match this. */
         const val SERVER_ERROR_PREFIX = "Server error, will retry next sync"
         internal const val SERVER_ERROR = "$SERVER_ERROR_PREFIX: %s"
-        internal const val FEES_NEED_DEEPER = "Mined coin fees need Check deeper"
-        internal const val DOES_NOT_ADD_UP = "Mined coin does not add up"
-        internal const val THROUGH_MWEB = "Came through MWEB"
-        internal const val HEIGHT_UNKNOWN = "Mined coin height unknown"
+        /**
+         * Dead ends: the trace meets the same one again while the coin's block is unchanged, so a stored row with one of
+         * these reasons stands (still Unchecked) until the block changes or the user checks deeper.
+         */
+        const val FEES_NEED_DEEPER = "Mined coin fees need Check deeper"
+        const val DOES_NOT_ADD_UP = "Mined coin does not add up"
+        const val THROUGH_MWEB = "Came through MWEB"
+        /** Not a dead end: a server that gave no height may give one next time. */
+        const val HEIGHT_UNKNOWN = "Mined coin height unknown"
 
         /** drongo's InscriptionContent.MAX_DOGINALS_STEPS: the longest Doginals chain the id walk follows. */
         private const val MAX_DOGINALS_STEPS = 2_000

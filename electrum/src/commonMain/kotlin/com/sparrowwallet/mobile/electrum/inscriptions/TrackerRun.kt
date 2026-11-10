@@ -26,6 +26,31 @@ object TrackerRun {
         val outpoint: String get() = "$txid:$vout"
     }
 
+    /**
+     * The reasons of an Unchecked row a new trace would only reach again while the coin's block is unchanged: MWEB, a
+     * mined coin whose fees need Check deeper or do not add up, and runes the policy cannot rule out over a Clean trace
+     * (the creating transaction's runestone does not change). "Mined coin height unknown", budget and server-error rows
+     * are not here: they are retried.
+     */
+    val DEAD_ENDS: Set<String> = setOf(
+        InscriptionTracer.THROUGH_MWEB, InscriptionTracer.FEES_NEED_DEEPER, InscriptionTracer.DOES_NOT_ADD_UP, CheckPolicy.MAY_CARRY_RUNES
+    )
+
+    /** An Unchecked row that met a dead end and knows its block: it stands while that block is the coin's. */
+    fun deadEnd(check: InscriptionCheck): Boolean =
+        check.verdict == Verdict.UNCHECKED && check.reason in DEAD_ENDS && check.blockHash != null
+
+    /**
+     * Whether a stored row stands for its coin without a trace: complete, or a [deadEnd]; from the coin's
+     * [confirmingBlock]; and with no indexed answer that contradicts it (a dead end stands only with no indexed answer).
+     */
+    fun standing(check: InscriptionCheck, confirmingBlock: String?, answer: IndexerAnswer? = null): Boolean {
+        if(check.blockHash == null || check.blockHash != confirmingBlock) {
+            return false
+        }
+        return if(deadEnd(check)) answer == null || !answer.indexed else stands(check, answer)
+    }
+
     /** A failure of a call to the chain source, carrying its message. */
     private class ServerFailure(message: String) : Exception(message)
 
@@ -82,7 +107,7 @@ object TrackerRun {
                 previous = null
             }
 
-            if(previous != null && !deep && stands(previous, answer)) {
+            if(previous != null && !deep && standing(previous, blockHash, answer)) {
                 results[outpoint] = previous
             } else if(state.stop != null || state.exhausted(deep)) {
                 //No server call: keep what is stored unless it claims more than it can now show, or say why nothing was checked
