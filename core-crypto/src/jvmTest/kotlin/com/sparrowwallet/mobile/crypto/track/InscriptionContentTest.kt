@@ -290,4 +290,48 @@ class InscriptionContentTest {
         assertNull(InscriptionContent.ord(tx, 0))
         assertEquals("real", text(assertNotNull(InscriptionContent.ord(tx, 1)).body))
     }
+
+    /**
+     * Final review M8: a Doginals walk for a preview is bounded by what its limit can need (pieces carry at most about
+     * 1,500 bytes): at most maxBytes / 1,000 + 16 steps. A chain of many tiny steps past that gives the oversized form,
+     * never a partial body, and the walk stops there.
+     */
+    @Test
+    fun aDoginalsWalkIsBoundedByWhatItsLimitCanNeed() = runBlocking {
+        fun number(n: Int): ByteArray = when {
+            n == 0 -> op(OP_0)
+            n <= 16 -> TrackFixtures.opNumber(n)
+            n < 128 -> byteArrayOf(1, n.toByte())
+            else -> byteArrayOf(2, (n % 256).toByte(), (n / 256).toByte())
+        }
+        val parts = 100
+        val chain = FakeChainSource()
+        val steps = ArrayList<com.sparrowwallet.mobile.crypto.RawTx.Parsed>()
+        var previous = hash(77)
+        for(k in 0 until parts) {
+            val piece = ArrayList<ByteArray>()
+            if(k == 0) {
+                piece.add(push("ord".encodeToByteArray()))
+                piece.add(number(parts))
+                piece.add(push("text/plain".encodeToByteArray()))
+            }
+            piece.add(number(parts - k - 1))
+            piece.add(push(byteArrayOf(0x41)))
+            val step = TrackFixtures.tx(listOf(previous to 0), listOf(100_000L),
+                scriptSigs = listOf(script(TrackFixtures.doginalsStepChunks(piece))), version = 1)
+            chain.add(step, 100 + k)
+            steps.add(step)
+            previous = step.txid
+        }
+        val whole = assertNotNull(InscriptionContent.readFromChain(steps.first().txid + "i0", steps.last().txid, chain, 1_000_000))
+        assertTrue(whole.complete)
+        assertEquals(parts, whole.body.size)
+        chain.transactionCalls = 0
+        val bounded = assertNotNull(InscriptionContent.readFromChain(steps.first().txid + "i0", steps.last().txid, chain, 1_000))
+        assertFalse(bounded.complete)
+        assertTrue(bounded.sizeOver)
+        assertEquals(0, bounded.body.size)
+        assertTrue(chain.transactionCalls <= 1 + 1_000 / 1_000 + 16, "${chain.transactionCalls} reads")
+        assertNull(InscriptionContent.fromChain(steps.first().txid + "i0", steps.last().txid, chain, 1_000))
+    }
 }

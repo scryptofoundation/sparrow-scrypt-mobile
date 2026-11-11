@@ -200,7 +200,8 @@ fun yourOwnSetting(url: String): InscriptionSetting.YourOwn? =
  *   coin with nothing saved keeps following the notice's answer. [save] gets null.
  * - Public or Built-in: [save] gets it.
  * - A new or changed Your own URL, or a changed proxy: [checkYourOwnIndexer] first; a refusal is returned and [save]
- *   is not called (the server fields are not saved either).
+ *   is not called (the server fields are not saved either). With the URL unchanged and only the proxy changed, an
+ *   indexer that cannot be reached (offline, a timeout) does not block saving the proxy; a refusal still does.
  * [save] saves the server fields, and the inscription setting when it is not null. Returns the refusal or null.
  */
 suspend fun saveInscriptionChoice(shown: InscriptionSetting, shownProxy: SocksProxy?, chosen: InscriptionSetting,
@@ -211,7 +212,7 @@ suspend fun saveInscriptionChoice(shown: InscriptionSetting, shownProxy: SocksPr
         return null
     }
     if(chosen is InscriptionSetting.YourOwn) {
-        checkYourOwnIndexer(chosen.customUrl.trimEnd('/'), airGapped, open)?.let { return it }
+        checkYourOwnIndexer(chosen.customUrl.trimEnd('/'), airGapped, unreachableIsOk = chosen == shown, open = open)?.let { return it }
     }
     save(chosen)
     return null
@@ -219,17 +220,22 @@ suspend fun saveInscriptionChoice(shown: InscriptionSetting, shownProxy: SocksPr
 
 /**
  * Save's check of a Your own indexer: opens it with [open] (in the app, [Indexers.open], which checks its chain and kind)
- * and closes the reader. Returns null when it opened, else the reason to show (the exception's message). Air-gapped, it
- * contacts nothing. Cancellation is rethrown.
+ * and closes the reader. Returns null when it opened, else the reason to show (the exception's message). With
+ * [unreachableIsOk] (an unchanged URL whose proxy changed), a server that cannot be reached is not a reason: only a
+ * refusal ([com.sparrowwallet.mobile.electrum.indexer.IndexerException]: another chain, a block 0 mismatch, an unsupported
+ * kind, plain http through a proxy, an error answer) is. Air-gapped, it contacts nothing. Cancellation is rethrown.
  */
-suspend fun checkYourOwnIndexer(url: String, airGapped: Boolean, open: suspend (String) -> InscriptionIndexer): String? {
+suspend fun checkYourOwnIndexer(url: String, airGapped: Boolean, unreachableIsOk: Boolean = false,
+                                open: suspend (String) -> InscriptionIndexer): String? {
     if(airGapped) return "Off in air-gapped mode"
     val reader = try {
         open(url)
     } catch(e: CancellationException) {
         throw e
-    } catch(e: Throwable) {
+    } catch(e: com.sparrowwallet.mobile.electrum.indexer.IndexerException) {
         return e.message ?: "Could not reach the indexer"
+    } catch(e: Throwable) {
+        return if(unreachableIsOk && e is Exception) null else e.message ?: "Could not reach the indexer"
     }
     reader.close()
     return null

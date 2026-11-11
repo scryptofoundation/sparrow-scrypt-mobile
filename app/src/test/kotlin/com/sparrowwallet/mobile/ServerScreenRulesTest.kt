@@ -164,4 +164,27 @@ class ServerScreenRulesTest {
             runBlocking { checkYourOwnIndexer("http://x", airGapped = false) { throw kotlinx.coroutines.CancellationException("left") } }
         }
     }
+
+    /**
+     * Final review M7: with Your own set and only the proxy changed, an indexer that cannot be reached (offline, a
+     * timeout) does not block saving the proxy; a refusal (another chain, an unsupported kind, plain http through the
+     * proxy) still does, and so does an unreachable indexer for a new URL.
+     */
+    @Test
+    fun aProxyOnlyChangeSavesWhenTheIndexerIsOffline() = runBlocking {
+        val saved = InscriptionSetting.YourOwn("https://ord.example")
+        val tor = SocksProxy("127.0.0.1", 9050)
+        val writes = mutableListOf<InscriptionSetting?>()
+        for(offline in listOf(java.io.IOException("connect timed out"), java.net.SocketTimeoutException("read timed out"))) {
+            assertNull(saveInscriptionChoice(saved, null, saved, tor, airGapped = false, open = { throw offline }) { writes += it })
+        }
+        assertEquals(listOf<InscriptionSetting?>(saved, saved), writes)
+        val refused = saveInscriptionChoice(saved, null, saved, tor, airGapped = false,
+            open = { throw IndexerException("Inscriptions server is for another chain") }) { writes += it }
+        assertEquals("Inscriptions server is for another chain", refused)
+        val newUrl = saveInscriptionChoice(saved, null, InscriptionSetting.YourOwn("https://other.example"), tor, airGapped = false,
+            open = { throw java.io.IOException("connect timed out") }) { writes += it }
+        assertEquals("connect timed out", newUrl)
+        assertEquals(2, writes.size, "neither refusal saved")
+    }
 }

@@ -102,7 +102,8 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
     fun loadBlocks(walletName: String): Map<Int, String> = loadFile(walletName)?.blocks ?: emptyMap()
 
     /** The kept indexer marks of outpoints the last listing left out; empty when none or no readable file. */
-    fun loadMarks(walletName: String): Map<String, KeptMark> = loadFile(walletName)?.marks ?: emptyMap()
+    @androidx.annotation.VisibleForTesting
+    internal fun loadMarks(walletName: String): Map<String, KeptMark> = loadFile(walletName)?.marks ?: emptyMap()
 
     /** Everything in the wallet's file in one read, or null when there is no readable file (see [loadOrNull]). */
     fun loadAll(walletName: String): StoredFile? = loadFile(walletName)?.stored()
@@ -132,10 +133,6 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
     }
 
     private fun InscriptionFile.stored() = StoredFile(checks, blocks, marks, asked, lost, lastUnreachable, lastRunAt)
-
-    /** The checks and the block hashes in one read, or null when there is no readable file (see [loadOrNull]). */
-    fun loadWithBlocks(walletName: String): Pair<Map<String, InscriptionCheck>, Map<Int, String>>? =
-        loadFile(walletName)?.let { it.checks to it.blocks }
 
     private fun loadFile(walletName: String): InscriptionFile? {
         val file = fileFor(walletName)

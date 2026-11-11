@@ -241,9 +241,11 @@ class InscriptionChecker(
     fun deeperQueued(walletName: String): StateFlow<Set<String>> = deeperFlow(key(walletName))
 
     /** Whether the wallet's queue holds a runner (and what it captured): only while something waits or runs. */
+    @androidx.annotation.VisibleForTesting
     internal fun holdsDeeperRunner(walletName: String): Boolean = synchronized(deeperLock) { deeperQueues[key(walletName)]?.run != null }
 
-    /** Test hook: runs after a deeper run has taken its outpoints and before it is launched. */
+    /** Test hook: runs after a deeper run has taken its outpoints and before it is launched. Not settable outside the module. */
+    @androidx.annotation.VisibleForTesting
     @Volatile internal var beforeDeeperLaunch: () -> Unit = {}
 
     /**

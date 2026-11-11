@@ -156,10 +156,14 @@ class InscriptionContent(
             //the body plus a small countdown each, so give the walk that much room, the exact limit is checked once the
             //body is read
             val walkLimit = maxBytes.toLong() + maxBytes / 50 + 1_024
+            //Each piece carries at most about 1,500 bytes of payload, so a body within maxBytes needs no more steps than
+            //this; a chain longer than that is over the limit, whatever its pieces hold (many tiny steps would otherwise
+            //cost a read each up to MAX_DOGINALS_STEPS)
+            val maxSteps = minOf(MAX_DOGINALS_STEPS.toLong(), maxBytes.toLong() / 1_000 + 16).toInt()
             var pieceBytes = 0L
             val steps = ArrayList<RawTx.Parsed>()
             var current = source.transaction(lastStep).tx
-            for(n in 0 until MAX_DOGINALS_STEPS) {
+            for(n in 0 until maxSteps) {
                 steps.add(current)
                 val step = InscriptionLocator.doginals(current) ?: return null
                 val pushes = ScriptReader.chunksUpToError(current.scriptSigs.getOrElse(0) { ByteArray(0) })
@@ -172,6 +176,12 @@ class InscriptionContent(
                 if(step.genesis) {
                     steps.reverse()
                     return if(current.txid == txid) doginals(steps, maxBytes, keepOversized = true) else null
+                }
+                if(n == maxSteps - 1) {
+                    //Not at its first step within the steps the limit allows: over the limit (if it is a chain at all)
+                    return if(maxSteps < MAX_DOGINALS_STEPS) {
+                        InscriptionContent(null, null, ByteArray(0), maxBytes.toLong(), complete = false, sizeOver = true)
+                    } else null
                 }
                 current = source.transaction(step.previousTxid).tx
             }

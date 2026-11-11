@@ -51,7 +51,7 @@ object NintondoParse {
     }
 
     /** The inscription's current output and offset from /location: (txid, vout, offset), or null when it gives none well formed. */
-    fun location(json: String): Triple<String, Int, Long>? {
+    internal fun location(json: String): Triple<String, Int, Long>? {
         val node = OrdParse.readTree(json) as? JsonObject ?: throw IllegalArgumentException("Unexpected location from Nintondo indexer")
         val match = LOCATION.matchEntire(node["location"].text() ?: return null) ?: return null
         val vout = match.groupValues[2].toIntOrNull() ?: return null
