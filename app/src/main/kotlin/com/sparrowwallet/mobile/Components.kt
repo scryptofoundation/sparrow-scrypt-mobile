@@ -184,8 +184,17 @@ internal fun StatusSlot(status: String?, state: PillState) {
 
 // ---- layer switch (the core gesture) ----
 
+/**
+ * The Home layer switch: one segment per layer of the wallet, in the order Public, Private, Taproot ([switchLayers]),
+ * and nothing for a wallet with one layer. A label too wide for its segment (three segments on a narrow phone at a
+ * large font) is drawn smaller to fit, never cut.
+ */
 @Composable
-internal fun LayerSwitch(isPrivate: Boolean, onSelect: (Boolean) -> Unit) {
+internal fun LayerSwitch(layers: List<Layer>, selected: Layer, onSelect: (Layer) -> Unit) {
+    val segments = switchLayers(layers)
+    if(segments.isEmpty()) return
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val style = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -195,23 +204,27 @@ internal fun LayerSwitch(isPrivate: Boolean, onSelect: (Boolean) -> Unit) {
             .padding(3.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
-        @Composable
-        fun seg(label: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier) {
-            Box(
-                modifier = modifier
+        for(layer in segments) {
+            val isSelected = layer == selected
+            androidx.compose.foundation.layout.BoxWithConstraints(
+                modifier = Modifier
+                    .weight(1f)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if(selected) MaterialTheme.colorScheme.primary else Color.Transparent)
-                    .clickable(onClick = onClick)
-                    .padding(vertical = 7.dp),
+                    .background(if(isSelected) MaterialTheme.colorScheme.primary else Color.Transparent)
+                    .clickable { onSelect(layer) }
+                    .padding(horizontal = 4.dp, vertical = 7.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
-                    color = if(selected) MaterialTheme.colorScheme.onPrimary
+                val natural = remember(layer, measurer) {
+                    measurer.measure(layer.label, style, maxLines = 1, softWrap = false).size.width
+                }
+                val room = constraints.maxWidth
+                val fontSize = if(natural > room && natural > 0) style.fontSize * (room.toFloat() / natural * 0.95f) else style.fontSize
+                Text(layer.label, style = style, fontSize = fontSize, maxLines = 1, softWrap = false,
+                    color = if(isSelected) MaterialTheme.colorScheme.onPrimary
                             else MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        seg("Public", !isPrivate, { onSelect(false) }, Modifier.weight(1f))
-        seg("Private", isPrivate, { onSelect(true) }, Modifier.weight(1f))
     }
 }
 

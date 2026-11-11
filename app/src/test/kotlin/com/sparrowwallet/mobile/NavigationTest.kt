@@ -44,6 +44,41 @@ class NavigationTest {
         assertEquals(Screen.WalletList, backTarget(Screen.RestoreFromApp))
     }
 
+    /** A wallet with a Private and a Taproot wallet, shown on its Taproot layer. */
+    private val companionHome = Screen.Home(
+        WalletFamily(Member("w", VaultData(mnemonic = "abandon")),
+            Member("w Private", VaultData(mnemonic = "abandon", scriptType = "MWEB")),
+            Member("w Taproot", VaultData(mnemonic = "abandon", scriptType = "P2TR"))),
+        Layer.TAPROOT)
+
+    @Test
+    fun backFromACompanionsWalletScreenReturnsToTheCompanionsHome() {
+        for(screen in listOf(Screen.Server(companionHome), Screen.Send(companionHome), Screen.Details(companionHome),
+            Screen.Receive(companionHome, 0), Screen.SignPsbt(companionHome), Screen.Collectibles(companionHome))) {
+            val back = backTarget(screen)
+            assertEquals(companionHome, back)
+            assertEquals(Layer.TAPROOT, (back as Screen.Home).layer)
+            assertEquals("w Taproot", back.name)
+        }
+        assertEquals(Screen.Home(companionHome.family, Layer.PRIVATE),
+            backTarget(Screen.Send(Screen.Home(companionHome.family, Layer.PRIVATE))))
+    }
+
+    @Test
+    fun backFromAnyLayersHomeReturnsToTheList() {
+        for(layer in companionHome.family.layers) assertEquals(Screen.WalletList, backTarget(Screen.Home(companionHome.family, layer)))
+    }
+
+    @Test
+    fun theCollectiblesVisitBelongsToTheShownWallet() {
+        val tile = CollectibleTile("${"a".repeat(64)}i0", "${"b".repeat(64)}:0", "#1", "a".repeat(64), 100, 1_000L, 1, 10_000L,
+            com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck.Source.BUILT_IN)
+        assertEquals("w Taproot", collectiblesVisit(Screen.Collectibles(companionHome)))
+        assertEquals("w Taproot", collectiblesVisit(Screen.Inscription(companionHome, tile)))
+        assertEquals(Screen.Collectibles(companionHome), backTarget(Screen.Inscription(companionHome, tile)))
+        assertNull(collectiblesVisit(companionHome))
+    }
+
     @Test
     fun backOnTheListLeavesTheApp() {
         assertNull(backTarget(Screen.WalletList))

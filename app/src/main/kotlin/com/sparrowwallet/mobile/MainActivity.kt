@@ -92,17 +92,32 @@ internal sealed interface Screen {
     data class LinkReceive(val pairing: SparrowLink.Pairing) : Screen
     data class LinkSend(val pairing: SparrowLink.Pairing) : Screen
     data class Unlock(val name: String) : Screen
-    /** A linked pair unlocks together: [linkedName]/[linkedData] hold the counterpart wallet. */
+    /**
+     * A wallet family unlocks together and shows one member, the one on [layer]. [linkedName]/[linkedData] are the
+     * shown member's MWEB counterpart (see [WalletFamily.mwebCounterpart]), as the linked pair's were.
+     */
     data class Home(
-        val name: String,
-        val data: VaultData,
-        val linkedName: String? = null,
-        val linkedData: VaultData? = null,
+        val family: WalletFamily,
+        val layer: Layer,
         /** Session password from unlock — needed to re-seal the vault on label edits. */
         val password: String = ""
     ) : Screen {
-        fun switched(): Home? = if(linkedName != null && linkedData != null)
-            Home(linkedName, linkedData, name, data, password) else null
+        /** A wallet on its own. */
+        constructor(name: String, data: VaultData, password: String = "") :
+            this(WalletFamily(Member(name, data)), Layer.PUBLIC, password)
+
+        init { require(family.member(layer) != null) { "No wallet on the $layer layer" } }
+
+        val name: String get() = family.member(layer)!!.name
+        val data: VaultData get() = family.member(layer)!!.data
+        val linkedName: String? get() = family.mwebCounterpart(layer)?.name
+        val linkedData: VaultData? get() = family.mwebCounterpart(layer)?.data
+
+        /** The same family on another of its layers; null for the shown layer or one it does not have. */
+        fun shown(layer: Layer): Home? = if(layer != this.layer && family.member(layer) != null) copy(layer = layer) else null
+
+        /** This Home with each member named in [updated] holding its new vault. */
+        fun withData(updated: Map<String, VaultData>): Home = copy(family = family.withData(updated))
     }
     data class Send(val home: Home) : Screen
     data class Receive(val home: Home, val startIndex: Int) : Screen
@@ -159,12 +174,11 @@ private fun App(repo: WalletRepository) {
     var airGapped by remember { mutableStateOf(NetworkPolicy.blocked) }
     BackHandler(enabled = backTarget(screen) != null) { backTarget(screen)?.let { screen = it } }
 
-    // one password opens a linked pair: silently unlock the counterpart with the same
-    // password so switching between public and private needs no re-entry
+    // one password opens a wallet family: silently unlock the other members with the same
+    // password so switching between layers needs no re-entry
     fun homeFor(name: String, data: VaultData, password: String): Screen.Home {
-        val linkedName = repo.walletInfo(name)?.linkedWallet
-        val linkedData = linkedName?.let { runCatching { repo.unlock(it, password) }.getOrNull() }
-        return Screen.Home(name, data, linkedName.takeIf { linkedData != null }, linkedData, password)
+        val opened = WalletFamily.open(name, data, repo.listWallets()) { runCatching { repo.unlock(it, password) }.getOrNull() }
+        return Screen.Home(opened.family, opened.layer, password)
     }
 
     // the layer the current screen belongs to drives the whole color world:
@@ -269,7 +283,7 @@ private fun App(repo: WalletRepository) {
                     Text(s.name, style = MaterialTheme.typography.headlineSmall)
                     Text("Private (MWEB) coins need the network. Turn off air-gapped mode to use them.",
                         style = MaterialTheme.typography.bodyMedium)
-                    s.switched()?.let { paired ->
+                    s.shown(Layer.PUBLIC)?.let { paired ->
                         OutlinedButton(onClick = { screen = paired }, modifier = Modifier.fillMaxWidth()) {
                             Text("Public wallet")
                         }
@@ -283,11 +297,12 @@ private fun App(repo: WalletRepository) {
                     onReceive = { screen = Screen.Receive(s, 0) },
                     onDetails = { screen = Screen.Details(s) },
                     onSwitch = { screen = Screen.WalletList },
-                    onSwitchPair = s.switched()?.let { paired -> { screen = paired } },
+                    layers = s.family.layers, layer = s.layer, onLayer = { l -> s.shown(l)?.let { screen = it } },
                     onTx = { tx -> screen = Screen.TxDetail(s, tx) },
                     onSyncLabels = { pairing -> screen = Screen.LabelSync(s, pairing) }
                 )
-            } else {
+            } else androidx.compose.runtime.key(s.name) {
+                // the Public and Taproot layers share this screen: a fresh one per wallet, so no state or sync carries over
                 HomeScreen(
                     repo, s.name, s.data, s.linkedData,
                     onSend = { screen = Screen.Send(s) },
@@ -295,7 +310,7 @@ private fun App(repo: WalletRepository) {
                     onServer = { screen = Screen.Server(s) },
                     onDetails = { screen = Screen.Details(s) },
                     onSwitch = { screen = Screen.WalletList },
-                    onSwitchPair = s.switched()?.let { paired -> { screen = paired } },
+                    layers = s.family.layers, layer = s.layer, onLayer = { l -> s.shown(l)?.let { screen = it } },
                     onTx = { tx -> screen = Screen.TxDetail(s, tx) },
                     onSyncLabels = { pairing -> screen = Screen.LabelSync(s, pairing) },
                     onSignPsbt = { screen = Screen.SignPsbt(s) },
@@ -331,7 +346,7 @@ private fun App(repo: WalletRepository) {
                     val newData = repo.updateLabel(s.home.name, s.home.data, s.home.password, s.tx.txid, label)
                     val cleaned = label.trim().ifEmpty { null }
                     screen = Screen.TxDetail(
-                        s.home.copy(data = newData),
+                        s.home.withData(mapOf(s.home.name to newData)),
                         s.tx.copy(label = cleaned, kind = kindFor(s.tx.delta, cleaned))
                     )
                 } else null,
@@ -340,10 +355,8 @@ private fun App(repo: WalletRepository) {
             is Screen.LabelSync -> LabelSyncScreen(
                 repo, s.home, s.pairing,
                 onDone = { updated ->
-                    screen = s.home.copy(
-                        data = updated[s.home.name] ?: s.home.data,
-                        linkedData = s.home.linkedName?.let { ln -> updated[ln] } ?: s.home.linkedData
-                    )
+                    // label sync sends the shown wallet and its MWEB counterpart, so only they come back
+                    screen = s.home.withData(updated.filterKeys { it == s.home.name || it == s.home.linkedName })
                 },
                 onBack = { screen = s.home }
             )
@@ -1083,7 +1096,9 @@ private fun HomeScreen(
     onServer: () -> Unit,
     onDetails: () -> Unit,
     onSwitch: () -> Unit,
-    onSwitchPair: (() -> Unit)? = null,
+    layers: List<Layer> = listOf(Layer.PUBLIC),
+    layer: Layer = Layer.PUBLIC,
+    onLayer: (Layer) -> Unit = {},
     onTx: (TxInfo) -> Unit = {},
     onSyncLabels: (SparrowLink.Pairing) -> Unit = {},
     onSignPsbt: (() -> Unit)? = null,
@@ -1198,14 +1213,14 @@ private fun HomeScreen(
             Column {
                 Text(name, style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    if(onSwitchPair != null) "${network.displayName.uppercase()} · LINKED PAIR"
+                    if(linkedData != null) "${network.displayName.uppercase()} · LINKED PAIR"
                     else network.displayName.uppercase(),
                     fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
-        onSwitchPair?.let { LayerSwitch(isPrivate = false, onSelect = { toPrivate -> if(toPrivate) it() }) }
+        LayerSwitch(layers, layer, onLayer)
         run {
             val publicTotal = snapshot?.balance?.total
             val privateTotal = privateSnap?.let { it.confirmed + it.unconfirmed }
@@ -1334,7 +1349,9 @@ private fun MwebHomeScreen(
     onReceive: () -> Unit,
     onDetails: () -> Unit,
     onSwitch: () -> Unit,
-    onSwitchPair: (() -> Unit)? = null,
+    layers: List<Layer> = listOf(Layer.PUBLIC),
+    layer: Layer = Layer.PUBLIC,
+    onLayer: (Layer) -> Unit = {},
     onTx: (TxInfo) -> Unit = {},
     onSyncLabels: (SparrowLink.Pairing) -> Unit = {}
 ) {
@@ -1418,7 +1435,7 @@ private fun MwebHomeScreen(
                 )
             }
         }
-        onSwitchPair?.let { LayerSwitch(isPrivate = true, onSelect = { toPrivate -> if(!toPrivate) it() }) }
+        LayerSwitch(layers, layer, onLayer)
         run {
             val privateTotal = snapshot?.let { it.confirmed + it.unconfirmed }
             val publicTotal = publicBalance?.let { it.first + it.second }
@@ -1804,8 +1821,10 @@ private fun LabelSyncScreen(
         try {
             val wallets = buildList {
                 add(Triple(home.name, home.data, home.password))
-                if(home.linkedName != null && home.linkedData != null) {
-                    add(Triple(home.linkedName, home.linkedData, home.password))
+                val linkedName = home.linkedName
+                val linkedData = home.linkedData
+                if(linkedName != null && linkedData != null) {
+                    add(Triple(linkedName, linkedData, home.password))
                 }
             }
             result = repo.linkSyncLabels(pairing, wallets)
