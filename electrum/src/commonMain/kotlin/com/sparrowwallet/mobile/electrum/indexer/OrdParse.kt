@@ -166,8 +166,11 @@ private val LONG = Regex("-?[0-9]{1,19}")
 internal fun JsonElement?.long(): Long? =
     (this as? JsonPrimitive)?.takeIf { it !is JsonNull && !it.isString && LONG.matches(it.content) }?.content?.toLongOrNull()
 
-/** A server's name as it may be shown in a message: no control characters, and short. */
-internal fun shown(name: String): String = name.filterNot { it.isISOControl() }.take(64)
+/**
+ * A server's name as it may be shown in a message: printable ASCII only, anything else (controls, bidi overrides, format
+ * characters, any non-ASCII) as "?", and short.
+ */
+internal fun shown(name: String): String = name.take(64).map { if(it in ' '..'~') it else '?' }.joinToString("")
 
 /** Whether a code point may be shown as a rune's symbol (the desktop's OrdClient.symbol rules, by Unicode category). */
 internal expect fun showableSymbol(codePoint: Int): Boolean

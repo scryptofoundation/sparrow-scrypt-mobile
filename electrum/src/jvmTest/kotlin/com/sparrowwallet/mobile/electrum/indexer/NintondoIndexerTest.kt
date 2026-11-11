@@ -93,11 +93,7 @@ class NintondoIndexerTest {
         assertFailsWith<RateLimitedException> { indexer().status() }
         requests.clear()
         assertFailsWith<RateLimitedException> { indexer().inscription(dogeId) }
-        assertEquals(listOf("GET /location/$dogeId"), requests.toList())
-        requests.clear()
-        routes = { _, path -> if(path.startsWith("/location/")) 200 to fixture("nintondo-doge-location.json") else 429 to "" }
-        assertFailsWith<RateLimitedException> { indexer().inscription(dogeId) }
-        assertEquals(listOf("GET /location/$dogeId", "GET /pub/$dogeId/info"), requests.toList())
+        assertEquals(listOf("GET /pub/$dogeId/info"), requests.toList())
         assertTrue(System.nanoTime() - started < 4_000_000_000L, "no Retry-After wait")
     }
 
@@ -115,25 +111,22 @@ class NintondoIndexerTest {
         assertFailsWith<IndexerException> { indexer().inscription(dogeId) }
     }
 
-    /** location on the api host, then info on the search host; both are checked, and an unknown inscription is null. */
-    @Test fun inscriptionReadsLocationThenInfo(): Unit = runBlocking {
-        routes = { _, path ->
-            when(path) {
-                "/location/$dogeId" -> 200 to fixture("nintondo-doge-location.json")
-                "/pub/$dogeId/info" -> 200 to fixture("nintondo-doge-info.json")
-                else -> 404 to "not found"
-            }
-        }
+    /**
+     * Details come from the search host's info alone, which must be for the id asked; an unknown inscription is null.
+     * The api host's location is not asked: the phone finds where an inscription is on the chain, and the details hold no
+     * place.
+     */
+    @Test fun inscriptionReadsInfoOnly(): Unit = runBlocking {
+        routes = { _, path -> if(path == "/pub/$dogeId/info") 200 to fixture("nintondo-doge-info.json") else 404 to "not found" }
         assertEquals(IndexerInscription(dogeId, 180433203L, "text/plain; charset=utf-8", 15L), indexer().inscription(dogeId))
-        assertEquals(listOf("GET /location/$dogeId", "GET /pub/$dogeId/info"), requests.toList())
+        assertEquals(listOf("GET /pub/$dogeId/info"), requests.toList())
         assertNull(indexer().inscription("cd".repeat(32) + "i1"))
 
-        //a malformed location, or info for another inscription, is refused
-        routes = { _, path -> if(path.startsWith("/location/")) 200 to """{"location":"../../x","value":1}""" else 200 to fixture("nintondo-doge-info.json") }
-        assertFailsWith<IndexerException> { indexer().inscription(dogeId) }
+        //info for another inscription is refused
         val other = "ab".repeat(32) + "i0"
-        routes = { _, path -> if(path.startsWith("/location/")) 200 to fixture("nintondo-doge-location.json") else 200 to fixture("nintondo-doge-info.json") }
+        routes = { _, _ -> 200 to fixture("nintondo-doge-info.json") }
         assertFailsWith<IndexerException> { indexer().inscription(other) }
+        assertTrue(requests.none { it.startsWith("GET /location/") })
     }
 
     /** A host that is not Nintondo's api shape has no search host: no request is made for details. */

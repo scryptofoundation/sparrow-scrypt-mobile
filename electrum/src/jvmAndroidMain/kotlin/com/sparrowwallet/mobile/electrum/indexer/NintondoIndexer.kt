@@ -8,8 +8,7 @@ import java.net.URI
 
 /**
  * Reads Nintondo's indexer for Bellscoin, Dogecoin and Pepecoin, like the desktop's NintondoDialect. Its api host
- * (`X-api.nintondo.io`) answers GET /status and GET /find_meta/{txid}i{vout} per output, and GET /location/{id}; the
- * search host (`X-search.nintondo.io/pub`, derived from the api host with the same scheme and port) answers
+ * (`X-api.nintondo.io`) answers GET /status and GET /find_meta/{txid}i{vout} per output; the search host (`X-search.nintondo.io/pub`, derived from the api host with the same scheme and port) answers
  * GET /{id}/info. The content host is not used: the phone reads content from the chain.
  *
  * Nintondo has no rune or dune index, so [runesAware] is always false, and an empty find_meta is unknown (see
@@ -66,15 +65,14 @@ class NintondoIndexer internal constructor(
         return http.read { NintondoParse.meta(outpoint, r.body) }
     }
 
-    /** Where the inscription is now must be well formed (api host), then its number, type and size (search host) must be for [id]. */
+    /**
+     * The inscription's number, type and size from the search host's info, which must be for [id]. The desktop also asks
+     * the api host's /location for the satpoint it sends from; the phone finds where an inscription is on the chain and
+     * [IndexerInscription] holds no place, so that request is not made.
+     */
     override suspend fun inscription(id: String): IndexerInscription? {
         require(OrdParse.INSCRIPTION_ID.matches(id)) { "Invalid inscription id ${id.take(80)}" }
         val search = search ?: throw IndexerException("Not a Nintondo api server: ${http.url}")
-        val location = http.get("/location/$id", JSON)
-        http.rateLimited(location)
-        if(location.status == 404) return null
-        http.requireOk(location)
-        http.read { NintondoParse.location(location.body) } ?: throw IndexerException("${http.url}: Unexpected location from Nintondo indexer")
         val info = search.get("/$id/info", JSON)
         search.rateLimited(info)
         if(info.status == 404) return null

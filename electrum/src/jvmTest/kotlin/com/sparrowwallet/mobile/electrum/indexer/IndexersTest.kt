@@ -37,21 +37,25 @@ class IndexersTest {
     @AfterTest fun stop() = server.stop(0)
 
     private val litecoinGenesis = "12a765e31ffd4059bada1e25190f6e98c99d9714d334efa41a195a7e7e04bfe2"
+    private val litecoinTestnetGenesis = "4966625a4b2851d9fdee139e56211a0d88575f59ed816ff5e6a63deb4e3e29a0"
+    private val bitcoinGenesis = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
     private val dogeGenesis = "1a91e3dace36e2be3bf030a65679fe821aa1d6ef92e7c9902eb318182c355691"
     private val mainnetStatus = """{"chain":"mainnet","height":5,"rune_index":true}"""
 
     private suspend fun open(coin: Coin, network: Network = Network.MAINNET) = Indexers.open(base, coin, network, null)
 
     @Test fun ordIsOpenedFromAStatusWithAChain(): Unit = runBlocking {
-        routes = { _, path -> if(path == "/status") 200 to mainnetStatus else 404 to "" }
+        routes = { _, path -> when(path) { "/status" -> 200 to mainnetStatus; "/blockhash/0" -> 200 to litecoinGenesis; else -> 404 to "" } }
         val indexer = open(Coin.LITECOIN)
         assertIs<OrdIndexer>(indexer)
         assertTrue(indexer.runesAware)
-        //Litecoin is checked by its network name alone, as on the desktop
-        assertEquals(listOf("GET /status"), requests.toList())
+        //Litecoin too is checked by its network name and its genesis block (stricter than the desktop)
+        assertEquals(listOf("GET /status", "GET /blockhash/0"), requests.toList())
         indexer.close()
+        routes = { _, path -> when(path) { "/status" -> 200 to """{"chain":"testnet","rune_index":true}"""; "/blockhash/0" -> 200 to litecoinTestnetGenesis; else -> 404 to "" } }
+        open(Coin.LITECOIN, Network.TESTNET).close()
 
-        //any other coin also by its genesis block: /blockhash/0, quoted or bare
+        //every other coin by its genesis block too: /blockhash/0, quoted or bare
         for(answer in listOf(dogeGenesis, "\"$dogeGenesis\"", "$dogeGenesis\n")) {
             requests.clear()
             routes = { _, path -> when(path) { "/status" -> 200 to mainnetStatus; "/blockhash/0" -> 200 to answer; else -> 404 to "" } }
@@ -87,7 +91,14 @@ class IndexersTest {
         assertEquals(listOf("GET /status", "GET /blockhash/0"), requests.toList())
         //Dogecoin testnet's genesis is not mainnet's
         routes = { _, path -> when(path) { "/status" -> 200 to """{"chain":"testnet"}"""; "/blockhash/0" -> 200 to dogeGenesis; else -> 404 to "" } }
-        assertFailsWith<IndexerException> { open(Coin.DOGECOIN, Network.TESTNET) }
+        assertEquals("Inscriptions server is for another chain (its block 0 is 1a91e3dace36e2be...), not a Dogecoin Testnet server",
+            assertFailsWith<IndexerException> { open(Coin.DOGECOIN, Network.TESTNET) }.message)
+
+        //the chain name must match exactly
+        routes = { _, path -> when(path) { "/status" -> 200 to """{"chain":"MAINNET","rune_index":true}"""; "/blockhash/0" -> 200 to litecoinGenesis; else -> 404 to "" } }
+        assertEquals("Inscriptions server is on MAINNET, wallet is on Mainnet", assertFailsWith<IndexerException> { open(Coin.LITECOIN) }.message)
+        routes = { _, path -> when(path) { "/status" -> 200 to """{"chain":"mainnet "}"""; "/blockhash/0" -> 200 to dogeGenesis; else -> 404 to "" } }
+        assertFailsWith<IndexerException> { open(Coin.DOGECOIN) }
 
         //no first block hash given, or one that is not a hash
         val noHash = "Inscriptions server did not give its first block hash, so it cannot be checked to be a Pepecoin server"
@@ -108,6 +119,42 @@ class IndexersTest {
         assertEquals(listOf("GET /status", "GET /status"), requests.toList())
     }
 
+    /**
+     * Bitcoin's ord (or ord-dogecoin) also says {"chain":"mainnet"}, and Litecoin is where ord's empty answer can clear a
+     * coin: its block 0 must be Litecoin's for the network asked, and when it cannot be read the server is refused.
+     */
+    @Test fun aBitcoinOrdIsRefusedForLitecoin(): Unit = runBlocking {
+        val status = """{"chain":"mainnet","rune_index":true}"""
+        routes = { _, path -> when(path) { "/status" -> 200 to status; "/blockhash/0" -> 200 to bitcoinGenesis; else -> 404 to "" } }
+        assertEquals("Inscriptions server is for another chain (its block 0 is 000000000019d668...), not a Litecoin Mainnet server",
+            assertFailsWith<IndexerException> { open(Coin.LITECOIN) }.message)
+        routes = { _, path -> when(path) { "/status" -> 200 to status; "/blockhash/0" -> 200 to dogeGenesis; else -> 404 to "" } }
+        assertFailsWith<IndexerException> { open(Coin.LITECOIN) }
+        //Litecoin testnet's genesis does not pass for mainnet, nor mainnet's for testnet
+        routes = { _, path -> when(path) { "/status" -> 200 to status; "/blockhash/0" -> 200 to litecoinTestnetGenesis; else -> 404 to "" } }
+        assertFailsWith<IndexerException> { open(Coin.LITECOIN) }
+        routes = { _, path -> when(path) { "/status" -> 200 to """{"chain":"testnet"}"""; "/blockhash/0" -> 200 to litecoinGenesis; else -> 404 to "" } }
+        assertFailsWith<IndexerException> { open(Coin.LITECOIN, Network.TESTNET) }
+
+        //a missing (404 on /blockhash/0 and /block/0), failed or malformed hash cannot prove the chain
+        val noHash = "Inscriptions server did not give its first block hash, so it cannot be checked to be a Litecoin server"
+        for(blockhash in listOf(404 to "", 500 to "oops", 200 to "", 200 to "not a hash", 200 to litecoinGenesis.uppercase(), 200 to litecoinGenesis.take(63))) {
+            requests.clear()
+            routes = { _, path -> when(path) { "/status" -> 200 to status; "/blockhash/0" -> blockhash; else -> 404 to "" } }
+            assertEquals(noHash, assertFailsWith<IndexerException> { open(Coin.LITECOIN) }.message, "$blockhash")
+            assertTrue(requests.none { it.startsWith("POST") || it.contains("/output") }, "$requests")
+        }
+    }
+
+    /** A server's chain name reaches the message shown on Save as printable ASCII only: no bidi overrides or controls. */
+    @Test fun aChainNameIsShownAsPlainText(): Unit = runBlocking {
+        routes = { _, path -> if(path == "/status") 200 to """{"chain":"\u202etenniam\u0007x"}""" else 404 to "" }
+        assertEquals("Inscriptions server is on ?tenniam?x, wallet is on Mainnet", assertFailsWith<IndexerException> { open(Coin.LITECOIN) }.message)
+        routes = { _, path -> if(path == "/status") 200 to """{"network":"Doge\u202ecoin\u200f"}""" else 404 to "" }
+        assertEquals("Inscriptions server is for Doge?coin?, wallet is Pepecoin",
+            assertFailsWith<IndexerException> { Indexers.open(base, Coin.PEPECOIN, Network.MAINNET, null, nintondo = true) }.message)
+    }
+
     /** A refused server is never asked about outputs. */
     @Test fun refusedOpenAsksNothingElse(): Unit = runBlocking {
         routes = { _, path -> when(path) { "/status" -> 200 to mainnetStatus; "/blockhash/0" -> 200 to litecoinGenesis; else -> 200 to "[]" } }
@@ -118,7 +165,7 @@ class IndexersTest {
     /** An ord reader opened for a network keeps checking it each time it reads the status again. */
     @Test fun aServerThatChangesChainIsRefusedLater(): Unit = runBlocking {
         var chain = "mainnet"
-        routes = { _, path -> if(path == "/status") 200 to """{"chain":"$chain","rune_index":true}""" else 200 to "[]" }
+        routes = { _, path -> when(path) { "/status" -> 200 to """{"chain":"$chain","rune_index":true}"""; "/blockhash/0" -> 200 to litecoinGenesis; else -> 200 to "[]" } }
         val indexer = open(Coin.LITECOIN)
         assertTrue(indexer.runesAware)
         chain = "regtest"
@@ -145,6 +192,7 @@ class IndexersTest {
         assertFailsWith<RateLimitedException> { open(Coin.LITECOIN) }
         routes = { _, path -> when(path) { "/status" -> 200 to mainnetStatus; else -> 429 to "" } }
         assertFailsWith<RateLimitedException> { open(Coin.DOGECOIN) }
+        assertFailsWith<RateLimitedException> { open(Coin.LITECOIN) }
         routes = { _, _ -> 503 to "down" }
         val e = assertFailsWith<IndexerException> { open(Coin.LITECOIN) }
         assertTrue(e.message!!.contains("503"), e.message)
@@ -197,8 +245,26 @@ class IndexersTest {
         }
     }
 
-    /** The genesis hashes as the desktop's ChainGenesis has them. */
+    /**
+     * Litecoin's rows are the hashes of the genesis headers compiled into drongo's Network (getGenesisHeaderHex): block
+     * hashes are double SHA-256 in display order. The phone's own chain parameters carry no genesis.
+     */
+    @Test fun litecoinGenesisIsTheHashOfDrongosHeaders() {
+        fun hash(header: String): String {
+            val sha = java.security.MessageDigest.getInstance("SHA-256")
+            val bytes = header.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            return sha.digest(sha.digest(bytes)).reversed().joinToString("") { "%02x".format(it) }
+        }
+        assertEquals(Indexers.genesis(Coin.LITECOIN, Network.MAINNET), hash("010000000000000000000000000000000000000000000000000000000000000000000000" +
+            "d9ced4ed1130f7b7faad9be25323ffafa33232a17c3edf6cfd97bee6bafbdd97b9aa8e4ef0ff0f1ecd513f7c"))
+        assertEquals(Indexers.genesis(Coin.LITECOIN, Network.TESTNET), hash("010000000000000000000000000000000000000000000000000000000000000000000000" +
+            "d9ced4ed1130f7b7faad9be25323ffafa33232a17c3edf6cfd97bee6bafbdd97f60ba158f0ff0f1ee1790400"))
+    }
+
+    /** The other coins' genesis hashes as the desktop's ChainGenesis has them. */
     @Test fun genesisHashes() {
+        assertEquals(litecoinGenesis, Indexers.genesis(Coin.LITECOIN, Network.MAINNET))
+        assertEquals(litecoinTestnetGenesis, Indexers.genesis(Coin.LITECOIN, Network.TESTNET))
         assertEquals(dogeGenesis, Indexers.genesis(Coin.DOGECOIN, Network.MAINNET))
         assertEquals("bb0a78264637406b6360aad926284d544d7049f45189db5664f3c4d07350559e", Indexers.genesis(Coin.DOGECOIN, Network.TESTNET))
         assertEquals("37981c0c48b8d48965376c8a42ece9a0838daadb93ff975cb091f57f8c2a5faa", Indexers.genesis(Coin.PEPECOIN, Network.MAINNET))

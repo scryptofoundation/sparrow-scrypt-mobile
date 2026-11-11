@@ -1,10 +1,12 @@
 package com.sparrowwallet.mobile.electrum.indexer
 
 import com.sparrowwallet.mobile.crypto.AirGappedException
+import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import com.sparrowwallet.mobile.electrum.HttpEndpoint
 import com.sparrowwallet.mobile.electrum.RateLimitedException
 import com.sun.net.httpserver.HttpServer
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -56,7 +58,7 @@ class OrdIndexerTest {
 
     @Test fun statusSaysWhetherRunesAreIndexed(): Unit = runBlocking {
         routes = { _, path, _ -> if(path == "/status") 200 to fixture("status-mainnet.json") else 404 to "" }
-        val indexer = OrdIndexer(base, null)
+        val indexer = OrdIndexer(base, null, Network.MAINNET)
         assertFalse(indexer.runesAware)
         val s = indexer.status()
         assertEquals("mainnet", s.chain)
@@ -78,7 +80,7 @@ class OrdIndexerTest {
                 else -> 404 to ""
             }
         }
-        val indexer = OrdIndexer(base, null)
+        val indexer = OrdIndexer(base, null, Network.MAINNET)
         val outputs = indexer.outputs(asked + asked[3])
         assertEquals(asked.toSet(), outputs.keys)
         assertEquals(listOf(carrier), outputs.getValue(asked[42]).inscriptions)
@@ -91,7 +93,7 @@ class OrdIndexerTest {
     }
 
     @Test fun noOutputsAskedMeansNoRequest(): Unit = runBlocking {
-        assertEquals(emptyMap(), OrdIndexer(base, null).outputs(emptyList()))
+        assertEquals(emptyMap(), OrdIndexer(base, null, Network.MAINNET).outputs(emptyList()))
         assertTrue(requests.isEmpty())
     }
 
@@ -109,7 +111,7 @@ class OrdIndexerTest {
                     else -> 404 to "output not found"
                 }
             }
-            val outputs = OrdIndexer(base, null).outputs(listOf(a, b))
+            val outputs = OrdIndexer(base, null, Network.MAINNET).outputs(listOf(a, b))
             assertEquals(listOf(a.take(64) + "i0"), outputs.getValue(a).inscriptions)
             assertEquals(IndexerOutput.unknown(b), outputs.getValue(b))
             assertEquals(listOf("GET /status", "POST /outputs", "GET /output/$a", "GET /output/$b"), requests.toList(), "$refusal")
@@ -126,7 +128,7 @@ class OrdIndexerTest {
                 else -> 404 to ""
             }
         }
-        val indexer = OrdIndexer(base, null)
+        val indexer = OrdIndexer(base, null, Network.MAINNET)
         assertFalse(indexer.outputs(listOf(a)).getValue(a).indexed)
         assertFalse(indexer.runesAware)
     }
@@ -134,13 +136,13 @@ class OrdIndexerTest {
     @Test fun rateLimitIsNotWaitedOut(): Unit = runBlocking {
         routes = { _, _, _ -> 429 to "Too Many Requests" }
         val started = System.nanoTime()
-        assertFailsWith<RateLimitedException> { OrdIndexer(base, null).outputs(listOf(outpoint(1))) }
+        assertFailsWith<RateLimitedException> { OrdIndexer(base, null, Network.MAINNET).outputs(listOf(outpoint(1))) }
         assertEquals(listOf("GET /status"), requests.toList())
 
         //with the status known, the batch request is the one refused
         requests.clear()
         routes = { _, path, _ -> if(path == "/status") 200 to status else 429 to "Too Many Requests" }
-        val indexer = OrdIndexer(base, null).also { it.status() }
+        val indexer = OrdIndexer(base, null, Network.MAINNET).also { it.status() }
         requests.clear()
         assertFailsWith<RateLimitedException> { indexer.outputs(listOf(outpoint(1))) }
         assertEquals(listOf("GET /status", "POST /outputs"), requests.toList())
@@ -160,20 +162,20 @@ class OrdIndexerTest {
     @Test fun otherErrorsThrow(): Unit = runBlocking {
         val a = outpoint(1)
         routes = { _, path, _ -> if(path == "/status") 503 to "down" else 404 to "" }
-        assertFailsWith<IndexerException> { OrdIndexer(base, null).status() }
+        assertFailsWith<IndexerException> { OrdIndexer(base, null, Network.MAINNET).status() }
 
         routes = { _, path, _ -> if(path == "/status") 200 to status else 500 to "oops" }
-        assertFailsWith<IndexerException> { OrdIndexer(base, null).outputs(listOf(a)) }
-        assertFailsWith<IndexerException> { OrdIndexer(base, null).inscription(inscription) }
+        assertFailsWith<IndexerException> { OrdIndexer(base, null, Network.MAINNET).outputs(listOf(a)) }
+        assertFailsWith<IndexerException> { OrdIndexer(base, null, Network.MAINNET).inscription(inscription) }
 
         routes = { method, path, _ -> if(path == "/status") 200 to status else if(method == "POST") 405 to "" else 500 to "oops" }
-        assertFailsWith<IndexerException> { OrdIndexer(base, null).outputs(listOf(a)) }
+        assertFailsWith<IndexerException> { OrdIndexer(base, null, Network.MAINNET).outputs(listOf(a)) }
 
         routes = { method, path, _ -> if(path == "/status") 200 to status else if(method == "POST") 200 to "[]" else 404 to "" }
-        assertFailsWith<IndexerException> { OrdIndexer(base, null).outputs(listOf(a)) }
+        assertFailsWith<IndexerException> { OrdIndexer(base, null, Network.MAINNET).outputs(listOf(a)) }
 
         routes = { _, _, _ -> 200 to "<html>not ord</html>" }
-        assertFailsWith<IndexerException> { OrdIndexer(base, null).status() }
+        assertFailsWith<IndexerException> { OrdIndexer(base, null, Network.MAINNET).status() }
     }
 
     @Test fun inscriptionIsReadAndMustBeTheOneAsked(): Unit = runBlocking {
@@ -185,14 +187,14 @@ class OrdIndexerTest {
                 else -> 404 to "inscription not found"
             }
         }
-        val indexer = OrdIndexer(base, null)
+        val indexer = OrdIndexer(base, null, Network.MAINNET)
         assertEquals(IndexerInscription(inscription, 26845519L, "text/plain;charset=utf-8", 63L), indexer.inscription(inscription))
         assertNull(indexer.inscription("cd".repeat(32) + "i1"))
         assertFailsWith<IndexerException> { indexer.inscription(other) }
     }
 
     @Test fun badIdIsRejected(): Unit = runBlocking {
-        val indexer = OrdIndexer(base, null)
+        val indexer = OrdIndexer(base, null, Network.MAINNET)
         assertFailsWith<IllegalArgumentException> { indexer.inscription("../status") }
         assertFailsWith<IllegalArgumentException> { indexer.inscription("$inscription/../x") }
         assertFailsWith<IllegalArgumentException> { indexer.outputs(listOf("abc:0")) }
@@ -212,7 +214,7 @@ class OrdIndexerTest {
                 else -> 404 to ""
             }
         }
-        val indexer = OrdIndexer(base, null)
+        val indexer = OrdIndexer(base, null, Network.MAINNET)
         assertTrue(indexer.outputs(asked).values.all { it.indexed })
         assertEquals(listOf("GET /status", "POST /outputs", "POST /outputs"), requests.toList())
         runeIndex = false
@@ -220,6 +222,23 @@ class OrdIndexerTest {
         assertTrue(indexer.outputs(asked).values.none { it.indexed })
         assertFalse(indexer.runesAware)
         assertEquals(listOf("GET /status", "POST /outputs", "POST /outputs"), requests.toList())
+    }
+
+    /**
+     * Two status reads at once: the one that completes last decides runesAware, and a refused or failed read leaves it
+     * false even when an earlier read that said it indexes runes finishes around it.
+     */
+    @Test fun theNewestStatusReadWins(): Unit = runBlocking {
+        for((first, second) in listOf(status to """{"chain":"regtest","rune_index":true}""", status to "<html>", """{"chain":"regtest"}""" to status)) {
+            val answers = java.util.concurrent.atomic.AtomicInteger()
+            routes = { _, path, _ -> if(path == "/status") 200 to (if(answers.getAndIncrement() == 0) first else second) else 404 to "" }
+            val indexer = OrdIndexer(base, null, Network.MAINNET)
+            val a = async { runCatching { indexer.status() } }
+            val b = async { runCatching { indexer.status() } }
+            val (ra, rb) = a.await() to b.await()
+            assertTrue(ra.isSuccess != rb.isSuccess, "$ra, $rb")
+            assertEquals(rb.isSuccess, indexer.runesAware, "$first then $second: $ra, $rb")
+        }
     }
 
     /**
@@ -243,7 +262,7 @@ class OrdIndexerTest {
                 else -> 404 to ""
             }
         }
-        val outputs = OrdIndexer(base, null).outputs(asked)
+        val outputs = OrdIndexer(base, null, Network.MAINNET).outputs(asked)
         assertEquals(asked, outputs.keys.toList())
         assertEquals(listOf(listOf("$txid:0", outpoint(1), outpoint(2))), batches.toList())
         assertEquals(listOf("GET /status", "POST /outputs", "GET /output/$txid:1", "GET /output/$txid:2"), requests.toList())
@@ -261,7 +280,7 @@ class OrdIndexerTest {
                 else -> 404 to ""
             }
         }
-        assertEquals(asked, OrdIndexer(base, null).outputs(asked).keys.toList())
+        assertEquals(asked, OrdIndexer(base, null, Network.MAINNET).outputs(asked).keys.toList())
         assertEquals(listOf("GET /status", "POST /outputs", "GET /output/$txid:0", "GET /output/${outpoint(1)}", "GET /output/${outpoint(2)}",
             "GET /output/$txid:1", "GET /output/$txid:2"), requests.toList())
     }
@@ -269,24 +288,24 @@ class OrdIndexerTest {
     /** Plain http through the proxy could be read or forged by an exit node: refused unless the server is an onion service. */
     @Test fun plainHttpThroughTheProxyIsRefused() {
         val proxy = com.sparrowwallet.mobile.electrum.SocksProxy("127.0.0.1", 9050)
-        val e = assertFailsWith<IndexerException> { OrdIndexer("http://ord.example", proxy) }
+        val e = assertFailsWith<IndexerException> { OrdIndexer("http://ord.example", proxy, Network.MAINNET) }
         assertEquals("This inscriptions indexer uses plain http, which is not safe through a proxy or Tor. Use an https or .onion indexer.", e.message)
-        assertFailsWith<IndexerException> { OrdIndexer("http://ord.example.onion.evil.com", proxy) }
-        OrdIndexer("http://abcdefghijklmnop.onion", proxy).close()
-        OrdIndexer("http://ABCDEFGHIJKLMNOP.ONION:8080", proxy).close()
-        OrdIndexer("https://ordinalslite.com", proxy).close()
+        assertFailsWith<IndexerException> { OrdIndexer("http://ord.example.onion.evil.com", proxy, Network.MAINNET) }
+        OrdIndexer("http://abcdefghijklmnop.onion", proxy, Network.MAINNET).close()
+        OrdIndexer("http://ABCDEFGHIJKLMNOP.ONION:8080", proxy, Network.MAINNET).close()
+        OrdIndexer("https://ordinalslite.com", proxy, Network.MAINNET).close()
         //an own server on the LAN without a proxy
-        OrdIndexer("http://192.168.1.20:8080", null).close()
+        OrdIndexer("http://192.168.1.20:8080", null, Network.MAINNET).close()
         assertTrue(requests.isEmpty())
     }
 
     @Test fun airGappedRefuses(): Unit = runBlocking {
         routes = { _, _, _ -> 200 to status }
         NetworkPolicy.blocked = true
-        val e = assertFailsWith<AirGappedException> { OrdIndexer(base, null).status() }
+        val e = assertFailsWith<AirGappedException> { OrdIndexer(base, null, Network.MAINNET).status() }
         assertEquals("Inscription indexer", e.what)
-        assertFailsWith<AirGappedException> { OrdIndexer(base, null).outputs(listOf(outpoint(1))) }
-        assertFailsWith<AirGappedException> { OrdIndexer(base, null).inscription(inscription) }
+        assertFailsWith<AirGappedException> { OrdIndexer(base, null, Network.MAINNET).outputs(listOf(outpoint(1))) }
+        assertFailsWith<AirGappedException> { OrdIndexer(base, null, Network.MAINNET).inscription(inscription) }
         //Esplora keeps its own name in the message
         assertEquals("Esplora", assertFailsWith<AirGappedException> { HttpEndpoint(base).get("/blocks/tip/height") }.what)
         assertTrue(requests.isEmpty())

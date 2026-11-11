@@ -36,8 +36,10 @@ object Indexers {
     /**
      * The reader for [url], with its chain checked:
      * - a Nintondo host: its status must name this coin and network;
-     * - otherwise GET /status must be ord's JSON naming a chain, which must be [network]; for any coin but Litecoin the
-     *   server's block 0 must also be the coin's genesis block (Litecoin keeps the network check alone, as on the desktop);
+     * - otherwise GET /status must be ord's JSON naming a chain, which must be [network], and the server's block 0 must
+     *   be the coin's genesis block on that network. ord names only the network, so a Bitcoin ord or an ord-dogecoin
+     *   server would pass for Litecoin on its name alone (the desktop checks Litecoin by name only; the phone is stricter,
+     *   as Litecoin is where ord's empty answer can clear a coin);
      * - anything else throws [IndexerException] with [UNSUPPORTED].
      * A wrong chain throws [IndexerException] with the desktop's wording; a 429 throws
      * [com.sparrowwallet.mobile.electrum.RateLimitedException]; plain http through [proxy] is refused before any request.
@@ -58,7 +60,7 @@ object Indexers {
         try {
             //Nintondo's status names the coin and network; ord's names the network, and is refused if it is not ord's
             indexer.status()
-            if(indexer is OrdIndexer && coin != Coin.LITECOIN) requireGenesis(indexer, coin, network)
+            if(indexer is OrdIndexer) requireGenesis(indexer, coin, network)
             return indexer
         } catch(e: Throwable) {
             indexer.close()
@@ -66,7 +68,10 @@ object Indexers {
         }
     }
 
-    /** ord 0.20 names only the network, so for a coin other than Litecoin its block 0 tells the coin (the desktop's checkChain). */
+    /**
+     * ord 0.20 names only the network, so its block 0 tells the coin (the desktop's checkChain, for Litecoin too). A hash
+     * that is missing (no /blockhash/0 and no /block/0), malformed or another chain's refuses the server.
+     */
     private suspend fun requireGenesis(indexer: OrdIndexer, coin: Coin, network: Network) {
         val expected = genesis(coin, network)
             ?: throw IndexerException("Cannot check that this inscriptions server is for ${coin.displayName} ${network.displayName}")
@@ -78,12 +83,17 @@ object Indexers {
     }
 
     /**
-     * Genesis block hashes (display order, lowercase hex) copied from the desktop's ChainGenesis, which cites each chain's
-     * chainparams.cpp. Bellscoin and Junkcoin share one genesis between mainnet and testnet: the genesis names the coin
-     * and the status names the network. Dingocoin shares Dogecoin's genesis and has no inscriptions, so it is not listed;
-     * a coin not listed cannot be checked and is refused.
+     * Genesis block hashes (display order, lowercase hex). Litecoin's are the hashes of the genesis headers compiled into
+     * drongo's Network (the phone's chain parameters carry none); the others are copied from the desktop's ChainGenesis,
+     * which cites each chain's chainparams.cpp. Bellscoin and Junkcoin share one genesis between mainnet and testnet: the
+     * genesis names the coin and the status names the network. Dingocoin shares Dogecoin's genesis and has no
+     * inscriptions, so it is not listed; a coin not listed cannot be checked and is refused.
      */
     internal fun genesis(coin: Coin, network: Network): String? = when(coin) {
+        Coin.LITECOIN -> when(network) {
+            Network.MAINNET -> "12a765e31ffd4059bada1e25190f6e98c99d9714d334efa41a195a7e7e04bfe2"
+            Network.TESTNET -> "4966625a4b2851d9fdee139e56211a0d88575f59ed816ff5e6a63deb4e3e29a0"
+        }
         Coin.DOGECOIN -> when(network) {
             Network.MAINNET -> "1a91e3dace36e2be3bf030a65679fe821aa1d6ef92e7c9902eb318182c355691"
             Network.TESTNET -> "bb0a78264637406b6360aad926284d544d7049f45189db5664f3c4d07350559e"

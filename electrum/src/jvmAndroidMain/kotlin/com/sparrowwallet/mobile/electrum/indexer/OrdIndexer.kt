@@ -4,6 +4,8 @@ import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.electrum.HttpEndpoint
 import com.sparrowwallet.mobile.electrum.RateLimitedException
 import com.sparrowwallet.mobile.electrum.SocksProxy
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import java.io.IOException
@@ -23,18 +25,20 @@ class IndexerException(message: String, cause: Throwable? = null) : IOException(
  * Opened through [Indexers.open], which passes the wallet's [network]: every status read (one per [outputs] call) must
  * name it, and a status that is not ord's means a kind of server the phone does not read.
  */
-class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, private val network: Network? = null) : InscriptionIndexer {
+class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, private val network: Network) : InscriptionIndexer {
     init {
         refusePlainHttpThroughProxy(baseUrl, proxy)
     }
 
     private val http = HttpEndpoint(baseUrl, proxy, label = LABEL)
     @Volatile private var known: IndexerStatus? = null
+    //One status read at a time, so the newest to complete decides [known], and a refused or failed one clears it
+    private val statusLock = Mutex()
 
     /** False until [status] has said the server indexes runes; [outputs] reads the status again on every call. */
     override val runesAware: Boolean get() = known?.runeIndex == true
 
-    override suspend fun status(): IndexerStatus {
+    override suspend fun status(): IndexerStatus = statusLock.withLock {
         //A status read that fails leaves nothing vouching for runes
         known = null
         val r = http.get("/status", JSON)
@@ -48,10 +52,10 @@ class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, priva
             throw IndexerException(Indexers.UNSUPPORTED, e)
         }
         //The desktop's OrdClient.requireChain: an answer for another network is never used
-        if(network != null && status.chain != network.id) {
+        if(status.chain != network.id) {
             throw IndexerException("Inscriptions server is on ${shown(status.chain)}, wallet is on ${network.displayName}")
         }
-        return status.also { known = it }
+        status.also { known = it }
     }
 
     /**
