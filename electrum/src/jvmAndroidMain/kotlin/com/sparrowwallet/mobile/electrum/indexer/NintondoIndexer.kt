@@ -30,14 +30,17 @@ class NintondoIndexer internal constructor(
         searchUrl?.let { refusePlainHttpThroughProxy(it, proxy) }
     }
 
-    private val http = HttpEndpoint(apiUrl, proxy, label = OrdIndexer.LABEL)
-    private val search = searchUrl?.let { HttpEndpoint(it, proxy, label = OrdIndexer.LABEL) }
+    private val http = HttpEndpoint(apiUrl, proxy, label = OrdIndexer.LABEL, usable = { !closed })
+    private val search = searchUrl?.let { HttpEndpoint(it, proxy, label = OrdIndexer.LABEL, usable = { !closed }) }
     private val expectedNetworkName = coin.displayName + if(network == Network.TESTNET) " Testnet" else ""
+    /** Set by [close]: every later call is refused before any request (see [refuseClosed]). */
+    @Volatile private var closed = false
 
     /** Nintondo indexes inscriptions only: an answer showing no runes says nothing about runes or dunes. */
     override val runesAware: Boolean get() = false
 
     override suspend fun status(): IndexerStatus {
+        refuseClosed(closed)
         val r = http.get("/status", JSON)
         http.requireOk(r)
         return try {
@@ -56,7 +59,8 @@ class NintondoIndexer internal constructor(
     }
 
     private suspend fun output(outpoint: String): IndexerOutput {
-        //find_meta takes the outpoint as <txid>i<vout>
+        //find_meta takes the outpoint as <txid>i<vout>; checked before each one, so a reader closed mid-pass stops asking
+        refuseClosed(closed)
         val r = http.get("/find_meta/${outpoint.replace(':', 'i')}", JSON)
         http.rateLimited(r)
         //An output the indexer does not know is unknown, never clean
@@ -73,6 +77,7 @@ class NintondoIndexer internal constructor(
     override suspend fun inscription(id: String): IndexerInscription? {
         require(OrdParse.INSCRIPTION_ID.matches(id)) { "Invalid inscription id ${id.take(80)}" }
         val search = search ?: throw IndexerException("Not a Nintondo api server: ${http.url}")
+        refuseClosed(closed)
         val info = search.get("/$id/info", JSON)
         search.rateLimited(info)
         if(info.status == 404) return null
@@ -80,7 +85,9 @@ class NintondoIndexer internal constructor(
         return search.read { NintondoParse.info(id, info.body) }
     }
 
+    /** Closes the reader for good: the call in progress fails with its connection, and every later one is refused. */
     override fun close() {
+        closed = true
         http.close()
         search?.close()
     }

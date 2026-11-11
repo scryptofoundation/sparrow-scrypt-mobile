@@ -38,7 +38,12 @@ class HttpEndpoint(
     /** The whole request, however slowly the server trickles its answer. */
     private val deadlineMs: Long = timeoutMs * 2L,
     /** What air-gapped mode names when it refuses a request ("Esplora", "Inscription indexer"). */
-    private val label: String = "Esplora"
+    private val label: String = "Esplora",
+    /**
+     * Asked before each request and before a GET is retried on a new connection: false refuses it. An indexer reader
+     * passes its closed flag, so a reader closed mid-request (a settings change) never sends that request again.
+     */
+    private val usable: () -> Boolean = { true }
 ) {
     /** [headers] are keyed by lowercase name; [bytes] is the body as sent, [body] as text. */
     class Response(val status: Int, val bytes: ByteArray, val headers: Map<String, String> = emptyMap()) {
@@ -80,6 +85,10 @@ class HttpEndpoint(
     private val lock = Mutex()
     @Volatile private var conn: Conn? = null
 
+    private fun refuseUnusable() {
+        if(!usable()) throw IOException("$url is closed")
+    }
+
     /** Closes the kept connection, if any. */
     fun close() {
         conn?.let { drop(it) }
@@ -93,12 +102,14 @@ class HttpEndpoint(
     private suspend fun request(method: String, path: String, body: String?, accept: String = "*/*", contentType: String = "text/plain"): Response = lock.withLock {
         withContext(Dispatchers.IO) {
             NetworkPolicy.check(label)
+            refuseUnusable()
             //a broadcast goes on a fresh connection: a kept one may have died while idle, and a POST is never retried
             if(method != "GET") close()
             try {
                 exchange(method, path, body, accept, contentType)
             } catch(e: StaleConnection) {
                 NetworkPolicy.check(label)
+                refuseUnusable()
                 exchange(method, path, body, accept, contentType)
             }
         }

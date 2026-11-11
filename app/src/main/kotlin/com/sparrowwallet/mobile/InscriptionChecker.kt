@@ -11,7 +11,11 @@ import com.sparrowwallet.mobile.electrum.ChainBackend
 import com.sparrowwallet.mobile.electrum.NoRateLimitWait
 import com.sparrowwallet.mobile.electrum.RateLimitedException
 import com.sparrowwallet.mobile.electrum.Utxo
+import com.sparrowwallet.mobile.electrum.indexer.IndexerInscription
 import com.sparrowwallet.mobile.electrum.indexer.IndexerOutput
+import com.sparrowwallet.mobile.electrum.indexer.Indexers
+import com.sparrowwallet.mobile.electrum.SocksProxy
+import com.sparrowwallet.mobile.electrum.WalletScanner
 import com.sparrowwallet.mobile.electrum.indexer.InscriptionIndexer
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun
@@ -42,7 +46,11 @@ data class CheckStatus(val done: Int, val total: Int, val indexerUnreachable: Bo
  * its confirming block gets a result that does not stand. A run saves as it goes, so one that stops or fails keeps
  * what it decided; coins it did not reach keep their stored rows.
  */
-class InscriptionChecker(val store: InscriptionStore) {
+class InscriptionChecker(
+    val store: InscriptionStore,
+    /** How long a run's inscription number lookups may take in all (see [fillNumbers]). */
+    private val numberFillDeadlineMs: Long = NUMBER_FILL_DEADLINE_MS
+) {
     /** Runs Home starts live here, for the process's lifetime, so leaving the screen does not cancel them. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = ConcurrentHashMap<String, Job>()
@@ -209,8 +217,8 @@ class InscriptionChecker(val store: InscriptionStore) {
             }
             val keep = keptBlocks(backend, kept, asked, utxos.map { it.height }.toSet())
 
-            //The indexer, once for every coin; no answer at all unless it answered for each one
-            val outputs = if(indexer != null && coins.isNotEmpty()) indexerOutputs(indexer, coins.map { it.outpoint })
+            //The indexer, once for every coin and within the run's time; no answer at all unless it answered for each one
+            val outputs = if(indexer != null && coins.isNotEmpty()) indexerOutputs(indexer, coins.map { it.outpoint }, timeUp)
                 ?.let { usable(it, coin, indexer) } else null
             if(indexer != null && coins.isNotEmpty() && outputs == null) {
                 unreachable = true
@@ -218,14 +226,15 @@ class InscriptionChecker(val store: InscriptionStore) {
             status.value = CheckStatus(0, coins.size, unreachable, running = true)
             val overCap = outputs.orEmpty().filterValues { it.inscriptions.size > MAX_INDEXER_IDS }.keys
             val answers = outputs.orEmpty().mapValues { (_, output) -> capped(output).toAnswer() }
-            val answeredBy = if(outputs != null) indexerSource else null
+            //The source goes to the run only when some answer can be used (see [stamped] for the rows it was not used for)
+            val answeredBy = if(outputs.orEmpty().values.any { it.indexed }) indexerSource else null
             val listed = utxos.associateBy { "${it.txHash}:${it.txPos}" }
-            val stamp = { check: InscriptionCheck -> stamped(check, listed, positions, outputs, overCap) }
 
             val chain = "${coin.id}:${network.id}"
             val shown = flow(key)
-            return locks.computeIfAbsent(chain) { Mutex() }.withLock {
+            val checks = locks.computeIfAbsent(chain) { Mutex() }.withLock {
                 val stored = results(walletName)
+                val stamp = { check: InscriptionCheck -> stamped(check, stored[check.outpoint], listed, positions, outputs, overCap) }
                 //What the file holds: the stored rows, each replaced by the coin's new result once decided
                 val saved = LinkedHashMap(stored)
                 val report = { done: Int, total: Int ->
@@ -247,10 +256,7 @@ class InscriptionChecker(val store: InscriptionStore) {
                             }
                         }, report
                     )
-                    var checks: Map<String, InscriptionCheck> = run.mapValuesTo(LinkedHashMap()) { (_, decided) -> stamp(decided) }
-                    if(indexer != null && outputs != null) {
-                        checks = fillNumbers(indexer, checks, timeUp)
-                    }
+                    val checks: Map<String, InscriptionCheck> = run.mapValuesTo(LinkedHashMap()) { (_, decided) -> stamp(decided) }
                     //The final save drops spent coins
                     if(checks != saved || memory[key]?.checked != true || memory[key]?.blocks != keep) {
                         persist(walletName, key, epoch, checks, keep)
@@ -260,19 +266,29 @@ class InscriptionChecker(val store: InscriptionStore) {
                     shown.value = null
                 }
             }
+            //Numbers are display only: asked outside the chain's lock, so another wallet's check is not held up
+            if(indexer == null || outputs == null) {
+                return checks
+            }
+            val filled = fillNumbers(indexer, checks, timeUp)
+            if(filled != checks) {
+                persist(walletName, key, epoch, filled, keep)
+            }
+            return filled
         } finally {
             status.value = status.value?.copy(running = false)
         }
     }
 
     /**
-     * The indexer's answer for every outpoint, or null for none at all: any failure but cancellation, or an answer that
-     * leaves out an outpoint or gives one under another's key (half an answer set is never mixed into a run).
+     * The indexer's answer for every outpoint, or null for none at all: any failure but cancellation, the run's time
+     * running out ([timeUp]) before it answers, or an answer that leaves out an outpoint or gives one under another's key
+     * (half an answer set is never mixed into a run).
      */
-    private suspend fun indexerOutputs(indexer: InscriptionIndexer, outpoints: List<String>): Map<String, IndexerOutput>? {
+    private suspend fun indexerOutputs(indexer: InscriptionIndexer, outpoints: List<String>, timeUp: () -> Boolean): Map<String, IndexerOutput>? {
         val asked = outpoints.distinct()
         val answered = try {
-            indexer.outputs(asked)
+            stopWhenTimeUp(timeUp) { indexer.outputs(asked) } ?: return null
         } catch(e: CancellationException) {
             throw e
         } catch(e: Exception) {
@@ -285,14 +301,15 @@ class InscriptionChecker(val store: InscriptionStore) {
     }
 
     /**
-     * The answers as the run may use them (rule 2 of the Send rules, applied to the check too): on a chain with rune-like
-     * tokens, an indexed answer that carries nothing counts only from a runes-aware reader ([runesAwareIndexer]: Litecoin's
-     * ord with its rune index). Elsewhere (an ord server on Dogecoin, Pepecoin or Junkcoin cannot see dunes) it goes in as
-     * not indexed, so it never clears a "may carry runes" row or stands over a trace cut short; the trace decides. Answers
-     * that carry something always go in. Read after the reader's outputs call, which refreshes its rune index flag.
+     * The answers as the run may use them (rule 2 of the Send rules, applied to the check too): an indexed answer that
+     * carries nothing counts only from a runes-aware reader ([runesAwareIndexer]: Litecoin's ord with its rune index).
+     * Elsewhere (an ord server on Dogecoin, Pepecoin, Junkcoin or Bellscoin cannot see dunes or other tokens, nor vouch for
+     * a "may carry runes" row) it goes in as not indexed, so it never clears a "may carry runes" row, an indexer's mark,
+     * or stands over a trace cut short; the trace decides. Answers that carry something always go in. Read after the
+     * reader's outputs call, which refreshes its rune index flag.
      */
     private fun usable(outputs: Map<String, IndexerOutput>, coin: Coin, indexer: InscriptionIndexer): Map<String, IndexerOutput> {
-        if(!ChainRules.hasRuneLikeTokens(coin) || runesAwareIndexer(coin, indexer)) {
+        if(runesAwareIndexer(coin, indexer)) {
             return outputs
         }
         return outputs.mapValues { (outpoint, output) -> if(output.indexed && !output.carries) IndexerOutput.unknown(outpoint) else output }
@@ -305,30 +322,69 @@ class InscriptionChecker(val store: InscriptionStore) {
 
     /**
      * A row with this run's facts about its coin: its value and address position from the coin list, and the indexer's
-     * rune balances (null when no indexer answered for it this run, or it was not indexed). A coin whose answer went over
-     * the inscription cap is marked as carrying, whatever path decided its row.
+     * rune balances. [before] is the coin's stored row from before this run.
+     *
+     * An indexer's mark that the coin carries something ([InscriptionCheck.runes], which Send holds; or an Inscribed row an
+     * indexer decided) stays on the coin until an indexed answer for it says otherwise: with no usable indexed answer
+     * this run (indexer down, Built-in, a run cut short, an answer that cannot vouch) the stored mark and rune balances
+     * are carried over for the same coin (its block unchanged, or not known on either side). Only an indexed "nothing"
+     * that may vouch (see [usable]) clears it; off Litecoin no answer may, so the mark stays until the coin is spent. An
+     * indexed answer that carries marks a row that is neither Inscribed nor marked (an indexer and chain disagreement
+     * over inscriptions only), and so does an answer over the inscription cap.
+     *
+     * The row names an indexer as its source only when an answer was used for it: a new row decided with no usable answer
+     * (a held row of a run cut short) is Built-in. A stored row standing unchanged keeps its source.
      */
-    private fun stamped(check: InscriptionCheck, listed: Map<String, Utxo>, positions: Map<String, Pair<Int, Int>>,
+    private fun stamped(check: InscriptionCheck, before: InscriptionCheck?, listed: Map<String, Utxo>, positions: Map<String, Pair<Int, Int>>,
                         outputs: Map<String, IndexerOutput>?, overCap: Set<String>): InscriptionCheck {
         val outpoint = check.outpoint
         val position = positions[outpoint]
-        val stamped = check.copy(
-            runeList = outputs?.get(outpoint)?.takeIf { it.indexed }?.runes,
+        val answer = outputs?.get(outpoint)?.takeIf { it.indexed }
+        val sameCoin = before != null && (before.blockHash == null || check.blockHash == null || before.blockHash == check.blockHash)
+        var row = check.copy(
+            runeList = answer?.runes ?: before?.runeList?.takeIf { sameCoin },
             value = listed[outpoint]?.value,
             chain = position?.first,
             index = position?.second
         )
-        return if(outpoint in overCap && !stamped.runes) stamped.copy(runes = true) else stamped
+        val cleared = answer != null && !answer.carries
+        if(!row.runes && !cleared && sameCoin && indexerMark(before!!, row)) {
+            row = row.copy(runes = true)
+        }
+        if(!row.runes && answer != null && answer.carries && row.verdict != Verdict.INSCRIBED) {
+            row = row.copy(runes = true)
+        }
+        if(!row.runes && outpoint in overCap) {
+            row = row.copy(runes = true)
+        }
+        val unchanged = before != null && check.copy(mwebPegOut = before.mwebPegOut) == before
+        if(answer == null && row.source in INDEXER_SOURCES && !unchanged) {
+            row = row.copy(source = InscriptionCheck.Source.BUILT_IN)
+        }
+        return row
     }
 
     /**
-     * Fills the indexer's number into Inscribed rows' finds that have none, at most [MAX_NUMBER_CALLS] calls; an answer
-     * for another id or without a number leaves it unset. The first failure, or [timeUp], ends the fills for this run.
-     * Cancellation is rethrown. Only the number changes: nothing here decides a coin.
+     * Whether the stored row [before] carries an indexer's mark that [row] must take over: its runes mark always; an
+     * Inscribed result an indexer gave only when [row] is no longer Inscribed (an Inscribed row is held as it is, and
+     * marking it would keep it from ever standing).
+     */
+    private fun indexerMark(before: InscriptionCheck, row: InscriptionCheck): Boolean =
+        before.runes || (before.verdict == Verdict.INSCRIBED && before.source in INDEXER_SOURCES && row.verdict != Verdict.INSCRIBED)
+
+    /** One inscription lookup's answer, so a lookup that gives up at the deadline is told from one that found nothing. */
+    private class Looked(val inscription: IndexerInscription?)
+
+    /**
+     * Fills the indexer's number into Inscribed rows' finds that have none, at most [MAX_NUMBER_CALLS] calls and within
+     * [numberFillDeadlineMs] in all; an answer for another id or without a number leaves it unset. The first failure, the
+     * deadline, or [timeUp], ends the fills for this run. Cancellation is rethrown. Only the number changes: nothing here
+     * decides a coin.
      */
     private suspend fun fillNumbers(indexer: InscriptionIndexer, checks: Map<String, InscriptionCheck>,
                                     timeUp: () -> Boolean): Map<String, InscriptionCheck> {
         val filled = LinkedHashMap(checks)
+        val deadline = System.nanoTime() + numberFillDeadlineMs * 1_000_000L
         var calls = 0
         var stopped = false
         for((outpoint, check) in checks) {
@@ -337,19 +393,24 @@ class InscriptionChecker(val store: InscriptionStore) {
             val found = check.found.toMutableList()
             for((i, f) in check.found.withIndex()) {
                 if(f.number != null || !INSCRIPTION_ID.matches(f.inscriptionId)) continue
-                if(calls >= MAX_NUMBER_CALLS || timeUp()) {
+                val left = (deadline - System.nanoTime()) / 1_000_000L
+                if(calls >= MAX_NUMBER_CALLS || left <= 0 || timeUp()) {
                     stopped = true
                     break
                 }
                 calls++
-                val answer = try {
-                    indexer.inscription(f.inscriptionId)
+                val looked = try {
+                    kotlinx.coroutines.withTimeoutOrNull(left) { Looked(indexer.inscription(f.inscriptionId)) }
                 } catch(e: CancellationException) {
                     throw e
                 } catch(e: Exception) {
+                    null
+                }
+                if(looked == null) {
                     stopped = true
                     break
                 }
+                val answer = looked.inscription
                 if(answer != null && answer.id == f.inscriptionId && answer.number != null) {
                     found[i] = f.copy(number = answer.number)
                 }
@@ -416,6 +477,12 @@ class InscriptionChecker(val store: InscriptionStore) {
         /** The most inscription number lookups one run makes. */
         const val MAX_NUMBER_CALLS = 20
 
+        /** How long one run's number lookups may take in all. */
+        const val NUMBER_FILL_DEADLINE_MS = 30_000L
+
+        /** The sources that name an indexer. */
+        private val INDEXER_SOURCES = setOf(InscriptionCheck.Source.PUBLIC, InscriptionCheck.Source.YOUR_OWN)
+
         /** An ord inscription id, as the indexer readers take it; any other (an unnamed "?" find) is not looked up. */
         private val INSCRIPTION_ID = Regex("[0-9a-f]{64}i[0-9]{1,10}")
     }
@@ -465,6 +532,36 @@ class InscriptionChecker(val store: InscriptionStore) {
     private fun claim(key: String) {
         synchronized(saveLock) {
             claimedEpochs[key] = epochs[key] ?: 0
+        }
+    }
+}
+
+/**
+ * A wallet's check run with the indexer the [setting] names: lists [listed]'s coins with their address positions, opens
+ * the reader with [open] (in the app [Indexers.open], through the coin's [proxy]; none on Built-in, before the notice is
+ * answered, or [airGapped]; within the run's time), lends it to [readers] so a settings change closes it mid-run, runs
+ * [InscriptionChecker.check], and closes it. Home's runs and the background worker's both come here.
+ */
+internal suspend fun checkWithIndexer(checker: InscriptionChecker, walletName: String, coin: Coin, network: Network, backend: ChainBackend,
+                                      listed: List<WalletScanner.ChainUtxo>, setting: InscriptionSetting, proxy: SocksProxy?,
+                                      airGapped: Boolean, readers: IndexerReaders, deeper: Set<String> = emptySet(),
+                                      timeUp: () -> Boolean = { false },
+                                      open: suspend (String, Coin, Network, SocksProxy?) -> InscriptionIndexer =
+                                          { url, c, n, p -> Indexers.open(url, c, n, p) }): Map<String, InscriptionCheck> {
+    val utxos = listed.map { it.utxo }
+    val positions = listed.associate { "${it.utxo.txHash}:${it.utxo.txPos}" to (it.chain to it.index) }
+    val generation = readers.generation
+    val picked = if(utxos.isEmpty() || !ChainRules.covers(coin)) CheckIndexer(null, null)
+        else openCheckIndexer(setting, coin, network, proxy, airGapped, timeUp, open)
+    //A reader opened across a settings change is closed at once: the run goes on as if it could not be reached
+    val reader = picked.reader?.takeIf { readers.lend(it, generation) }
+    try {
+        return checker.check(walletName, coin, network, backend, utxos, deeper, timeUp, indexer = reader,
+            indexerSource = picked.source, positions = positions)
+    } finally {
+        reader?.let {
+            readers.giveBack(it)
+            it.close()
         }
     }
 }

@@ -173,4 +173,25 @@ class NintondoIndexerTest {
         assertFailsWith<AirGappedException> { indexer().inscription(dogeId) }
         assertTrue(requests.isEmpty())
     }
+
+    /** A closed reader asks nothing more: every call is refused, with no request made. */
+    @Test fun aClosedReaderRefuses(): Unit = runBlocking {
+        val indexer = indexer()
+        indexer.close()
+        assertFailsWith<java.io.IOException> { indexer.status() }
+        assertFailsWith<java.io.IOException> { indexer.outputs(listOf(outpoint(1))) }
+        assertFailsWith<java.io.IOException> { indexer.inscription(dogeId) }
+        assertTrue(requests.isEmpty())
+    }
+
+    /**
+     * Closed mid-pass (a settings change, say Tor turned on): the outpoints not yet asked are never requested over the
+     * old route, and the call fails.
+     */
+    @Test fun aReaderClosedMidPassStopsAsking(): Unit = runBlocking {
+        val indexer = indexer()
+        routes = { _, path -> if(path.startsWith("/find_meta/")) { indexer.close(); 200 to "[]" } else 404 to "" }
+        assertFailsWith<java.io.IOException> { indexer.outputs((1..5).map { outpoint(it) }) }
+        assertEquals(1, requests.size, requests.toString())
+    }
 }

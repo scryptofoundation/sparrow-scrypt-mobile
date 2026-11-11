@@ -13,6 +13,7 @@ import com.sparrowwallet.mobile.crypto.track.Piece
 import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -319,7 +320,14 @@ class InscriptionChecksTest {
         var asked = 0
         var closed = false
         override suspend fun status() = IndexerStatus("mainnet", runesAware, 1)
-        override suspend fun outputs(outpoints: List<String>): Map<String, IndexerOutput> { asked++; return answer(outpoints) }
+        override suspend fun outputs(outpoints: List<String>): Map<String, IndexerOutput> {
+            if(closed) throw IndexerException("closed")
+            asked++
+            val answered = answer(outpoints)
+            //a reader closed while it was asking refuses what is left, as the real readers do
+            if(closed) throw IndexerException("closed")
+            return answered
+        }
         override suspend fun inscription(id: String): IndexerInscription? = error("Send never asks for an inscription")
         override fun close() { closed = true }
     }
@@ -407,11 +415,14 @@ class InscriptionChecksTest {
         val coins = listOf(utxo(a), utxo(b))
         var reader = SendIndexer { asked -> asked.associateWith { if(it == b) IndexerOutput(it, true, listOf("ab".repeat(32) + "i0"), emptyMap(), false) else nothing(it) } }
         var refuse: Exception? = IndexerException("Inscriptions server is for another chain (its block 0 is 0000...), not a Litecoin Mainnet server")
-        val readers = IndexerReaders { _, _, _, _ -> refuse?.let { throw it }; reader }
+        var clock = 1_000_000L
+        val readers = IndexerReaders(now = { clock }) { _, _, _, _ -> refuse?.let { throw it }; reader }
         fun all(answers: IndexerReaders.Answers) = coins.map { answers.of("${it.txHash}:${it.txPos}") }
 
         assertEquals(listOf(null, null), all(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, coins, false)))
         refuse = null
+        //a failed open is remembered for a minute
+        clock += IndexerReaders.FAILED_OPEN_MS + 1
         assertEquals(listOf(false, true), all(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, coins, false)))
         assertEquals(1, reader.asked)
         //confirmed coins' answers are kept while the reader works
@@ -431,6 +442,7 @@ class InscriptionChecksTest {
 
         //clearing (a server settings change) drops the answers too
         refuse = null
+        clock += IndexerReaders.FAILED_OPEN_MS + 1
         reader = SendIndexer { asked -> asked.associateWith { nothing(it) } }
         readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, coins, false)
         readers.clear()
@@ -596,5 +608,144 @@ class InscriptionChecksTest {
             assertEquals("2 coins (0.0002 LTC) held back: they may carry an inscription or tokens. Held coins are not moved into MWEB.",
                 heldCopy(2, "0.0002 LTC", inscribed = false, included = included, pegIn = true))
         }
+    }
+
+    private fun ready(vararg outpoints: String) = outpoints.associateWith { utxo(it) }
+
+    private suspend fun send(readers: IndexerReaders, setting: InscriptionSetting, coin: Coin, ready: Map<String, com.sparrowwallet.mobile.electrum.Utxo>,
+                             results: Map<String, InscriptionCheck>?, writesTokens: Boolean = false, local: Boolean = true,
+                             proxy: com.sparrowwallet.mobile.electrum.SocksProxy? = null, airGapped: Boolean = false): CoinStates =
+        classifySend(ready, results, coin, Network.MAINNET, setting, proxy, readers, airGapped, { writesTokens }, { local })
+
+    /**
+     * Review finding 2: Bellscoin in Send is as it was at 65b6d30 with an ord indexer of your own (its clean stands, and a
+     * runestone in the creating transaction does not turn it into "carries"), except that Nintondo's empty list is now no
+     * answer.
+     */
+    @Test
+    fun bellscoinInSendIsAsBefore(): Unit = runBlocking {
+        val a = clean.outpoint
+        val ord = SendIndexer(runesAware = true) { asked -> asked.associateWith { nothing(it) } }
+        val readers = IndexerReaders { _, _, _, _ -> ord }
+        val own = InscriptionSetting.YourOwn("https://ord.example")
+        assertEquals(CoinState.CLEAN, send(readers, own, Coin.BELLSCOIN, ready(a), null, writesTokens = true).state(a))
+        assertEquals(CoinState.HELD, send(readers, own, Coin.BELLSCOIN, ready(a),
+            mapOf(a to check(Verdict.UNCHECKED, reason = CheckPolicy.MAY_CARRY_RUNES))).state(a))
+        val nintondo = SendIndexer(runesAware = false) { asked -> asked.associateWith { IndexerOutput.unknown(it) } }
+        assertEquals(CoinState.HELD, send(IndexerReaders { _, _, _, _ -> nintondo }, InscriptionSetting.Public, Coin.BELLSCOIN, ready(a), null).state(a))
+    }
+
+    /** Review finding 3: a settings change in the middle of a Send pass closes its reader: no answer, never Clean. */
+    @Test
+    fun aSettingsChangeMidPassIsNoAnswer(): Unit = runBlocking {
+        val a = clean.outpoint
+        lateinit var readers: IndexerReaders
+        val reader = SendIndexer { asked -> readers.clear(); asked.associateWith { nothing(it) } }
+        readers = IndexerReaders { _, _, _, _ -> reader }
+        val answers = readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        assertNull(answers.of(a))
+        assertTrue(reader.closed)
+    }
+
+    /** Review finding 4: a failed open is remembered for a minute, so a dead indexer is not reopened on every Send. */
+    @Test
+    fun aFailedOpenIsRememberedForAMinute(): Unit = runBlocking {
+        val a = clean.outpoint
+        var clock = 0L
+        var opens = 0
+        val readers = IndexerReaders(now = { clock }) { _, _, _, _ -> opens++; throw java.io.IOException("timed out") }
+        repeat(3) { assertNull(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false).of(a)) }
+        assertEquals(1, opens)
+        clock += IndexerReaders.FAILED_OPEN_MS + 1
+        readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        assertEquals(2, opens)
+        //a settings change forgets it
+        readers.clear()
+        readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        assertEquals(3, opens)
+    }
+
+    /** Review finding 4: a Send pass has one overall deadline; past it the rest is no answer and the reader is dropped. */
+    @Test
+    fun aSendPassHasADeadline(): Unit = runBlocking {
+        val a = clean.outpoint
+        val slow = SendIndexer { kotlinx.coroutines.awaitCancellation() }
+        val readers = IndexerReaders(passDeadlineMs = 200) { _, _, _, _ -> slow }
+        val answers = kotlinx.coroutines.withTimeout(10_000) {
+            readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        }
+        assertNull(answers.of(a))
+        assertTrue(slow.closed)
+    }
+
+    /** Review finding 4: opening one indexer does not hold up another (a lock per reader, not one for all). */
+    @Test
+    fun readersForDifferentIndexersDoNotWaitOnEachOther(): Unit = runBlocking {
+        val a = clean.outpoint
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val readers = IndexerReaders { url, _, _, _ ->
+            if(url.contains("slow")) gate.await()
+            SendIndexer { asked -> asked.associateWith { nothing(it) } }
+        }
+        val slow = async(kotlinx.coroutines.Dispatchers.Default) {
+            readers.answers(InscriptionSetting.YourOwn("https://slow.example"), Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        }
+        kotlinx.coroutines.delay(100)
+        val fast = kotlinx.coroutines.withTimeout(10_000) {
+            readers.answers(InscriptionSetting.YourOwn("https://fast.example"), Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        }
+        assertEquals(false, fast.of(a))
+        gate.complete(Unit)
+        assertEquals(false, slow.await().of(a))
+    }
+
+    /** Review finding 8: Send's path asks no indexer on Built-in, before the notice is answered, or air-gapped. */
+    @Test
+    fun sendWiringAsksNothingOnBuiltIn(): Unit = runBlocking {
+        val a = clean.outpoint
+        var opens = 0
+        val readers = IndexerReaders { _, _, _, _ -> opens++; SendIndexer { error("asked") } }
+        val unanswered = InscriptionSetting.parse(null, hasPublic = true, defaultChoice = null)
+        assertEquals(CoinState.HELD, send(readers, InscriptionSetting.BuiltIn, Coin.LITECOIN, ready(a), null).state(a))
+        assertEquals(CoinState.HELD, send(readers, unanswered, Coin.LITECOIN, ready(a), null).state(a))
+        assertEquals(CoinState.HELD, send(readers, InscriptionSetting.Public, Coin.LITECOIN, ready(a), null, airGapped = true).state(a))
+        assertEquals(0, opens)
+    }
+
+    /** Review finding 8: Send opens its reader with the coin's proxy, which comes from the coin's server settings. */
+    @Test
+    fun sendUsesTheCoinsProxy(): Unit = runBlocking {
+        val a = clean.outpoint
+        val tor = com.sparrowwallet.mobile.electrum.SocksProxy("127.0.0.1", 9050)
+        val seen = ArrayList<com.sparrowwallet.mobile.electrum.SocksProxy?>()
+        val readers = IndexerReaders { _, _, _, proxy -> seen.add(proxy); SendIndexer { asked -> asked.associateWith { nothing(it) } } }
+        send(readers, InscriptionSetting.Public, Coin.LITECOIN, ready(a), null, proxy = tor)
+        assertEquals(listOf<com.sparrowwallet.mobile.electrum.SocksProxy?>(tor), seen)
+        val server = WalletRepository.ServerSettings("h", 1, true, false, true, "127.0.0.1", 9050)
+        assertEquals(tor, indexerProxy(server))
+        assertNull(indexerProxy(server.copy(useProxy = false)))
+        assertNull(indexerProxy(null))
+    }
+
+    /** Review finding 8: saving the inscription setting, the notice's answer or a coin's server settings clears the readers. */
+    @Test
+    fun settingChangesClearTheReaders(): Unit = runBlocking {
+        val a = clean.outpoint
+        val made = ArrayList<SendIndexer>()
+        val readers = IndexerReaders { _, _, _, _ -> SendIndexer { asked -> asked.associateWith { nothing(it) } }.also { made.add(it) } }
+        suspend fun open() = readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        val prefs = InscriptionPrefs(FakePrefs()) { readers.clear() }
+        open()
+        prefs.save(Coin.LITECOIN, Network.MAINNET, InscriptionSetting.BuiltIn)
+        assertTrue(made.last().closed, "inscription setting")
+        open()
+        prefs.saveDefaultChoice(InscriptionSetting.PUBLIC)
+        assertTrue(made.last().closed, "notice answer")
+        open()
+        val raw = FakePrefs()
+        writeServerSettings(raw, Coin.LITECOIN, Network.MAINNET, WalletRepository.ServerSettings("h", 1, true, false, true, "127.0.0.1", 9050)) { readers.clear() }
+        assertTrue(made.last().closed, "server settings")
+        assertEquals(true, raw.getBoolean("${ServerKeys.prefix(Coin.LITECOIN, Network.MAINNET)}.useProxy", false))
+        assertEquals(3, made.size)
     }
 }

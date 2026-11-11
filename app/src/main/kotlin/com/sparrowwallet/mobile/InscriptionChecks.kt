@@ -14,6 +14,8 @@ import com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import java.net.URI
 
@@ -73,7 +75,11 @@ sealed interface InscriptionSetting {
  * The stored inscription settings: one per coin and network (`inscriptions.<coin>.<network>`), and the notice's answer
  * (`inscriptions.default`, "public" or "builtin", absent until answered) for coins with nothing saved.
  */
-internal class InscriptionPrefs(private val prefs: SharedPreferences) {
+internal class InscriptionPrefs(
+    private val prefs: SharedPreferences,
+    /** Told after each save (the app clears the indexer readers, so the new choice takes effect at once). */
+    private val changed: () -> Unit = {}
+) {
     private fun stored(coin: Coin, network: Network): String? = prefs.getString(key(coin, network), null)
 
     private fun hasPublic(coin: Coin, network: Network): Boolean = Indexers.publicUrl(coin, network) != null
@@ -83,6 +89,7 @@ internal class InscriptionPrefs(private val prefs: SharedPreferences) {
 
     fun save(coin: Coin, network: Network, setting: InscriptionSetting) {
         prefs.edit().putString(key(coin, network), setting.stored()).apply()
+        changed()
     }
 
     /** The notice's answer, or null until it is answered (an unknown value counts as unanswered). */
@@ -92,6 +99,7 @@ internal class InscriptionPrefs(private val prefs: SharedPreferences) {
     fun saveDefaultChoice(choice: String) {
         require(choice == InscriptionSetting.PUBLIC || choice == InscriptionSetting.BUILT_IN) { "Unknown choice $choice" }
         prefs.edit().putString(DEFAULT_KEY, choice).apply()
+        changed()
     }
 
     /**
@@ -266,17 +274,29 @@ fun sendAnswer(output: IndexerOutput?, outpoint: String, runesAware: Boolean, ru
 /**
  * The indexer readers Send asks, one per coin, network, URL and proxy, each obtained only through [open] (in the app
  * [Indexers.open], whose chain check, block 0 included, is what makes its answers usable). A reader is opened at most
- * once per pass and asked once per pass for all the coins it has no kept answer for. Answers for confirmed coins are
- * kept with their reader (an unspent output's answer does not change), and only consulted once the reader is in hand.
- * Any failure (the open, or the reader's call: unreachable, 429, wrong chain, unreadable) is no answer for every coin
- * of the pass, and drops and closes the reader with its kept answers. Cancellation is rethrown.
+ * once per pass (under a lock of its own key, so a slow indexer never holds up another) and asked once per pass for all
+ * the coins it has no kept answer for, within [passDeadlineMs] overall. Answers for confirmed coins are kept with their
+ * reader (an unspent output's answer does not change), and only consulted once the reader is in hand. Any failure (the
+ * open, or the reader's call: unreachable, 429, wrong chain, unreadable, closed, past the deadline) is no answer for
+ * every coin of the pass, and drops and closes the reader with its kept answers. A failed open is remembered for
+ * [FAILED_OPEN_MS], so a dead indexer is not tried again on every Send. Cancellation is rethrown.
+ *
+ * [clear] (a server or inscription setting changed) closes every reader, the ones lent to a check run included
+ * ([lend]): a closed reader refuses every further call, so a pass or a run still going asks nothing more over the old
+ * URL or proxy.
  */
 internal class IndexerReaders(
+    private val now: () -> Long = System::currentTimeMillis,
+    private val passDeadlineMs: Long = SEND_PASS_DEADLINE_MS,
     private val open: suspend (String, Coin, Network, SocksProxy?) -> InscriptionIndexer =
         { url, coin, network, proxy -> Indexers.open(url, coin, network, proxy) }
 ) {
-    /** One pass's answers by outpoint (see [sendAnswer]), and whether its clean answers are runes-aware. */
-    class Answers(val byOutpoint: Map<String, Boolean?>, val runesAware: Boolean) {
+    /**
+     * One pass's answers by outpoint (see [sendAnswer]), whether its clean answers are runes-aware, and whether a clean
+     * one also rules out tokens written by the coin's creating transaction ([tokensIndexed]: any reader but Nintondo's,
+     * as before part B; see [indexerCarries]).
+     */
+    class Answers(val byOutpoint: Map<String, Boolean?>, val runesAware: Boolean, val tokensIndexed: Boolean = true) {
         fun of(outpoint: String): Boolean? = byOutpoint[outpoint]
     }
 
@@ -284,7 +304,12 @@ internal class IndexerReaders(
 
     private val readers = java.util.concurrent.ConcurrentHashMap<Key, InscriptionIndexer>()
     private val kept = java.util.concurrent.ConcurrentHashMap<Key, java.util.concurrent.ConcurrentHashMap<String, IndexerOutput>>()
-    private val openLock = kotlinx.coroutines.sync.Mutex()
+    private val locks = java.util.concurrent.ConcurrentHashMap<Key, kotlinx.coroutines.sync.Mutex>()
+    private val failedAt = java.util.concurrent.ConcurrentHashMap<Key, Long>()
+    private val lent = java.util.concurrent.ConcurrentHashMap.newKeySet<InscriptionIndexer>()
+    /** Bumped by [clear], so a reader opened before a settings change and lent after it is closed at once. */
+    @Volatile var generation = 0
+        private set
 
     /**
      * The answers for [coins] under [setting]: none, with nothing contacted, on Built-in, with no indexer for the coin,
@@ -293,9 +318,10 @@ internal class IndexerReaders(
     suspend fun answers(setting: InscriptionSetting, coin: Coin, network: Network, proxy: SocksProxy?,
                         coins: List<com.sparrowwallet.mobile.electrum.Utxo>, airGapped: Boolean = NetworkPolicy.blocked): Answers {
         val outpoints = coins.map { "${it.txHash}:${it.txPos}" }
-        val none = Answers(outpoints.associateWith { null }, false)
-        val url = setting.url(coin, network) ?: return none
-        if(airGapped || coins.isEmpty()) return none
+        val url = setting.url(coin, network)
+        val tokensIndexed = url == null || !Indexers.isNintondo(url)
+        val none = Answers(outpoints.associateWith { null }, false, tokensIndexed)
+        if(url == null || airGapped || coins.isEmpty()) return none
         val key = Key(coin, network, url, proxy)
         val reader = reader(key) ?: return none
         val keptHere = kept.computeIfAbsent(key) { java.util.concurrent.ConcurrentHashMap() }
@@ -303,10 +329,13 @@ internal class IndexerReaders(
         val outputs = HashMap<String, IndexerOutput>()
         if(ask.isNotEmpty()) {
             val answered = try {
-                reader.outputs(ask)
+                kotlinx.coroutines.withTimeoutOrNull(passDeadlineMs) { reader.outputs(ask) }
             } catch(e: CancellationException) {
                 throw e
             } catch(e: Exception) {
+                null
+            }
+            if(answered == null) {
                 drop(key, reader)
                 return none
             }
@@ -321,18 +350,32 @@ internal class IndexerReaders(
             if(outpoint in outputs && output != null && output.indexed && outpoint in confirmed) keptHere[outpoint] = output
             byOutpoint[outpoint] = sendAnswer(output, outpoint, runesAware, runeLike)
         }
-        return Answers(byOutpoint, runesAware)
+        return Answers(byOutpoint, runesAware, tokensIndexed)
     }
 
-    /** The open reader for [key], opening it once if needed; null (and nothing kept for it) when it cannot be opened. */
-    private suspend fun reader(key: Key): InscriptionIndexer? = openLock.withLock {
+    /**
+     * The open reader for [key], opening it once if needed; null (and nothing kept for it) when it cannot be opened, or
+     * when it failed to open less than [FAILED_OPEN_MS] ago.
+     */
+    private suspend fun reader(key: Key): InscriptionIndexer? = locks.computeIfAbsent(key) { kotlinx.coroutines.sync.Mutex() }.withLock {
         readers[key]?.let { return@withLock it }
+        failedAt[key]?.let { if(now() - it < FAILED_OPEN_MS) return@withLock null }
         kept.remove(key)
+        val gen = generation
         try {
-            open(key.url, key.coin, key.network, key.proxy).also { readers[key] = it }
+            val reader = open(key.url, key.coin, key.network, key.proxy)
+            failedAt.remove(key)
+            if(gen != generation) {
+                //the settings changed while it opened
+                reader.close()
+                return@withLock null
+            }
+            readers[key] = reader
+            reader
         } catch(e: CancellationException) {
             throw e
         } catch(e: Exception) {
+            failedAt[key] = now()
             null
         }
     }
@@ -340,17 +383,68 @@ internal class IndexerReaders(
     private fun drop(key: Key, reader: InscriptionIndexer) {
         if(readers.remove(key, reader)) {
             kept.remove(key)
-            reader.close()
         }
+        runCatching { reader.close() }
     }
 
-    /** Closes every reader and forgets every answer: server settings or the inscription setting changed. */
+    /**
+     * Registers a check run's own reader, opened when [generation] was [openedAt], so [clear] closes it too. Returns false
+     * (and closes it) when the settings changed since it was opened.
+     */
+    fun lend(reader: InscriptionIndexer, openedAt: Int): Boolean {
+        lent.add(reader)
+        if(openedAt != generation) {
+            lent.remove(reader)
+            runCatching { reader.close() }
+            return false
+        }
+        return true
+    }
+
+    fun giveBack(reader: InscriptionIndexer) {
+        lent.remove(reader)
+    }
+
+    /** Closes every reader (the lent ones too) and forgets every answer and failure: a server or inscription setting changed. */
     fun clear() {
-        val open = ArrayList(readers.values)
+        generation++
+        val open = ArrayList(readers.values) + ArrayList(lent)
         readers.clear()
         kept.clear()
+        failedAt.clear()
         open.forEach { runCatching { it.close() } }
     }
+
+    companion object {
+        /** How long a failed open is remembered before the indexer is tried again. */
+        const val FAILED_OPEN_MS = 60_000L
+
+        /** The most one Send pass waits for its indexer answers in all (Nintondo is asked one coin at a time). */
+        const val SEND_PASS_DEADLINE_MS = 30_000L
+    }
+}
+
+/** The coin's server proxy, which indexer requests take too; null when none is set. */
+fun indexerProxy(server: WalletRepository.ServerSettings?): SocksProxy? =
+    server?.takeIf { it.useProxy }?.let { SocksProxy(it.proxyHost, it.proxyPort) }
+
+/**
+ * Send's decision for each of the [ready] coins (outpoint to coin): the effective [setting]'s indexer asked once through
+ * [readers] (nothing on Built-in or [airGapped]), then [classifyCoins] with the wallet's stored [results] (ignored for a
+ * coin the check does not cover). [writesTokens] reads whether the coin's creating transaction writes a runestone or
+ * dunestone; [localMayCarry] is the local guess, asked only when nothing else decides.
+ */
+internal suspend fun classifySend(ready: Map<String, com.sparrowwallet.mobile.electrum.Utxo>, results: Map<String, InscriptionCheck>?,
+                                  coin: Coin, network: Network, setting: InscriptionSetting, proxy: SocksProxy?,
+                                  readers: IndexerReaders, airGapped: Boolean,
+                                  writesTokens: suspend (com.sparrowwallet.mobile.electrum.Utxo) -> Boolean,
+                                  localMayCarry: suspend (com.sparrowwallet.mobile.electrum.Utxo) -> Boolean): CoinStates {
+    val covered = com.sparrowwallet.mobile.crypto.track.ChainRules.covers(coin)
+    val answers = readers.answers(setting, coin, network, proxy, ready.values.toList(), airGapped)
+    return classifyCoins(ready.keys.toList(), if(covered) results else null, covered,
+        com.sparrowwallet.mobile.crypto.track.ChainRules.hasRuneLikeTokens(coin), answers.runesAware,
+        { op -> indexerCarries(answers.of(op), answers.tokensIndexed) { writesTokens(ready.getValue(op)) } }
+    ) { op -> localMayCarry(ready.getValue(op)) }
 }
 
 /**
@@ -362,21 +456,54 @@ class CheckIndexer(val reader: InscriptionIndexer?, val source: InscriptionCheck
 /**
  * Opens the check run's reader for [setting] with [open] (in the app [Indexers.open]): none on Built-in, with no indexer
  * for the coin, or when [airGapped], contacting nothing. A failed open (unreachable, wrong chain, an unsupported kind,
- * plain http through the proxy, a malformed URL) is no reader, not an error. Cancellation is rethrown.
+ * plain http through the proxy, a malformed URL) is no reader, not an error; so is an open still going when [timeUp]
+ * says the run's time is up (a reader that arrives after that is closed). Cancellation is rethrown.
  */
 suspend fun openCheckIndexer(setting: InscriptionSetting, coin: Coin, network: Network, proxy: SocksProxy?, airGapped: Boolean,
+                             timeUp: () -> Boolean = { false },
                              open: suspend (String, Coin, Network, SocksProxy?) -> InscriptionIndexer): CheckIndexer {
     val url = setting.url(coin, network) ?: return CheckIndexer(null, null)
     if(airGapped) return CheckIndexer(null, null)
     val source = if(setting is InscriptionSetting.YourOwn) InscriptionCheck.Source.YOUR_OWN else InscriptionCheck.Source.PUBLIC
     return try {
-        CheckIndexer(open(url, coin, network, proxy), source)
+        CheckIndexer(stopWhenTimeUp(timeUp, late = { it.close() }) { open(url, coin, network, proxy) }, source)
     } catch(e: CancellationException) {
         throw e
     } catch(e: Exception) {
         CheckIndexer(null, source)
     }
 }
+
+/**
+ * Runs [block] until it ends or [timeUp] says the time is up (asked before it starts and about four times a second), then
+ * gives up on it: null, and the block cancelled, or with [late] left to finish and its result handed to [late]. The block runs apart from
+ * the caller, so giving up does not wait for a request it is blocked in. Its failure, cancellation included, is rethrown.
+ */
+internal suspend fun <T> stopWhenTimeUp(timeUp: () -> Boolean, late: ((T) -> Unit)? = null, block: suspend () -> T): T? {
+    if(timeUp()) return null
+    val scope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.currentCoroutineContext().minusKey(kotlinx.coroutines.Job) + kotlinx.coroutines.SupervisorJob())
+    val work = scope.async { block() }
+    var handedOver = false
+    try {
+        while(!work.isCompleted) {
+            if(timeUp()) {
+                if(late != null) {
+                    //left to finish, so what it opens is closed rather than lost
+                    handedOver = true
+                    work.invokeOnCompletion { cause -> if(cause == null) scope.launch { runCatching { late(work.await()) } } }
+                }
+                return null
+            }
+            kotlinx.coroutines.withTimeoutOrNull(TIME_UP_POLL_MS) { work.join() }
+        }
+        return work.await()
+    } finally {
+        if(!handedOver && !work.isCompleted) work.cancel()
+    }
+}
+
+private const val TIME_UP_POLL_MS = 250L
 
 /** What Send may do with a ready coin: spend it freely, hold it back, or use it last with a warning. */
 enum class CoinState { CLEAN, HELD, UNCHECKED }

@@ -310,4 +310,31 @@ class OrdIndexerTest {
         assertEquals("Esplora", assertFailsWith<AirGappedException> { HttpEndpoint(base).get("/blocks/tip/height") }.what)
         assertTrue(requests.isEmpty())
     }
+
+    /** A closed reader asks nothing more: every call is refused, with no request made. */
+    @Test fun aClosedReaderRefuses(): Unit = runBlocking {
+        routes = { _, path, _ -> if(path == "/status") 200 to status else 404 to "" }
+        val indexer = OrdIndexer(base, null, Network.MAINNET)
+        indexer.close()
+        assertFailsWith<java.io.IOException> { indexer.status() }
+        assertFailsWith<java.io.IOException> { indexer.outputs(listOf(outpoint(1))) }
+        assertFailsWith<java.io.IOException> { indexer.inscription(inscription) }
+        assertTrue(requests.isEmpty())
+    }
+
+    /** Closed mid-pass (a settings change): the outputs not yet asked are never requested, and the call fails. */
+    @Test fun aReaderClosedMidPassStopsAsking(): Unit = runBlocking {
+        lateinit var indexer: OrdIndexer
+        routes = { method, path, _ ->
+            when {
+                path == "/status" -> 200 to status
+                method == "POST" -> 404 to ""
+                path.startsWith("/output/") -> { indexer.close(); 200 to clean(path.removePrefix("/output/").take(64)) }
+                else -> 404 to ""
+            }
+        }
+        indexer = OrdIndexer(base, null, Network.MAINNET)
+        assertFailsWith<java.io.IOException> { indexer.outputs((1..3).map { outpoint(it) }) }
+        assertEquals(1, requests.count { it.startsWith("GET /output/") }, requests.toString())
+    }
 }

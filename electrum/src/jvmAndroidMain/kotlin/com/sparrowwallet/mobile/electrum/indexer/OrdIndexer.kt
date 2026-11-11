@@ -30,8 +30,10 @@ class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, priva
         refusePlainHttpThroughProxy(baseUrl, proxy)
     }
 
-    private val http = HttpEndpoint(baseUrl, proxy, label = LABEL)
+    private val http = HttpEndpoint(baseUrl, proxy, label = LABEL, usable = { !closed })
     @Volatile private var known: IndexerStatus? = null
+    /** Set by [close]: every later call is refused before any request (see [refuseClosed]). */
+    @Volatile private var closed = false
     //One status read at a time, so the newest to complete decides [known], and a refused or failed one clears it
     private val statusLock = Mutex()
 
@@ -41,6 +43,7 @@ class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, priva
     override suspend fun status(): IndexerStatus = statusLock.withLock {
         //A status read that fails leaves nothing vouching for runes
         known = null
+        refuseClosed(closed)
         val r = http.get("/status", JSON)
         http.rateLimited(r)
         //A server without ord's JSON status (ord 0.5's bare OK, a web page, no /status at all) is not one the phone reads
@@ -64,11 +67,13 @@ class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, priva
      * gives none, or gives something that is not a hash; a 429 throws.
      */
     internal suspend fun genesis(): String? {
+        refuseClosed(closed)
         val r = http.get("/blockhash/0", JSON)
         http.rateLimited(r)
         val hash = when(r.status) {
             200 -> r.body.trim()
             404 -> {
+                refuseClosed(closed)
                 val block = http.get("/block/0", JSON)
                 http.rateLimited(block)
                 if(block.status != 200) return null
@@ -93,6 +98,7 @@ class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, priva
         val (batched, single) = asked.partition { txids.add(it.substringBefore(':')) }
         val found = HashMap<String, IndexerOutput>()
         for(batch in batched.chunked(BATCH_SIZE)) {
+            refuseClosed(closed)
             val r = http.post("/outputs", JsonArray(batch.map { JsonPrimitive(it) }).toString(), JSON, JSON)
             http.rateLimited(r)
             if(r.status == 404 || r.status == 405) {
@@ -108,6 +114,7 @@ class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, priva
     }
 
     private suspend fun output(outpoint: String, runeIndex: Boolean): IndexerOutput {
+        refuseClosed(closed)
         val r = http.get("/output/$outpoint", JSON)
         http.rateLimited(r)
         //An output the indexer does not know is unknown, never clean
@@ -118,6 +125,7 @@ class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, priva
 
     override suspend fun inscription(id: String): IndexerInscription? {
         require(OrdParse.INSCRIPTION_ID.matches(id)) { "Invalid inscription id ${id.take(80)}" }
+        refuseClosed(closed)
         val r = http.get("/inscription/$id", JSON)
         http.rateLimited(r)
         if(r.status == 404) return null
@@ -127,7 +135,11 @@ class OrdIndexer internal constructor(baseUrl: String, proxy: SocksProxy?, priva
         return inscription
     }
 
-    override fun close() = http.close()
+    /** Closes the reader for good: the call in progress fails with its connection, and every later one is refused. */
+    override fun close() {
+        closed = true
+        http.close()
+    }
 
     companion object {
         const val LABEL = "Inscription indexer"
@@ -150,6 +162,18 @@ internal fun refusePlainHttpThroughProxy(baseUrl: String, proxy: SocksProxy?) {
 /** An onion service: Tor carries it end to end, so plain http to it is not exposed to an exit node. */
 private fun isOnion(url: String): Boolean =
     runCatching { URI(url.trim()).host?.lowercase(Locale.ROOT)?.endsWith(".onion") == true }.getOrDefault(false)
+
+/**
+ * A closed reader asks nothing more. [HttpEndpoint.close] only drops the kept connection (the endpoint reopens one on the
+ * next request, and closes it itself before each POST), so each reader keeps its own flag and checks it before every
+ * request: a settings change (a proxy turned on, another URL) closes the reader, and a pass still going cannot reach the
+ * old URL or the old route again.
+ */
+internal fun refuseClosed(closed: Boolean) {
+    if(closed) throw IndexerException(CLOSED)
+}
+
+internal const val CLOSED = "The inscriptions indexer reader was closed"
 
 /** A 429 fails at once and is never waited out. */
 internal fun HttpEndpoint.rateLimited(r: HttpEndpoint.Response) {
