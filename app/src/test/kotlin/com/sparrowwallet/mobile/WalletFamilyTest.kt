@@ -41,6 +41,25 @@ class WalletFamilyTest {
     }
 
     @Test
+    fun alsoSyncGivesWhatEachLayerSyncsBesideItsOwnWallet() {
+        val all = WalletFamily(pub, priv, tap)
+        // Public: its Taproot wallet (the Private wallet keeps its own handling, through the MWEB counterpart)
+        assertEquals(listOf(tap), all.alsoSync(Layer.PUBLIC))
+        assertEquals(listOf(tap), WalletFamily(pub, taproot = tap).alsoSync(Layer.PUBLIC))
+        assertEquals(emptyList(), WalletFamily(pub, private = priv).alsoSync(Layer.PUBLIC))
+        assertEquals(emptyList(), WalletFamily(pub).alsoSync(Layer.PUBLIC))
+        // Private: the linked public wallet, as today; Taproot: nothing
+        assertEquals(listOf(pub), all.alsoSync(Layer.PRIVATE))
+        assertEquals(emptyList(), all.alsoSync(Layer.TAPROOT))
+        assertEquals(emptyList(), WalletFamily(pub, taproot = tap).alsoSync(Layer.TAPROOT))
+        // never a wallet outside the family, never the shown one
+        for(layer in all.layers) {
+            val members = all.layers.mapNotNull { all.member(it) }
+            assertTrue(all.alsoSync(layer).all { it in members && it != all.member(layer) }, layer.name)
+        }
+    }
+
+    @Test
     fun layersFollowTheMembers() {
         assertEquals(listOf(Layer.PUBLIC), WalletFamily(pub).layers)
         assertEquals(listOf(Layer.PUBLIC, Layer.PRIVATE), WalletFamily(pub, private = priv).layers)

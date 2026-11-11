@@ -342,6 +342,7 @@ private fun App(repo: WalletRepository) {
                     onDetails = { screen = Screen.Details(s) },
                     onSwitch = { screen = Screen.WalletList },
                     layers = s.family.layers, layer = s.layer, onLayer = { l -> s.shown(l)?.let { screen = it } },
+                    alsoSync = s.family.alsoSync(s.layer).map { it.data },
                     onTx = { tx -> screen = Screen.TxDetail(s, tx) },
                     onSyncLabels = { pairing -> screen = Screen.LabelSync(s, pairing) },
                     onSignPsbt = { screen = Screen.SignPsbt(s) },
@@ -1164,6 +1165,7 @@ private fun HomeScreen(
     layers: List<Layer> = listOf(Layer.PUBLIC),
     layer: Layer = Layer.PUBLIC,
     onLayer: (Layer) -> Unit = {},
+    alsoSync: List<VaultData> = emptyList(),
     onTx: (TxInfo) -> Unit = {},
     onSyncLabels: (SparrowLink.Pairing) -> Unit = {},
     onSignPsbt: (() -> Unit)? = null,
@@ -1225,6 +1227,20 @@ private fun HomeScreen(
         repo.startInscriptionCheck(data, account)
     }
 
+    // The family's other wallets this Home also syncs (the Taproot wallet beside a public wallet), each after this
+    // wallet's own sync and check, on its own: its result or failure changes nothing shown here, and its balance reaches
+    // the wallet list's total through its session unlock. Its inscription check takes the same path as this wallet's.
+    val alsoAccounts = remember(alsoSync) { java.util.concurrent.ConcurrentHashMap<VaultData, HDKey>() }
+    suspend fun syncAlong(other: VaultData) {
+        runCatching {
+            val otherAccount = alsoAccounts[other] ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                repo.accountKey(other)
+            }.also { alsoAccounts[other] = it }
+            repo.syncWallet(other, otherAccount)
+            otherAccount
+        }.onSuccess { repo.startInscriptionCheck(other, it) }
+    }
+
     // One wallet in two layers: refresh syncs the public side and the linked private
     // side together, and the status line reports both.
     fun refresh(checkAfter: Boolean = true) {
@@ -1246,6 +1262,7 @@ private fun HomeScreen(
                     privateResult?.fold({ mwebStateText(it) }, { "unavailable — ${it.message}" })
                 )
                 if(checkAfter && publicResult.isSuccess) checkInscriptions()
+                if(checkAfter) for(other in alsoSync) scope.launch { syncAlong(other) }
             } finally {
                 syncing = false
             }
@@ -1260,7 +1277,7 @@ private fun HomeScreen(
         val privateFresh = linkedData == null || linkedData.scriptType != "MWEB" ||
             (repo.cachedMwebSnapshot(linkedData)?.initialScanComplete == true &&
                 repo.mwebSnapshotFresh(linkedData, maxAge))
-        if(!repo.snapshotFresh(data, maxAge) || !privateFresh) refresh()
+        if(!repo.snapshotFresh(data, maxAge) || !privateFresh || alsoSync.any { !repo.snapshotFresh(it, maxAge) }) refresh()
         if(linkedData != null && linkedData.scriptType == "MWEB") {
             // keep the combined balance filling in while the private coin scan runs
             var polls = 0

@@ -39,6 +39,17 @@ data class WalletFamily(val public: Member, val private: Member? = null, val tap
         Layer.TAPROOT -> null
     }
 
+    /**
+     * The members a sync of the Home on [layer] also syncs, besides the shown wallet: the Taproot wallet for the Public
+     * layer (its Private wallet keeps its own handling, as the MWEB counterpart), the public wallet for the Private
+     * layer (as before), nothing for the Taproot layer. Only members of this family.
+     */
+    fun alsoSync(layer: Layer): List<Member> = when(layer) {
+        Layer.PUBLIC -> listOfNotNull(taproot)
+        Layer.PRIVATE -> listOfNotNull(private?.let { public })
+        Layer.TAPROOT -> emptyList()
+    }
+
     /** The family with each member named in [updated] holding its new vault (labels saved, labels synced). */
     fun withData(updated: Map<String, VaultData>): WalletFamily {
         fun Member.updated() = updated[name]?.let { copy(data = it) } ?: this
