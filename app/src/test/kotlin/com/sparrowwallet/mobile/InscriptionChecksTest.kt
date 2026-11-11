@@ -1,7 +1,14 @@
 package com.sparrowwallet.mobile
 
 import com.sparrowwallet.mobile.crypto.Coin
+import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.track.ChainRules
+import com.sparrowwallet.mobile.electrum.indexer.IndexerException
+import com.sparrowwallet.mobile.electrum.indexer.IndexerInscription
+import com.sparrowwallet.mobile.electrum.indexer.IndexerOutput
+import com.sparrowwallet.mobile.electrum.indexer.IndexerStatus
+import com.sparrowwallet.mobile.electrum.indexer.InscriptionIndexer
+import com.sparrowwallet.mobile.electrum.indexer.RuneBalance
 import com.sparrowwallet.mobile.crypto.track.Piece
 import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy
@@ -9,6 +16,7 @@ import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -272,22 +280,209 @@ class InscriptionChecksTest {
      */
     @Test
     fun onlyLitecoinsOrdIndexerIsRunesAware(): Unit = runBlocking {
-        val ord = "http://192.168.1.5:8080"
+        val ord = SendIndexer(runesAware = true) { asked -> asked.associateWith { nothing(it) } }
         assertTrue(runesAwareIndexer(Coin.LITECOIN, ord))
         for(coin in listOf(Coin.DOGECOIN, Coin.PEPECOIN, Coin.JUNKCOIN, Coin.BELLSCOIN)) {
             assertFalse(runesAwareIndexer(coin, ord), coin.toString())
         }
-        assertFalse(runesAwareIndexer(Coin.LITECOIN, "https://doge-mainnet-api.nintondo.io"))
+        //Nintondo's reader never says it indexes runes; nor does an ord without its rune index
+        assertFalse(runesAwareIndexer(Coin.LITECOIN, SendIndexer(runesAware = false) { emptyMap() }))
         assertFalse(runesAwareIndexer(Coin.LITECOIN, null))
 
         val a = clean.outpoint
         val runes = check(Verdict.UNCHECKED, reason = CheckPolicy.MAY_CARRY_RUNES)
-        suspend fun state(coin: Coin, row: InscriptionCheck) = classifyCoins(listOf(a), mapOf(a to row), covered = true,
-            ChainRules.hasRuneLikeTokens(coin), runesAwareIndexer(coin, ord), { false }, { true }).state(a)
+        //Send's whole path: the reader's answer for the coin, then the classification
+        suspend fun state(coin: Coin, row: InscriptionCheck?, local: Boolean = true): CoinState {
+            val readers = IndexerReaders { _, _, _, _ -> ord }
+            val answers = readers.answers(InscriptionSetting.YourOwn("https://ord.example"), coin, Network.MAINNET, null, listOf(utxo(a)), airGapped = false)
+            return classifyCoins(listOf(a), row?.let { mapOf(a to it) }, covered = true, ChainRules.hasRuneLikeTokens(coin),
+                answers.runesAware, { answers.of(it) }, { local }).state(a)
+        }
         assertEquals(CoinState.HELD, state(Coin.DOGECOIN, clean))
         assertEquals(CoinState.HELD, state(Coin.DOGECOIN, runes))
         assertEquals(CoinState.CLEAN, state(Coin.LITECOIN, clean))
         assertEquals(CoinState.CLEAN, state(Coin.LITECOIN, runes))
+        //a never-checked wallet: an ord "clean" off Litecoin does not override the postage-value hold either
+        for(coin in listOf(Coin.DOGECOIN, Coin.PEPECOIN, Coin.JUNKCOIN)) {
+            assertEquals(CoinState.HELD, state(coin, null), coin.toString())
+        }
+        assertEquals(CoinState.CLEAN, state(Coin.LITECOIN, null))
+    }
+
+    private fun nothing(outpoint: String) = IndexerOutput(outpoint, true, emptyList(), emptyMap(), false)
+
+    private fun utxo(outpoint: String, height: Int = 100) =
+        com.sparrowwallet.mobile.electrum.Utxo(outpoint.substringBefore(':'), outpoint.substringAfter(':').toInt(), height, 1_000)
+
+    /** An indexer reader for the Send tests; counts its calls. */
+    private class SendIndexer(override var runesAware: Boolean = true, var answer: suspend (List<String>) -> Map<String, IndexerOutput>) : InscriptionIndexer {
+        var asked = 0
+        var closed = false
+        override suspend fun status() = IndexerStatus("mainnet", runesAware, 1)
+        override suspend fun outputs(outpoints: List<String>): Map<String, IndexerOutput> { asked++; return answer(outpoints) }
+        override suspend fun inscription(id: String): IndexerInscription? = error("Send never asks for an inscription")
+        override fun close() { closed = true }
+    }
+
+    /** The display fields a new results file carries (rune balances, value, address position) decide nothing in Send. */
+    @Test
+    fun newFieldsDecideNothing() {
+        val extras = { row: InscriptionCheck -> row.copy(runeList = emptyMap(), value = 546, chain = 0, index = 3) }
+        val rows = listOf(clean, check(Verdict.UNCHECKED, reason = "budget"), check(Verdict.CLEAN, blockHash = null),
+            check(Verdict.UNCHECKED, reason = CheckPolicy.MAY_CARRY_RUNES), check(Verdict.INSCRIBED))
+        for(row in rows) for(answer in listOf(null, false, true)) for(local in listOf(false, true)) for(runesIndexed in listOf(false, true)) {
+            assertEquals(coinState(row, answer, local, true, true, runesIndexed), coinState(extras(row), answer, local, true, true, runesIndexed), "$row")
+        }
+    }
+
+    /** Send reads an indexer output: carries is true, an unindexed or mismatched one is no answer, and only an indexed nothing is false. */
+    @Test
+    fun sendAnswerMapping() {
+        val a = clean.outpoint
+        fun answer(output: IndexerOutput?, runesAware: Boolean = true, runeLike: Boolean = true) = sendAnswer(output, a, runesAware, runeLike)
+        assertEquals(true, answer(IndexerOutput(a, true, listOf("ab".repeat(32) + "i0"), emptyMap(), false)))
+        assertEquals(true, answer(IndexerOutput(a, true, emptyList(), mapOf("A" to RuneBalance("1", 0, null)), false)))
+        assertEquals(true, answer(IndexerOutput(a, true, emptyList(), emptyMap(), true)))
+        //carries even when it says it is not indexed: never read as clean
+        assertEquals(true, answer(IndexerOutput(a, false, emptyList(), emptyMap(), true)))
+        assertNull(answer(IndexerOutput.unknown(a)))
+        assertNull(answer(null))
+        assertNull(answer(nothing("cc".repeat(32) + ":0")), "an entry for another outpoint")
+        assertEquals(false, answer(nothing(a)))
+        //a clean that is not runes-aware on a rune-like chain is no answer; on Bellscoin it stands
+        assertNull(answer(nothing(a), runesAware = false, runeLike = true))
+        assertEquals(false, answer(nothing(a), runesAware = false, runeLike = false))
+    }
+
+    /** Built-in (and a setting before the notice is answered, and air-gapped mode) asks no indexer in Send. */
+    @Test
+    fun sendAsksNoIndexerOnBuiltIn(): Unit = runBlocking {
+        var opened = 0
+        val readers = IndexerReaders { _, _, _, _ -> opened++; SendIndexer { error("asked") } }
+        val a = clean.outpoint
+        val unanswered = InscriptionSetting.parse(null, hasPublic = true, defaultChoice = null)
+        for(setting in listOf(InscriptionSetting.BuiltIn, unanswered)) {
+            val answers = readers.answers(setting, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), airGapped = false)
+            assertNull(answers.of(a))
+            assertFalse(answers.runesAware)
+            //so the classification falls to the results and the local rule
+            assertEquals(CoinState.HELD, classifyCoins(listOf(a), null, true, true, answers.runesAware, { answers.of(it) }, { true }).state(a))
+        }
+        for(setting in listOf(InscriptionSetting.Public, InscriptionSetting.YourOwn("https://ord.example"))) {
+            assertNull(readers.answers(setting, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), airGapped = true).of(a))
+        }
+        assertEquals(0, opened)
+    }
+
+    /**
+     * Nintondo answers an output it lists nothing for as unknown (indexed false): no answer in Send, so the coin falls to
+     * its check and the local rule. On Bellscoin, where an indexer's clean could free a coin, such a coin is not freed.
+     */
+    @Test
+    fun anEmptyNintondoAnswerDoesNotFreeABellscoinCoin(): Unit = runBlocking {
+        val a = clean.outpoint
+        val nintondo = SendIndexer(runesAware = false) { asked -> asked.associateWith { IndexerOutput.unknown(it) } }
+        val readers = IndexerReaders { _, _, _, _ -> nintondo }
+        val answers = readers.answers(InscriptionSetting.Public, Coin.BELLSCOIN, Network.MAINNET, null, listOf(utxo(a)), airGapped = false)
+        assertEquals(1, nintondo.asked)
+        assertNull(answers.of(a))
+        val runeLike = ChainRules.hasRuneLikeTokens(Coin.BELLSCOIN)
+        assertFalse(runeLike)
+        //never checked, flagged by the local rule: held (a "clean" would have freed it)
+        assertEquals(CoinState.HELD, classifyCoins(listOf(a), null, true, runeLike, answers.runesAware, { answers.of(it) }, { true }).state(a))
+        assertEquals(CoinState.CLEAN, classifyCoins(listOf(a), null, true, runeLike, false, { false }, { true }).state(a), "the contrast")
+        //checked but not yet Clean: Unchecked stays Unchecked, flagged stays held
+        val budget = check(Verdict.UNCHECKED, reason = "budget")
+        assertEquals(CoinState.HELD, classifyCoins(listOf(a), mapOf(a to budget), true, runeLike, answers.runesAware, { answers.of(it) }, { true }).state(a))
+    }
+
+    /**
+     * A reader that cannot be opened (wrong chain, block 0 mismatch) answers nothing for every coin, and answers cached
+     * before a failure are not reused once the reader has failed.
+     */
+    @Test
+    fun aReaderThatFailsToOpenAnswersNothing(): Unit = runBlocking {
+        val a = clean.outpoint
+        val b = "dd".repeat(32) + ":1"
+        val coins = listOf(utxo(a), utxo(b))
+        var reader = SendIndexer { asked -> asked.associateWith { if(it == b) IndexerOutput(it, true, listOf("ab".repeat(32) + "i0"), emptyMap(), false) else nothing(it) } }
+        var refuse: Exception? = IndexerException("Inscriptions server is for another chain (its block 0 is 0000...), not a Litecoin Mainnet server")
+        val readers = IndexerReaders { _, _, _, _ -> refuse?.let { throw it }; reader }
+        fun all(answers: IndexerReaders.Answers) = coins.map { answers.of("${it.txHash}:${it.txPos}") }
+
+        assertEquals(listOf(null, null), all(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, coins, false)))
+        refuse = null
+        assertEquals(listOf(false, true), all(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, coins, false)))
+        assertEquals(1, reader.asked)
+        //confirmed coins' answers are kept while the reader works
+        assertEquals(listOf(false, true), all(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, coins, false)))
+        assertEquals(1, reader.asked)
+
+        //the reader fails for a new coin: no answers at all this pass, and it is dropped and closed
+        val old = reader
+        reader = SendIndexer { throw IndexerException("Inscriptions server is on regtest, wallet is on Mainnet") }
+        old.answer = { throw IndexerException("Inscriptions server is on regtest, wallet is on Mainnet") }
+        val withNew = coins + utxo("ee".repeat(32) + ":0")
+        assertTrue(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, withNew, false).byOutpoint.values.all { it == null })
+        assertTrue(old.closed)
+        //and once it cannot be opened again, nothing cached from before is used
+        refuse = IndexerException("Inscriptions server is for another chain")
+        assertEquals(listOf(null, null), all(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, coins, false)))
+
+        //clearing (a server settings change) drops the answers too
+        refuse = null
+        reader = SendIndexer { asked -> asked.associateWith { nothing(it) } }
+        readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, coins, false)
+        readers.clear()
+        assertTrue(reader.closed)
+        refuse = IndexerException("refused")
+        assertEquals(listOf(null, null), all(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, coins, false)))
+    }
+
+    /** A reader is kept per coin, network, URL and proxy: one checked for one coin never answers for another. */
+    @Test
+    fun readerCacheKeysOnCoinNetworkUrlAndProxy(): Unit = runBlocking {
+        val opened = ArrayList<String>()
+        val made = ArrayList<SendIndexer>()
+        val readers = IndexerReaders { url, coin, network, proxy ->
+            opened.add("$url $coin $network $proxy")
+            SendIndexer { asked -> asked.associateWith { nothing(it) } }.also { made.add(it) }
+        }
+        val own = InscriptionSetting.YourOwn("https://ord.example")
+        val tor = com.sparrowwallet.mobile.electrum.SocksProxy("127.0.0.1", 9050)
+        val coins = listOf(utxo(clean.outpoint, height = 0))
+        readers.answers(own, Coin.LITECOIN, Network.MAINNET, null, coins, false)
+        readers.answers(own, Coin.LITECOIN, Network.MAINNET, null, coins, false)
+        assertEquals(1, opened.size)
+        readers.answers(own, Coin.LITECOIN, Network.MAINNET, tor, coins, false)
+        readers.answers(own, Coin.DOGECOIN, Network.MAINNET, tor, coins, false)
+        readers.answers(own, Coin.LITECOIN, Network.TESTNET, tor, coins, false)
+        readers.answers(InscriptionSetting.YourOwn("https://other.example"), Coin.LITECOIN, Network.TESTNET, tor, coins, false)
+        assertEquals(5, opened.size)
+        assertEquals(5, opened.toSet().size)
+        //an unconfirmed coin's answer is asked again each pass
+        assertEquals(2, made.first().asked)
+        readers.clear()
+        assertTrue(made.all { it.closed })
+        readers.answers(own, Coin.LITECOIN, Network.MAINNET, null, coins, false)
+        assertEquals(6, opened.size)
+    }
+
+    /** A URL the reader cannot take is no answer, never a crash; cancellation is not swallowed. */
+    @Test
+    fun sendSurvivesAnIndexerThatCannotBeUsed(): Unit = runBlocking {
+        val a = clean.outpoint
+        //the real opener: a malformed Your own URL is refused before any request
+        val real = IndexerReaders()
+        assertNull(real.answers(InscriptionSetting.YourOwn("http://a b"), Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false).of(a))
+        val cancelled = IndexerReaders { _, _, _, _ -> throw kotlinx.coroutines.CancellationException("gone") }
+        assertFailsWith<kotlinx.coroutines.CancellationException> {
+            cancelled.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        }
+        val cancelling = IndexerReaders { _, _, _, _ -> SendIndexer { throw kotlinx.coroutines.CancellationException("gone") } }
+        assertFailsWith<kotlinx.coroutines.CancellationException> {
+            cancelling.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        }
     }
 
     /** What the Send paths decide for a wallet's ready coins, from its stored results (null: no readable file). */

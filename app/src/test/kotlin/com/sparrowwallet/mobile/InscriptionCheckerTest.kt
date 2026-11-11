@@ -12,6 +12,12 @@ import com.sparrowwallet.mobile.electrum.HistoryEntry
 import com.sparrowwallet.mobile.electrum.TxAt
 import com.sparrowwallet.mobile.electrum.TxDetail
 import com.sparrowwallet.mobile.electrum.Utxo
+import com.sparrowwallet.mobile.electrum.indexer.IndexerException
+import com.sparrowwallet.mobile.electrum.indexer.IndexerInscription
+import com.sparrowwallet.mobile.electrum.indexer.IndexerOutput
+import com.sparrowwallet.mobile.electrum.indexer.IndexerStatus
+import com.sparrowwallet.mobile.electrum.indexer.InscriptionIndexer
+import com.sparrowwallet.mobile.electrum.indexer.RuneBalance
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -117,8 +123,335 @@ private class FakeChain : ChainBackend {
     }
 }
 
+/** An indexer whose answers the test sets; counts every call. */
+private class FakeIndexer(var answer: suspend (List<String>) -> Map<String, IndexerOutput>) : InscriptionIndexer {
+    override var runesAware = true
+    val asked = ArrayList<List<String>>()
+    val inscriptionsAsked = ArrayList<String>()
+    var numbers: (String) -> Long? = { 7L }
+    var inscriptionFails = false
+    var closed = false
+
+    override suspend fun status(): IndexerStatus = IndexerStatus("mainnet", runesAware, 1)
+    override suspend fun outputs(outpoints: List<String>): Map<String, IndexerOutput> {
+        asked.add(outpoints)
+        return answer(outpoints)
+    }
+    override suspend fun inscription(id: String): IndexerInscription? {
+        inscriptionsAsked.add(id)
+        if(inscriptionFails) throw IndexerException("HTTP 500")
+        return IndexerInscription(id, numbers(id), "text/plain", 2)
+    }
+    override fun close() { closed = true }
+
+    val calls: Int get() = asked.size + inscriptionsAsked.size
+}
+
 class InscriptionCheckerTest {
     private val wallet = "My Wallet"
+
+    private fun nothing(outpoint: String) = IndexerOutput(outpoint, true, emptyList(), emptyMap(), false)
+
+    /** A segwit transaction spending (txid, vout) with the given witness on each input, paying each value to OP_TRUE. */
+    private fun segwitTx(spends: List<Pair<String, Int>>, witnesses: List<List<ByteArray>>, outputs: List<Long>): ByteArray {
+        var b = le(2, 4) + byteArrayOf(0, 1) + byteArrayOf(spends.size.toByte())
+        for((txid, vout) in spends) {
+            b += txid.hexToBytes().reversedArray() + le(vout.toLong(), 4) + byteArrayOf(0) + le(0xFFFFFFFFL, 4)
+        }
+        b += byteArrayOf(outputs.size.toByte())
+        for(value in outputs) {
+            b += le(value, 8) + byteArrayOf(1, 0x51)
+        }
+        for(items in witnesses) {
+            b += byteArrayOf(items.size.toByte())
+            for(item in items) {
+                b += (if(item.size < 0xFD) byteArrayOf(item.size.toByte()) else byteArrayOf(0xFD.toByte(), (item.size and 0xFF).toByte(), (item.size shr 8).toByte())) + item
+            }
+        }
+        return b + le(0, 4)
+    }
+
+    private fun push(data: ByteArray): ByteArray = if(data.isEmpty()) byteArrayOf(0) else byteArrayOf(data.size.toByte()) + data
+
+    /** An ord reveal script holding one text envelope. */
+    private fun envelope(text: String): ByteArray =
+        push(ByteArray(32) { 4 }) + byteArrayOf(0xac.toByte(), 0x00, 0x63) + push("ord".encodeToByteArray()) + push(byteArrayOf(1)) +
+            push("text/plain".encodeToByteArray()) + byteArrayOf(0x00) + push(text.encodeToByteArray()) + byteArrayOf(0x68)
+
+    /** A coin made by an ord reveal mined after Litecoin's first inscription, funded by an old coin: inscribed on the chain. */
+    private fun inscribedCoin(chain: FakeChain, n: Int): Pair<String, String> {
+        chain.tip = 2_600_000
+        val funding = chain.add(tx(listOf("ee".repeat(32) to n), listOf(10_000L)), 100)
+        val reveal = chain.add(segwitTx(listOf(funding to 0), listOf(listOf(ByteArray(64), envelope("hi $n"), ByteArray(33))), listOf(10_000L)), 2_500_000)
+        return reveal to "${reveal}i0"
+    }
+
+    private suspend fun InscriptionChecker.withIndexer(chain: FakeChain, utxos: List<Utxo>, indexer: InscriptionIndexer?,
+                                                      source: InscriptionCheck.Source? = InscriptionCheck.Source.PUBLIC,
+                                                      positions: Map<String, Pair<Int, Int>> = emptyMap()) =
+        check(wallet, Coin.LITECOIN, Network.MAINNET, chain, utxos, indexer = indexer, indexerSource = source, positions = positions)
+
+    /** The indexer's answer goes into the run: a coin the indexer and the chain both call inscribed is Inscribed, by Public. */
+    @Test fun answersReachTheRunAndTheSourceIsRecorded(): Unit = runBlocking {
+        val chain = FakeChain()
+        val (reveal, id) = inscribedCoin(chain, 1)
+        val plain = oldCoin(chain, 50_000)
+        val utxos = listOf(Utxo(reveal, 0, 2_500_000, 10_000), Utxo(plain, 0, 100, 50_000))
+        val indexer = FakeIndexer { asked -> asked.associateWith { if(it.startsWith(reveal)) IndexerOutput(it, true, listOf(id), emptyMap(), false) else nothing(it) } }
+        val checker = checker(newDir(), CheckerCipher())
+        val result = checker.withIndexer(chain, utxos, indexer)
+        assertEquals(listOf(listOf("$reveal:0", "$plain:0")), indexer.asked, "one batched call for every coin")
+        val inscribed = result.getValue("$reveal:0")
+        assertEquals(Verdict.INSCRIBED, inscribed.verdict)
+        assertEquals(InscriptionCheck.Source.PUBLIC, inscribed.source)
+        assertEquals(listOf(id), inscribed.found.map { it.inscriptionId })
+        assertEquals(Verdict.CLEAN, result.getValue("$plain:0").verdict)
+        assertEquals(InscriptionCheck.Source.PUBLIC, result.getValue("$plain:0").source)
+        assertEquals(CheckStatus(2, 2, indexerUnreachable = false, running = false), checker.status(wallet).value)
+    }
+
+    /** An indexer that fails gives no answers at all: the rows are the built-in trace's and the run says so. */
+    @Test fun indexerFailureFallsBackToBuiltIn(): Unit = runBlocking {
+        for(failure in listOf(IOException("connection refused"), IndexerException("HTTP 500"), IllegalStateException("odd"))) {
+            val chain = FakeChain()
+            val (reveal, _) = inscribedCoin(chain, 1)
+            val plain = oldCoin(chain, 50_000)
+            val utxos = listOf(Utxo(reveal, 0, 2_500_000, 10_000), Utxo(plain, 0, 100, 50_000))
+            val indexer = FakeIndexer { throw failure }
+            val checker = checker(newDir(), CheckerCipher())
+            val result = checker.withIndexer(chain, utxos, indexer)
+            assertTrue(result.values.all { it.source == InscriptionCheck.Source.BUILT_IN }, "$failure")
+            assertEquals(Verdict.INSCRIBED, result.getValue("$reveal:0").verdict, "the chain still finds it")
+            assertTrue(result.values.all { it.runeList == null })
+            assertEquals(CheckStatus(2, 2, indexerUnreachable = true, running = false), checker.status(wallet).value)
+            assertTrue(indexer.inscriptionsAsked.isEmpty(), "no number fill without answers")
+        }
+    }
+
+    /** Half an answer set is no answer: one outpoint missing, or an entry for another outpoint, and none are used. */
+    @Test fun aPartialAnswerIsNoAnswer(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val b = oldCoin(chain, 60_000)
+        val utxos = listOf(Utxo(a, 0, 100, 50_000), Utxo(b, 0, 100, 60_000))
+        for(indexer in listOf(
+            FakeIndexer { mapOf("$a:0" to IndexerOutput("$a:0", true, emptyList(), mapOf("A" to RuneBalance("1", 0, null)), false)) },
+            FakeIndexer { asked -> asked.associateWith { nothing("$a:0") } }
+        )) {
+            val checker = checker(newDir(), CheckerCipher())
+            val result = checker.withIndexer(chain, utxos, indexer)
+            assertTrue(result.values.all { it.source == InscriptionCheck.Source.BUILT_IN && !it.runes && it.runeList == null })
+            assertTrue(checker.status(wallet).value!!.indexerUnreachable)
+        }
+    }
+
+    /** A 429 from the indexer is no answer for this run; it does not stop the trace on the wallet's own server. */
+    @Test fun rateLimitedIndexerFallsBack(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val indexer = FakeIndexer { throw com.sparrowwallet.mobile.electrum.RateLimitedException("HTTP 429") }
+        val checker = checker(newDir(), CheckerCipher())
+        val result = checker.withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000)), indexer)
+        assertEquals(1, indexer.asked.size, "asked once, never waited out")
+        assertTrue(chain.rawCalls > 0, "the chain trace ran")
+        assertEquals(Verdict.CLEAN, result.getValue("$a:0").verdict)
+        assertEquals(InscriptionCheck.Source.BUILT_IN, result.getValue("$a:0").source)
+        assertTrue(checker.status(wallet).value!!.indexerUnreachable)
+    }
+
+    /** Cancellation while the indexer is asked is not swallowed as "unreachable". */
+    @Test fun cancellationAtTheIndexerIsRethrown(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val indexer = FakeIndexer { throw CancellationException("left") }
+        val dir = newDir()
+        assertFailsWith<CancellationException> { checker(dir, CheckerCipher()).withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000)), indexer) }
+        assertEquals(0, chain.rawCalls)
+        assertFalse(File(dir, "My Wallet.bin").exists())
+    }
+
+    /** A Public or Your own setting whose reader could not be opened: an unreachable indexer, the rows Built-in. */
+    @Test fun aSourceWithoutAReaderIsUnreachable(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val checker = checker(newDir(), CheckerCipher())
+        val result = checker.withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000)), null, InscriptionCheck.Source.YOUR_OWN)
+        assertEquals(InscriptionCheck.Source.BUILT_IN, result.getValue("$a:0").source)
+        assertTrue(checker.status(wallet).value!!.indexerUnreachable)
+    }
+
+    /**
+     * Built-in, air-gapped and a setting the notice has not cleared make no indexer call: the setting gives no reader to
+     * open, the opener is never called, and an air-gapped run asks nothing even when handed a reader.
+     */
+    @Test fun builtInMakesNoIndexerCalls(): Unit = runBlocking {
+        var opened = 0
+        val open: suspend (String, Coin, Network, com.sparrowwallet.mobile.electrum.SocksProxy?) -> InscriptionIndexer =
+            { _, _, _, _ -> opened++; FakeIndexer { error("asked") } }
+        val unanswered = InscriptionSetting.parse(null, hasPublic = true, defaultChoice = null)
+        assertEquals(InscriptionSetting.BuiltIn, unanswered)
+        for(setting in listOf(InscriptionSetting.BuiltIn, unanswered)) {
+            val picked = openCheckIndexer(setting, Coin.LITECOIN, Network.MAINNET, null, airGapped = false, open)
+            assertNull(picked.reader)
+            assertNull(picked.source)
+        }
+        for(setting in listOf(InscriptionSetting.Public, InscriptionSetting.YourOwn("https://ord.example"))) {
+            assertNull(openCheckIndexer(setting, Coin.LITECOIN, Network.MAINNET, null, airGapped = true, open).reader)
+        }
+        assertEquals(0, opened)
+
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val checker = checker(newDir(), CheckerCipher())
+        val result = checker.withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000)), null, null)
+        assertEquals(InscriptionCheck.Source.BUILT_IN, result.getValue("$a:0").source)
+        assertFalse(checker.status(wallet).value!!.indexerUnreachable)
+
+        val indexer = FakeIndexer { error("asked") }
+        try {
+            NetworkPolicy.blocked = true
+            checker.withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000)), indexer)
+        } finally {
+            NetworkPolicy.blocked = false
+        }
+        assertEquals(0, indexer.calls)
+    }
+
+    /** Public and Your own open their reader with the coin, network and proxy, and say which source answered. */
+    @Test fun publicAndYourOwnOpenTheirReader(): Unit = runBlocking {
+        val tor = com.sparrowwallet.mobile.electrum.SocksProxy("127.0.0.1", 9050)
+        val seen = ArrayList<String>()
+        val open: suspend (String, Coin, Network, com.sparrowwallet.mobile.electrum.SocksProxy?) -> InscriptionIndexer =
+            { url, coin, network, proxy -> seen.add("$url $coin $network $proxy"); FakeIndexer { emptyMap() } }
+        val public = openCheckIndexer(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, tor, airGapped = false, open)
+        assertEquals(InscriptionCheck.Source.PUBLIC, public.source)
+        val own = openCheckIndexer(InscriptionSetting.YourOwn("https://ord.example/"), Coin.LITECOIN, Network.MAINNET, null, airGapped = false, open)
+        assertEquals(InscriptionCheck.Source.YOUR_OWN, own.source)
+        assertEquals(listOf("https://ordinalslite.com LITECOIN MAINNET $tor", "https://ord.example LITECOIN MAINNET null"), seen)
+        //a failed open (wrong chain, unsupported kind, plain http through the proxy) is an unreachable indexer, not an error
+        for(failure in listOf(IndexerException("Inscriptions server is for another chain"), IOException("refused"), IllegalArgumentException("bad"))) {
+            val failed = openCheckIndexer(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, airGapped = false) { _, _, _, _ -> throw failure }
+            assertNull(failed.reader)
+            assertEquals(InscriptionCheck.Source.PUBLIC, failed.source)
+        }
+        assertFailsWith<CancellationException> {
+            openCheckIndexer(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, airGapped = false) { _, _, _, _ -> throw CancellationException("gone") }
+        }
+    }
+
+    /** Stored Inscribed rows (no trace needed) for n coins at height 100, each with one inscription and no number. */
+    private fun storedInscribed(dir: File, cipher: StoreCipher, chain: FakeChain, n: Int): List<String> {
+        val coins = (1..n).map { oldCoin(chain, 40_000L + it) }
+        val rows = coins.associate { txid ->
+            "$txid:0" to InscriptionCheck(txid, 0, Verdict.INSCRIBED, InscriptionCheck.Source.PUBLIC, false,
+                listOf(com.sparrowwallet.mobile.crypto.track.Found("${txid}i0", 0, null, txid, 100, 1L)), null, FakeChain.block(100), emptyList())
+        }
+        InscriptionStore(dir, cipher).save(wallet, rows, mapOf(100 to FakeChain.block(100)))
+        return coins
+    }
+
+    /** Rows Inscribed without a number get it from the indexer, at most 20 calls a run; a failure leaves it unset. */
+    @Test fun numbersAreFilledForInscribedRows(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val coins = storedInscribed(dir, cipher, chain, 25)
+        val utxos = coins.map { Utxo(it, 0, 100, 1_000) }
+        val indexer = FakeIndexer { asked -> asked.associateWith { IndexerOutput(it, true, listOf(it.substringBefore(':') + "i0"), emptyMap(), false) } }
+        indexer.numbers = { 1_000L + it.take(4).toLong(16) }
+        val first = checker(dir, cipher).withIndexer(chain, utxos, indexer)
+        assertEquals(20, indexer.inscriptionsAsked.size)
+        assertEquals(20, first.values.count { it.found.single().number != null })
+        assertTrue(first.values.all { it.verdict == Verdict.INSCRIBED })
+        assertEquals(first, InscriptionStore(dir, cipher).load(wallet), "saved")
+        //the next run fills the rest
+        val second = checker(dir, cipher).withIndexer(chain, utxos, indexer)
+        assertEquals(25, indexer.inscriptionsAsked.size)
+        assertTrue(second.values.all { it.found.single().number != null })
+
+        //a failure leaves the number unset and asks no more this run
+        val dir2 = newDir()
+        val coins2 = storedInscribed(dir2, cipher, chain, 3)
+        val failing = FakeIndexer { asked -> asked.associateWith { IndexerOutput(it, true, listOf(it.substringBefore(':') + "i0"), emptyMap(), false) } }
+        failing.inscriptionFails = true
+        val third = checker(dir2, cipher).withIndexer(chain, coins2.map { Utxo(it, 0, 100, 1_000) }, failing)
+        assertEquals(1, failing.inscriptionsAsked.size)
+        assertTrue(third.values.all { it.found.single().number == null && it.verdict == Verdict.INSCRIBED })
+
+        //no answers this run (the indexer failed): no number calls
+        val down = FakeIndexer { throw IOException("down") }
+        checker(newDir().also { storedInscribed(it, cipher, chain, 2) }, cipher).withIndexer(chain, coins.take(2).map { Utxo(it, 0, 100, 1_000) }, down)
+        assertTrue(down.inscriptionsAsked.isEmpty())
+    }
+
+    /** An indexer's rune balances for a coin are stored with its row; the row is marked as carrying runes. */
+    @Test fun runeListIsStoredForACoin(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val b = oldCoin(chain, 60_000)
+        val runes = mapOf("UNCOMMON•GOODS" to RuneBalance("1250", 2, "x"))
+        val indexer = FakeIndexer { asked -> asked.associateWith { if(it == "$a:0") IndexerOutput(it, true, emptyList(), runes, false) else nothing(it) } }
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val result = checker(dir, cipher).withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000), Utxo(b, 0, 100, 60_000)), indexer)
+        assertEquals(runes, result.getValue("$a:0").runeList)
+        assertTrue(result.getValue("$a:0").runes)
+        assertEquals(emptyMap(), result.getValue("$b:0").runeList)
+        assertFalse(result.getValue("$b:0").runes)
+        assertEquals(runes, InscriptionStore(dir, cipher).load(wallet).getValue("$a:0").runeList, "survives the file")
+    }
+
+    /** An indexer answer naming more inscriptions than the cap leaves the coin carrying, never Clean. */
+    @Test fun tooManyInscriptionIdsAreCappedAndCarry(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val b = oldCoin(chain, 60_000)
+        //ids naming transactions the chain has, with no envelopes: each reveal check reads a cached transaction
+        val ids = (0 until 150).map { "${a}i$it" }
+        val bIds = (0 until 150).map { "${"cd".repeat(32)}i$it" }
+        val indexer = FakeIndexer { asked -> asked.associateWith { IndexerOutput(it, true, if(it.startsWith(a)) ids else bIds, emptyMap(), false) } }
+        val result = checker(newDir(), CheckerCipher()).withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000), Utxo(b, 0, 100, 60_000)), indexer)
+        for(row in result.values) {
+            assertTrue(row.verdict != Verdict.CLEAN, row.toString())
+            assertTrue(row.runes, "carries: $row")
+            assertEquals(CoinState.HELD, coinState(row, null, localMayCarry = false, hasAnyResults = true))
+        }
+        assertTrue(chain.rawCalls <= 2 + InscriptionChecker.MAX_INDEXER_IDS)
+    }
+
+    /** Each row keeps the listed coin's value and address position, from the coin list. */
+    @Test fun coinValueAndPositionAreStored(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val b = oldCoin(chain, 60_000)
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val result = checker(dir, cipher).withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000), Utxo(b, 0, 100, 60_000)), null, null,
+            positions = mapOf("$a:0" to (0 to 4), "$b:0" to (1 to 2)))
+        assertEquals(50_000L, result.getValue("$a:0").value)
+        assertEquals(0, result.getValue("$a:0").chain)
+        assertEquals(4, result.getValue("$a:0").index)
+        assertEquals(60_000L, result.getValue("$b:0").value)
+        assertEquals(1, result.getValue("$b:0").chain)
+        assertEquals(2, result.getValue("$b:0").index)
+        assertEquals(result, InscriptionStore(dir, cipher).load(wallet))
+    }
+
+    /** A results file written by the app before these fields existed still loads, and its rows decide as before. */
+    @Test fun oldFilesWithoutTheNewFieldsLoad() {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val txid = "11".repeat(32)
+        val old = """{"v":1,"checks":{"$txid:0":{"txid":"$txid","vout":0,"verdict":"CLEAN","source":"BUILT_IN","runes":false,""" +
+            """"found":[],"reason":null,"blockHash":"${"ab".repeat(32)}","open":[]}},"blocks":{"100":"${"ab".repeat(32)}"}}"""
+        File(dir, "My Wallet.bin").writeBytes(cipher.seal(old.encodeToByteArray()))
+        val row = InscriptionStore(dir, cipher).load(wallet).getValue("$txid:0")
+        assertEquals(InscriptionCheck(txid, 0, Verdict.CLEAN, InscriptionCheck.Source.BUILT_IN, false, emptyList(), null, "ab".repeat(32), emptyList()), row)
+        assertNull(row.runeList)
+        assertNull(row.value)
+        assertNull(row.chain)
+        assertNull(row.index)
+    }
 
     private fun le(value: Long, bytes: Int): ByteArray = ByteArray(bytes) { ((value shr (8 * it)) and 0xFF).toByte() }
 

@@ -3,6 +3,7 @@ package com.sparrowwallet.mobile.electrum.inscriptions
 import com.sparrowwallet.mobile.crypto.track.Found
 import com.sparrowwallet.mobile.crypto.track.Piece
 import com.sparrowwallet.mobile.crypto.track.Verdict
+import com.sparrowwallet.mobile.electrum.indexer.RuneBalance
 import kotlinx.serialization.Serializable
 
 /**
@@ -14,6 +15,10 @@ import kotlinx.serialization.Serializable
  * extension and the HogEx shape its txid commits to (see [TrackerRun.mwebPegOut]): true, it is (the coin came straight
  * out of MWEB, with no history to carry anything); false, it is not; null, not known (a row stored before 2026-11-10,
  * a result that is not Clean, or a read that could not say).
+ *
+ * The last four fields (added 2026-11-11, optional so older files load) are for display only and decide nothing:
+ * runeList is the indexer's rune balances on the coin from the run that wrote the row (null when no indexer answered for
+ * it then), value the coin's value, and chain and index its address position in the wallet (null when not known).
  */
 @Serializable
 data class InscriptionCheck(
@@ -26,7 +31,11 @@ data class InscriptionCheck(
     val reason: String?,
     val blockHash: String?,
     val open: List<Piece>,
-    val mwebPegOut: Boolean? = null
+    val mwebPegOut: Boolean? = null,
+    val runeList: Map<String, RuneBalance>? = null,
+    val value: Long? = null,
+    val chain: Int? = null,
+    val index: Int? = null
 ) {
     /** Who gave the answer: the wallet's own trace, a public indexer, the user's own indexer, or the built-in tracer on the coin's server. */
     enum class Source { OWN, PUBLIC, YOUR_OWN, BUILT_IN }

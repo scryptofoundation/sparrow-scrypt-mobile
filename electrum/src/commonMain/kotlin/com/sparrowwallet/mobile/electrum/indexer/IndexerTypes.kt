@@ -1,8 +1,13 @@
 package com.sparrowwallet.mobile.electrum.indexer
 
 import com.sparrowwallet.mobile.electrum.inscriptions.IndexerAnswer
+import kotlinx.serialization.Serializable
 
-/** A rune balance on one output: [amount] is the raw integer as decimal text, [divisibility] the places after the point. */
+/**
+ * A rune balance on one output: [amount] is the raw integer as decimal text, [divisibility] the places after the point.
+ * Serializable because the check results keep it for display ([com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck.runeList]).
+ */
+@Serializable
 data class RuneBalance(val amount: String, val divisibility: Int, val symbol: String?)
 
 /**

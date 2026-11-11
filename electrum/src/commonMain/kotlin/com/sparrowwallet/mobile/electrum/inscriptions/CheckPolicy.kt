@@ -4,6 +4,7 @@ import com.sparrowwallet.mobile.crypto.CarrierScan
 import com.sparrowwallet.mobile.crypto.RawTx
 import com.sparrowwallet.mobile.crypto.track.ChainTx
 import com.sparrowwallet.mobile.crypto.track.Found
+import com.sparrowwallet.mobile.crypto.track.InscriptionTracer
 import com.sparrowwallet.mobile.crypto.track.TraceResult
 import com.sparrowwallet.mobile.crypto.track.Verdict
 
@@ -52,6 +53,14 @@ object CheckPolicy {
             }
             if(trace.verdict == Verdict.INSCRIBED) {
                 return unchecked(txid, vout, source, runes, DISAGREE_CHAIN_SHOWS.replace("%s", trace.found.first().inscriptionId), blockHash, trace)
+            }
+            //The phone is stricter than the desktop here: an indexer's "nothing" stands over a trace cut short by its budget
+            //or a dead end, never over one that failed on a server error. That row stays Unchecked with the trace's reason
+            //and, like TrackerRun's held rows, keeps its open pieces only when it found nothing, so the next run resumes.
+            val reason = trace.reason
+            if(trace.verdict == Verdict.UNCHECKED && reason != null && reason.startsWith(InscriptionTracer.SERVER_ERROR_PREFIX)) {
+                return InscriptionCheck(txid, vout, Verdict.UNCHECKED, source, runes, emptyList(), reason, blockHash,
+                    if(trace.found.isEmpty()) trace.open else emptyList())
             }
             return InscriptionCheck(txid, vout, Verdict.CLEAN, source, runes, emptyList(), null, blockHash, emptyList())
         }

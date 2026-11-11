@@ -14,7 +14,7 @@ import com.sparrowwallet.mobile.electrum.ElectrumBackend
 import com.sparrowwallet.mobile.electrum.ElectrumClient
 import com.sparrowwallet.mobile.electrum.EsploraBackend
 import com.sparrowwallet.mobile.electrum.HttpEndpoint
-import com.sparrowwallet.mobile.electrum.InscriptionIndex
+import com.sparrowwallet.mobile.electrum.indexer.Indexers
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -56,7 +56,7 @@ class LiveTraceTest {
 
     /**
      * One output's find_meta: the answer, or null when the indexer cannot say (any status but 200 and 429, as the app's
-     * InscriptionIndex reads it), which skips that output only. A 429 still skips the whole leg.
+     * old InscriptionIndex read it), which skips that output only. A 429 still skips the whole leg.
      */
     private suspend fun findMeta(http: HttpEndpoint, path: String) = http.get(path, "application/json").let {
         if(it.status == 429) throw Skip("429 from ${http.url}$path")
@@ -108,7 +108,7 @@ class LiveTraceTest {
      * carries none; traces both through the coin's Esplora backend.
      */
     private fun nintondoLeg(label: String, coin: Coin, esploraUrl: String) = guarded(label) {
-        val index = HttpEndpoint(InscriptionIndex.publicUrl(coin.id, "mainnet")!!)
+        val index = HttpEndpoint(Indexers.publicUrl(coin, Network.MAINNET)!!)
         val backend = EsploraBackend(esploraUrl, ChainParams.of(coin, Network.MAINNET))
         try {
             var height = (getJson(index, "/status").jsonObject["tip_height"]!!.jsonPrimitive.content).toInt()
@@ -216,7 +216,7 @@ class LiveTraceTest {
     @Test fun litecoinInscriptionIsTraced() {
         if(!enabled) return
         guarded("litecoin") {
-            val ord = HttpEndpoint(InscriptionIndex.publicUrl("litecoin", "mainnet")!!)
+            val ord = HttpEndpoint(Indexers.publicUrl(Coin.LITECOIN, Network.MAINNET)!!)
             val client = listOf("electrum1.cipig.net" to 20063, "fallacy.fiatfaucet.com" to 50002, "electrum.jhoenicke.de" to 50091)
                 .firstNotNullOfOrNull { (host, port) -> runCatching { ElectrumBackend(ElectrumClient(host, port, true)).also { it.connect() } }.getOrNull() }
                 ?: throw Skip("no Litecoin Electrum server reachable")

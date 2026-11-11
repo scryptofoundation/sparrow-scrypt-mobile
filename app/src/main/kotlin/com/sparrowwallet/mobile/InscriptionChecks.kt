@@ -7,12 +7,14 @@ import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import com.sparrowwallet.mobile.electrum.SocksProxy
 import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.electrum.WalletScanner
+import com.sparrowwallet.mobile.electrum.indexer.IndexerOutput
 import com.sparrowwallet.mobile.electrum.indexer.Indexers
 import com.sparrowwallet.mobile.electrum.indexer.InscriptionIndexer
 import com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.withLock
 import java.net.URI
 
 /**
@@ -238,13 +240,143 @@ inline fun indexerCarries(serverAnswer: Boolean?, tokensIndexed: Boolean = true,
     }
 
 /**
- * Whether the indexer at [url] counts as runes-aware for [coin] (see [coinState] rule 3 (b)): an ord indexer, and only
- * on Litecoin. ord's /output answers clean only with its rune index on, but it reads `runes` alone, never dunes or
- * junes, so off Litecoin a Runes index says nothing about the chain's tokens. Nintondo indexes inscriptions only.
- * Until a dunes-aware parse exists, no other coin has one.
+ * Whether an open [indexer] counts as runes-aware for [coin] (see [coinState] rule 3 (b)): the reader says its rune
+ * index is on (an ord server; Nintondo never says so), and only on Litecoin. ord reads `runes` alone, never dunes or
+ * junes, so off Litecoin a Runes index says nothing about the chain's tokens. Until a dunes-aware parse exists, no other
+ * coin has one. Read it after the pass's outputs call succeeded: ord's reader re-reads its status on each call.
  */
-fun runesAwareIndexer(coin: Coin, url: String?): Boolean =
-    url != null && !Indexers.isNintondo(url) && coin == Coin.LITECOIN
+fun runesAwareIndexer(coin: Coin, indexer: InscriptionIndexer?): Boolean =
+    coin == Coin.LITECOIN && indexer != null && indexer.runesAware
+
+/**
+ * What Send makes of one indexer [output] for the coin at [outpoint]: true when it carries anything (inscriptions, runes
+ * or something unlisted), null when there is no usable answer (none, an entry for another outpoint, or not indexed),
+ * false only for an indexed answer that carries nothing. On a chain with rune-like tokens ([runeLike]) a clean that is
+ * not [runesAware] is no answer either, so it can never stand in for the postage-value hold (an ord server on Dogecoin,
+ * Pepecoin or Junkcoin cannot see dunes, whatever its rune index says).
+ */
+fun sendAnswer(output: IndexerOutput?, outpoint: String, runesAware: Boolean, runeLike: Boolean): Boolean? = when {
+    output == null || output.outpoint != outpoint -> null
+    output.carries -> true
+    !output.indexed -> null
+    runeLike && !runesAware -> null
+    else -> false
+}
+
+/**
+ * The indexer readers Send asks, one per coin, network, URL and proxy, each obtained only through [open] (in the app
+ * [Indexers.open], whose chain check, block 0 included, is what makes its answers usable). A reader is opened at most
+ * once per pass and asked once per pass for all the coins it has no kept answer for. Answers for confirmed coins are
+ * kept with their reader (an unspent output's answer does not change), and only consulted once the reader is in hand.
+ * Any failure (the open, or the reader's call: unreachable, 429, wrong chain, unreadable) is no answer for every coin
+ * of the pass, and drops and closes the reader with its kept answers. Cancellation is rethrown.
+ */
+internal class IndexerReaders(
+    private val open: suspend (String, Coin, Network, SocksProxy?) -> InscriptionIndexer =
+        { url, coin, network, proxy -> Indexers.open(url, coin, network, proxy) }
+) {
+    /** One pass's answers by outpoint (see [sendAnswer]), and whether its clean answers are runes-aware. */
+    class Answers(val byOutpoint: Map<String, Boolean?>, val runesAware: Boolean) {
+        fun of(outpoint: String): Boolean? = byOutpoint[outpoint]
+    }
+
+    private data class Key(val coin: Coin, val network: Network, val url: String, val proxy: SocksProxy?)
+
+    private val readers = java.util.concurrent.ConcurrentHashMap<Key, InscriptionIndexer>()
+    private val kept = java.util.concurrent.ConcurrentHashMap<Key, java.util.concurrent.ConcurrentHashMap<String, IndexerOutput>>()
+    private val openLock = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * The answers for [coins] under [setting]: none, with nothing contacted, on Built-in, with no indexer for the coin,
+     * when [airGapped], or for no coins.
+     */
+    suspend fun answers(setting: InscriptionSetting, coin: Coin, network: Network, proxy: SocksProxy?,
+                        coins: List<com.sparrowwallet.mobile.electrum.Utxo>, airGapped: Boolean = NetworkPolicy.blocked): Answers {
+        val outpoints = coins.map { "${it.txHash}:${it.txPos}" }
+        val none = Answers(outpoints.associateWith { null }, false)
+        val url = setting.url(coin, network) ?: return none
+        if(airGapped || coins.isEmpty()) return none
+        val key = Key(coin, network, url, proxy)
+        val reader = reader(key) ?: return none
+        val keptHere = kept.computeIfAbsent(key) { java.util.concurrent.ConcurrentHashMap() }
+        val ask = outpoints.distinct().filter { !keptHere.containsKey(it) }
+        val outputs = HashMap<String, IndexerOutput>()
+        if(ask.isNotEmpty()) {
+            val answered = try {
+                reader.outputs(ask)
+            } catch(e: CancellationException) {
+                throw e
+            } catch(e: Exception) {
+                drop(key, reader)
+                return none
+            }
+            outputs.putAll(answered)
+        }
+        val runesAware = runesAwareIndexer(coin, reader)
+        val runeLike = com.sparrowwallet.mobile.crypto.track.ChainRules.hasRuneLikeTokens(coin)
+        val confirmed = coins.filter { it.height > 0 }.map { "${it.txHash}:${it.txPos}" }.toSet()
+        val byOutpoint = LinkedHashMap<String, Boolean?>()
+        for(outpoint in outpoints) {
+            val output = outputs[outpoint]?.takeIf { it.outpoint == outpoint } ?: keptHere[outpoint]
+            if(outpoint in outputs && output != null && output.indexed && outpoint in confirmed) keptHere[outpoint] = output
+            byOutpoint[outpoint] = sendAnswer(output, outpoint, runesAware, runeLike)
+        }
+        return Answers(byOutpoint, runesAware)
+    }
+
+    /** The open reader for [key], opening it once if needed; null (and nothing kept for it) when it cannot be opened. */
+    private suspend fun reader(key: Key): InscriptionIndexer? = openLock.withLock {
+        readers[key]?.let { return@withLock it }
+        kept.remove(key)
+        try {
+            open(key.url, key.coin, key.network, key.proxy).also { readers[key] = it }
+        } catch(e: CancellationException) {
+            throw e
+        } catch(e: Exception) {
+            null
+        }
+    }
+
+    private fun drop(key: Key, reader: InscriptionIndexer) {
+        if(readers.remove(key, reader)) {
+            kept.remove(key)
+            reader.close()
+        }
+    }
+
+    /** Closes every reader and forgets every answer: server settings or the inscription setting changed. */
+    fun clear() {
+        val open = ArrayList(readers.values)
+        readers.clear()
+        kept.clear()
+        open.forEach { runCatching { it.close() } }
+    }
+}
+
+/**
+ * The reader a check run uses, and the source its answers count as. [reader] null with a [source] means the setting
+ * names an indexer that could not be opened: the run falls back to Built-in and says the indexer is unreachable.
+ */
+class CheckIndexer(val reader: InscriptionIndexer?, val source: InscriptionCheck.Source?)
+
+/**
+ * Opens the check run's reader for [setting] with [open] (in the app [Indexers.open]): none on Built-in, with no indexer
+ * for the coin, or when [airGapped], contacting nothing. A failed open (unreachable, wrong chain, an unsupported kind,
+ * plain http through the proxy, a malformed URL) is no reader, not an error. Cancellation is rethrown.
+ */
+suspend fun openCheckIndexer(setting: InscriptionSetting, coin: Coin, network: Network, proxy: SocksProxy?, airGapped: Boolean,
+                             open: suspend (String, Coin, Network, SocksProxy?) -> InscriptionIndexer): CheckIndexer {
+    val url = setting.url(coin, network) ?: return CheckIndexer(null, null)
+    if(airGapped) return CheckIndexer(null, null)
+    val source = if(setting is InscriptionSetting.YourOwn) InscriptionCheck.Source.YOUR_OWN else InscriptionCheck.Source.PUBLIC
+    return try {
+        CheckIndexer(open(url, coin, network, proxy), source)
+    } catch(e: CancellationException) {
+        throw e
+    } catch(e: Exception) {
+        CheckIndexer(null, source)
+    }
+}
 
 /** What Send may do with a ready coin: spend it freely, hold it back, or use it last with a warning. */
 enum class CoinState { CLEAN, HELD, UNCHECKED }

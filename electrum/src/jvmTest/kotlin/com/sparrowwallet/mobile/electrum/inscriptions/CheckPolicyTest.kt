@@ -95,6 +95,51 @@ class CheckPolicyTest {
         assertNull(budget.reason)
     }
 
+    /**
+     * The phone is stricter than the desktop: an indexer's "nothing here" never turns a trace that failed on a server
+     * error into Clean. The row stays Unchecked with the trace's reason, so it is retried, and keeps its open pieces.
+     */
+    @Test fun indexedNothingDoesNotClearAFailedTrace() {
+        val open = Piece(hash(5), 0, UnitRange(0, 100), 200)
+        val reason = "${com.sparrowwallet.mobile.crypto.track.InscriptionTracer.SERVER_ERROR_PREFIX}: connection reset"
+        val failed = TraceResult(Verdict.UNCHECKED, emptyList(), reason, listOf(open), 2, true)
+        val check = decide(answer(), failed)
+        assertEquals(Verdict.UNCHECKED, check.verdict)
+        assertEquals(reason, check.reason)
+        assertEquals(InscriptionCheck.Source.PUBLIC, check.source)
+        assertEquals(listOf(open), check.open)
+        assertFalse(CheckPolicy.complete(check))
+        //runes the indexer reported are kept on the row
+        assertTrue(decide(answer(runes = true), failed).runes)
+        assertEquals(Verdict.UNCHECKED, decide(answer(runes = true), failed).verdict)
+    }
+
+    /** A trace cut short by the budget or a dead end lets the indexer's "nothing here" stand, as on the desktop. */
+    @Test fun indexedNothingStandsAfterABudgetCut() {
+        val budget = decide(answer(), trace(Verdict.UNCHECKED, usedChain = true))
+        assertEquals(Verdict.CLEAN, budget.verdict)
+        assertNull(budget.reason)
+        val deadEnd = TraceResult(Verdict.UNCHECKED, emptyList(), com.sparrowwallet.mobile.crypto.track.InscriptionTracer.FEES_NEED_DEEPER, emptyList(), 4, true)
+        assertEquals(Verdict.CLEAN, decide(answer(), deadEnd).verdict)
+        assertEquals(Verdict.CLEAN, decide(answer(), trace(Verdict.CLEAN, usedChain = true)).verdict)
+    }
+
+    /** Whichever side names an inscription the other does not, the coin is held (never Clean). */
+    @Test fun indexerAndChainDisagreeHolds() {
+        val traced = Found(id, 0, null, hash(7), 2_400_000, 1L)
+        //the indexer says nothing, the chain shows one
+        assertEquals(Verdict.UNCHECKED, decide(answer(), trace(Verdict.INSCRIBED, listOf(traced), true)).verdict)
+        //the indexer names one the chain does not have
+        assertEquals(Verdict.UNCHECKED, decide(answer(id), trace(Verdict.CLEAN, usedChain = true), mapOf(id to null)).verdict)
+        //the chain shows one the indexer did not list
+        val other = hash(8) + "i0"
+        val both = listOf(traced, Found(other, 500, null, hash(8), 1, 1))
+        assertEquals(Verdict.UNCHECKED, decide(answer(id), trace(Verdict.INSCRIBED, both, true), mapOf(id to reveal)).verdict)
+        //a failed trace and an indexer naming nothing: still not Clean
+        val failed = TraceResult(Verdict.UNCHECKED, emptyList(), "${com.sparrowwallet.mobile.crypto.track.InscriptionTracer.SERVER_ERROR_PREFIX}: x", emptyList(), 1, true)
+        assertEquals(Verdict.UNCHECKED, decide(answer(), failed).verdict)
+    }
+
     @Test fun rule6NoAnswerTakesTheTrace() {
         val own = decide(null, trace(Verdict.CLEAN, usedChain = false))
         assertEquals(Verdict.CLEAN, own.verdict)

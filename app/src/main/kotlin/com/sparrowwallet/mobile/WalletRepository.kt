@@ -27,7 +27,7 @@ import com.sparrowwallet.mobile.crypto.hexToBytes
 import com.sparrowwallet.mobile.crypto.sha256
 import com.sparrowwallet.mobile.crypto.toHex
 import com.sparrowwallet.mobile.electrum.ElectrumBackend
-import com.sparrowwallet.mobile.electrum.InscriptionIndex
+import com.sparrowwallet.mobile.electrum.indexer.Indexers
 import com.sparrowwallet.mobile.electrum.ChainBackend
 import com.sparrowwallet.mobile.electrum.SocksProxy
 import com.sparrowwallet.mobile.electrum.WalletScanner
@@ -374,9 +374,19 @@ class WalletRepository(context: Context) {
     private suspend fun runCheck(name: String, coin: Coin, network: Network, scriptType: String, deeper: Set<String>,
                                  timeUp: () -> Boolean, key: Bip32Pub, watchReceiveTo: Int): Map<String, InscriptionCheck> =
         withBackend(coin, network) { client ->
-            val utxos = WalletScanner(client, walletScriptType(scriptType))
-                .utxos(key, watchReceiveTo = watchReceiveTo).utxos.map { it.utxo }
-            inscriptionChecker.check(name, coin, network, client, utxos, deeper, timeUp)
+            val listed = WalletScanner(client, walletScriptType(scriptType)).utxos(key, watchReceiveTo = watchReceiveTo).utxos
+            val utxos = listed.map { it.utxo }
+            val positions = listed.associate { "${it.utxo.txHash}:${it.utxo.txPos}" to (it.chain to it.index) }
+            //The setting's indexer, opened (and its chain checked) for this run only; Built-in and air-gapped open none,
+            //and one that cannot be opened is an unreachable indexer, not a failed check
+            val picked = if(utxos.isEmpty()) CheckIndexer(null, null) else openCheckIndexer(inscriptionSetting(coin, network), coin,
+                network, indexerProxy(coin, network), NetworkPolicy.blocked) { url, c, n, proxy -> Indexers.open(url, c, n, proxy) }
+            try {
+                inscriptionChecker.check(name, coin, network, client, utxos, deeper, timeUp, indexer = picked.reader,
+                    indexerSource = picked.source, positions = positions)
+            } finally {
+                picked.reader?.close()
+            }
         }
 
     /**
@@ -598,6 +608,8 @@ class WalletRepository(context: Context) {
             .putString("$p.proxyHost", s.proxyHost).putInt("$p.proxyPort", s.proxyPort)
             .putString("$p.esploraUrl", s.esploraUrl)
             .apply()
+        //A proxy change reaches the indexer at once: the readers and their answers are dropped and closed
+        indexerReaders.clear()
     }
 
     /**
@@ -680,9 +692,11 @@ class WalletRepository(context: Context) {
 
     /** Transactions never change, so the ones read to decide held coins are kept for the session. */
     private val carrierTxs = java.util.concurrent.ConcurrentHashMap<String, RawTx.Parsed>()
-    /** An indexer's answer for a confirmed coin never changes while it is unspent; keyed by indexer URL and outpoint. */
-    private val indexerAnswers = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-    private val indexers = java.util.concurrent.ConcurrentHashMap<String, InscriptionIndex>()
+    /**
+     * Send's indexer readers, one per coin, network, URL and proxy, opened only through [Indexers.open]; they keep the
+     * answers for confirmed coins (see [IndexerReaders]). Cleared when the server or inscription settings change.
+     */
+    private val indexerReaders get() = sharedIndexerReaders
 
     private val inscriptionPrefs = InscriptionPrefs(prefs)
 
@@ -691,6 +705,7 @@ class WalletRepository(context: Context) {
 
     fun saveInscriptionSetting(coin: Coin, network: Network, setting: InscriptionSetting) {
         inscriptionPrefs.save(coin, network, setting)
+        indexerReaders.clear()
         lastScan.clearAll()
     }
 
@@ -699,47 +714,46 @@ class WalletRepository(context: Context) {
 
     fun saveInscriptionDefaultChoice(choice: String) {
         inscriptionPrefs.saveDefaultChoice(choice)
+        indexerReaders.clear()
         lastScan.clearAll()
     }
+
+    /** The coin's server proxy, which indexer requests take too; null when none is set. */
+    private fun indexerProxy(coin: Coin, network: Network): SocksProxy? =
+        serverSettings(coin, network)?.takeIf { it.useProxy }?.let { SocksProxy(it.proxyHost, it.proxyPort) }
 
     /** Whether Home shows the one-time notice for this coin and network (see [InscriptionPrefs.noticeDue]). */
     fun inscriptionNoticeDue(coin: Coin, network: Network): Boolean =
         inscriptionPrefs.noticeDue(coin, network)
 
-    /** What the coin's indexer says about a coin: carries, clean, or null (checks off, not indexed, unreachable). */
-    suspend fun indexerAnswer(coin: Coin, network: Network, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean? {
-        val url = inscriptionSetting(coin, network).url(coin, network) ?: return null
-        val key = "$url|${utxo.txHash}:${utxo.txPos}"
-        indexerAnswers[key]?.let { return it }
-        val proxy = serverSettings(coin, network)?.takeIf { it.useProxy }?.let { SocksProxy(it.proxyHost, it.proxyPort) }
-        //a URL the reader cannot take is no answer, never a crash in Send
-        val index = runCatching { indexers.getOrPut(url) { InscriptionIndex(url, proxy) } }.getOrNull() ?: return null
-        val answer = runCatching { index.carries(utxo.txHash, utxo.txPos) }.getOrNull()
-        if(answer != null && utxo.height > 0) indexerAnswers[key] = answer
-        return answer
-    }
+    /**
+     * What the effective setting's indexer says about a coin (see [sendAnswer]): carries (true), clean (false), or null
+     * (Built-in, air-gapped, no indexer for the coin, not indexed, unreachable, or a reader that failed its chain check).
+     */
+    suspend fun indexerAnswer(coin: Coin, network: Network, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean? =
+        indexerReaders.answers(inscriptionSetting(coin, network), coin, network, indexerProxy(coin, network), listOf(utxo))
+            .of("${utxo.txHash}:${utxo.txPos}")
 
     /**
      * Decides each ready coin of [scan] (see the pure [classifyCoins]): from the wallet's stored checks (awaited, so a
-     * results file on disk counts after a cold start, and a file holding no results still counts as checked), today's
-     * indexer setting when it names one (an inscriptions-only indexer cannot clear a coin whose transaction writes a
-     * runestone or dunestone), and [CarrierScan] when nothing else decides: its value is the coin's usual postage, or
-     * the transaction that made it writes one (a transaction the server cannot give leaves the value rule). Run for
-     * every send rather than kept with a reused scan, so a check that finished since counts.
+     * results file on disk counts after a cold start, and a file holding no results still counts as checked), the
+     * effective setting's indexer, asked once for all the ready coins (a clean that is not runes-aware cannot clear a
+     * coin whose transaction writes a runestone or dunestone), and [CarrierScan] when nothing else decides: its value is
+     * the coin's usual postage, or the transaction that made it writes one (a transaction the server cannot give leaves
+     * the value rule). Run for every send rather than kept with a reused scan, so a check that finished since counts.
      */
     private suspend fun classifyCoins(client: ChainBackend, data: VaultData, scan: WalletScanner.UtxoScan, tip: Long): CoinStates {
         val coin = coin(data)
         val network = network(data)
         val covered = ChainRules.covers(coin)
         val results = if(covered) loadInscriptionChecks(data) else null
-        val url = inscriptionSetting(coin, network).url(coin, network)
-        val tokensIndexed = url == null || !com.sparrowwallet.mobile.electrum.indexer.Indexers.isNintondo(url)
-        val runesIndexed = runesAwareIndexer(coin, url)
         val ready = scan.utxos.filter { spendable(data, tip, it) }.associateBy { outpoint(it) }
+        val answers = indexerReaders.answers(inscriptionSetting(coin, network), coin, network, indexerProxy(coin, network),
+            ready.values.map { it.utxo })
         return com.sparrowwallet.mobile.classifyCoins(ready.keys.toList(), results, covered, ChainRules.hasRuneLikeTokens(coin),
-            runesIndexed, { op ->
+            answers.runesAware, { op ->
             val utxo = ready.getValue(op).utxo
-            indexerCarries(indexerAnswer(coin, network, utxo), tokensIndexed) {
+            indexerCarries(answers.of(op), tokensIndexed = answers.runesAware) {
                 creatingTx(client, utxo.txHash)?.let { CarrierScan.hasRunestone(it) || CarrierScan.hasDunestone(it) } == true
             }
         }) { op -> localMayCarry(coin, client, ready.getValue(op).utxo) }
@@ -1336,3 +1350,9 @@ private fun sharedInscriptionChecker(context: Context): InscriptionChecker =
             InscriptionStore(File(context.filesDir, "inscriptions"), KeystoreCipher(InscriptionStore.KEY_ALIAS))
         ).also { inscriptionCheckerInstance = it }
     }
+
+/**
+ * Send's indexer readers for the whole process (Home and the background worker each build a repository), so a server or
+ * inscription setting saved in one clears the readers the other would use.
+ */
+private val sharedIndexerReaders = IndexerReaders()

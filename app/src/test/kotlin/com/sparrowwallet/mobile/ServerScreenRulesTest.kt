@@ -82,9 +82,12 @@ class ServerScreenRulesTest {
 
     /** A malformed URL never reaches the Send path's Nintondo test as a crash. */
     @Test
-    fun runesAwareCheckToleratesAMalformedUrl() {
+    fun runesAwareCheckToleratesAMalformedUrl(): Unit = runBlocking {
         assertFalse(runesAwareIndexer(Coin.LITECOIN, null))
-        runesAwareIndexer(Coin.LITECOIN, "http://a b")
+        //Send no longer reads the URL for this: a malformed one never opens a reader, so it is never runes-aware
+        val answers = IndexerReaders().answers(InscriptionSetting.YourOwn("http://a b"), Coin.LITECOIN, Network.MAINNET, null,
+            listOf(com.sparrowwallet.mobile.electrum.Utxo("11".repeat(32), 0, 100, 1_000)), airGapped = false)
+        assertFalse(answers.runesAware)
     }
 
     @Test
