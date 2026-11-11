@@ -3,6 +3,7 @@ package com.sparrowwallet.mobile.electrum.inscriptions
 import com.sparrowwallet.mobile.crypto.track.ChainSource
 import com.sparrowwallet.mobile.crypto.track.ChainTx
 import com.sparrowwallet.mobile.crypto.track.InscriptionLocator
+import com.sparrowwallet.mobile.crypto.track.TxCache
 
 /** Checks an indexer's inscription id against the chain: the transaction it names must create it. */
 object RevealCheck {
@@ -12,11 +13,13 @@ object RevealCheck {
      * The transaction that creates the inscription, or null when the chain shows no such inscription: an ord id names a
      * reveal with at least that many envelopes; a Doginals id (index 0) names a chain's first step, whose scriptSig starts
      * with "ord". A transaction the server cannot return throws: an outage and an unknown txid look the same, and both
-     * leave the coin held.
+     * leave the coin held. A mined reveal is read from [cache] when a trace already holds it, and kept there when fetched
+     * (the cache never keeps an unconfirmed one).
      */
-    suspend fun reveal(inscriptionId: String, source: ChainSource): ChainTx? {
+    suspend fun reveal(inscriptionId: String, source: ChainSource, cache: TxCache): ChainTx? {
         val match = ID.matchEntire(inscriptionId) ?: return null
-        val tx = source.transaction(match.groupValues[1])
+        val txid = match.groupValues[1]
+        val tx = cache.get(txid) ?: source.transaction(txid).also { cache.put(it) }
         if(inscriptionId in InscriptionLocator.ordIds(tx.tx)) {
             return tx
         }

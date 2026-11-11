@@ -728,6 +728,31 @@ class TrackerRunTest {
         assertEquals("Indexer and chain disagree: $id not found on chain", check.reason)
     }
 
+    /** A reveal the run already holds (traced earlier, in the cache) is read from the cache, not fetched again. */
+    @Test fun revealIsReadFromTheCache() {
+        val tx = cleanCoin(1)
+        val parent = chain.add(spend(hash(8), 10_000), 2_000_000)
+        val creator = chain.add(reveal(parent.txid, "Z", 9_000), 2_450_000)
+        val id = creator.txid + "i0"
+        val outpoint = tx.txid + ":0"
+        val answer = IndexerAnswer(true, listOf(id), runes = false, unlisted = false)
+        val cache = TxCache()
+        cache.put(chain.txs.getValue(creator.txid))
+        val check = runBlocking {
+            TrackerRun.run(Coin.LITECOIN, Network.MAINNET, cache, chain, listOf(coin(tx)), emptyMap(), mapOf(outpoint to answer),
+                InscriptionCheck.Source.PUBLIC, emptySet(), TrackerRun.RUN_BUDGET, { false }, { _, _ -> }) { done, _ -> progress.add(done) }
+        }.getValue(outpoint)
+        assertEquals(Verdict.INSCRIBED, check.verdict)
+        assertEquals(2, chain.calls, "only the trace's two lookups; the reveal came from the cache")
+        //A reveal fetched once is kept, so the next check does not fetch it again
+        val fresh = TxCache()
+        chain.calls = 0
+        val first = runBlocking { RevealCheck.reveal(id, chain, fresh) }
+        assertEquals(1, chain.calls)
+        assertSame(first, runBlocking { RevealCheck.reveal(id, chain, fresh) })
+        assertEquals(1, chain.calls)
+    }
+
     @Test fun aRevealCheckThatFailsStopsTheRun() {
         val first = cleanCoin(1)
         val second = cleanCoin(2)

@@ -27,6 +27,9 @@ data class TxDetail(
  */
 data class TxAt(val height: Int, val blockHash: String?, val time: Long)
 
+/** A transaction's serialized bytes (checked to hash to the txid asked for) and where it is mined. */
+class PlacedTx(val raw: ByteArray, val at: TxAt)
+
 /**
  * One coin's chain as seen through a server: an Electrum server or an Esplora REST API.
  * Scripts are passed as scriptPubKey bytes; each backend keys them its own way.
@@ -80,6 +83,12 @@ interface ChainBackend {
 
     /** Where [txid] is mined, from the server. Unconfirmed gives height 0. */
     suspend fun transactionAt(txid: String): TxAt = throw UnsupportedOperationException("This backend cannot place a transaction in a block")
+
+    /**
+     * [rawTransaction] and [transactionAt] together. A backend that can answer both in one server call overrides this;
+     * the bytes must still be checked to hash to [txid].
+     */
+    suspend fun placedTransaction(txid: String): PlacedTx = PlacedTx(rawTransaction(txid), transactionAt(txid))
 
     fun close()
 }

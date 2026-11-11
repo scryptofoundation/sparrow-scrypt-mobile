@@ -216,6 +216,65 @@ class ElectrumBackendBlocksTest {
         }
     }
 
+    private val rawHex = "0200000001" + "11".repeat(32) + "00000000" + "00" + "fdffffff" + "01" + "e803000000000000" + "0151" + "00000000"
+    private val rawId = com.sparrowwallet.mobile.crypto.RawTx.parse(rawHex.hexToBytes()).txid
+    private val otherHex = "0200000001" + "22".repeat(32) + "00000000" + "00" + "fdffffff" + "01" + "e803000000000000" + "0151" + "00000000"
+
+    /** A chain whose verbose answer for [rawId] carries [hex] (when not null); non-verbose calls answer [rawAnswer]. */
+    private fun placedChain(methods: MutableList<String>, hex: String?, rawAnswer: String = rawHex): (String, String) -> Pair<String?, String> = { m, p ->
+        when(m) {
+            "blockchain.headers.subscribe" -> "{\"height\":110,\"hex\":\"00\"}" to ""
+            "blockchain.block.header" -> "\"${headerAt(p.trim('[', ']').toInt())}\"" to ""
+            else -> {
+                val verbose = p.contains("true")
+                methods += if(verbose) "verbose" else "raw"
+                if(verbose) ("{\"txid\":\"$rawId\",\"confirmations\":11,\"blockhash\":\"${hashAt(100)}\",\"blocktime\":1761000000" +
+                    (if(hex != null) ",\"hex\":\"$hex\"" else "") + ",\"vin\":[],\"vout\":[]}") to ""
+                else "\"$rawAnswer\"" to ""
+            }
+        }
+    }
+
+    @Test fun placedTransactionUsesOneCallWhenVerboseCarriesHex() {
+        val methods = ArrayList<String>()
+        withBackend(placedChain(methods, rawHex)) { b ->
+            val placed = b.placedTransaction(rawId)
+            assertEquals(listOf("verbose"), methods, "one transaction.get, and no raw call")
+            assertEquals(rawId, com.sparrowwallet.mobile.crypto.RawTx.parse(placed.raw).txid)
+            assertEquals(TxAt(100, hashAt(100), 1761000000L), placed.at)
+        }
+    }
+
+    @Test fun placedTransactionFallsBackWithoutHex() {
+        val methods = ArrayList<String>()
+        withBackend(placedChain(methods, null)) { b ->
+            val placed = b.placedTransaction(rawId)
+            assertEquals(listOf("verbose", "raw"), methods)
+            assertEquals(rawId, com.sparrowwallet.mobile.crypto.RawTx.parse(placed.raw).txid)
+            assertEquals(TxAt(100, hashAt(100), 1761000000L), placed.at)
+        }
+    }
+
+    @Test fun placedTransactionIgnoresHexThatHashesToAnotherTxid() {
+        val methods = ArrayList<String>()
+        withBackend(placedChain(methods, otherHex)) { b ->
+            val placed = b.placedTransaction(rawId)
+            assertEquals(listOf("verbose", "raw"), methods, "the wrong hex is not used; the raw call answers")
+            assertEquals(rawId, com.sparrowwallet.mobile.crypto.RawTx.parse(placed.raw).txid)
+        }
+        //and the raw answer is itself checked: another transaction there is an error, never returned
+        withBackend(placedChain(ArrayList(), otherHex, rawAnswer = otherHex)) { b ->
+            assertFailsWith<IOException> { b.placedTransaction(rawId) }
+        }
+    }
+
+    @Test fun placedTransactionKeepsTheBlockHashCheck() {
+        val inner = placedChain(ArrayList(), rawHex)
+        withBackend({ m, p -> if(m == "blockchain.block.header") "\"${headerAt(99)}\"" to "" else inner(m, p) }) { b ->
+            assertFailsWith<IOException> { b.placedTransaction(rawId) }
+        }
+    }
+
     @Test fun blockCallsRefuseWhenAirGapped() {
         withBackend({ _, _ -> "\"00\"" to "" }) { b ->
             NetworkPolicy.blocked = true

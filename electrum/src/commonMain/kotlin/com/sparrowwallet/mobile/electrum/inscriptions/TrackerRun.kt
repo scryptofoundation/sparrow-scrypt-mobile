@@ -296,7 +296,7 @@ object TrackerRun {
                     if(!deep) {
                         state.used++
                     }
-                    reveals[id] = server { RevealCheck.reveal(id, source) }
+                    reveals[id] = server { RevealCheck.reveal(id, source, cache) }
                 }
             } else if(trace.verdict == Verdict.CLEAN) {
                 val cached = cache.get(utxo.txid)

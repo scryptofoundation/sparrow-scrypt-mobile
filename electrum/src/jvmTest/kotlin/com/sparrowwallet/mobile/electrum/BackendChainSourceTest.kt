@@ -47,6 +47,30 @@ class BackendChainSourceTest {
         assertTrue(tx.fromServer)
     }
 
+    /** The source reads a transaction and its place through placedTransaction, not as two separate calls. */
+    @Test fun transactionUsesPlacedTransaction(): Unit = runBlocking {
+        val calls = ArrayList<String>()
+        val backend = object : Bare(raw.hexToBytes()) {
+            override suspend fun rawTransaction(txid: String): ByteArray { calls.add("raw"); return raw }
+            override suspend fun transactionAt(txid: String): TxAt { calls.add("at"); return TxAt(0, null, 0) }
+        }
+        val plain = BackendChainSource(backend).transaction(txid)
+        assertEquals(listOf("raw", "at"), calls, "the default placedTransaction reads the raw bytes and then the place")
+        assertEquals(txid, plain.tx.txid)
+        val rawBytes = raw.hexToBytes()
+        val placed = object : Bare() {
+            override suspend fun placedTransaction(txid: String) = PlacedTx(rawBytes, TxAt(101, hash, 1761000000L))
+            override suspend fun rawTransaction(txid: String): ByteArray = error("the source must use placedTransaction")
+            override suspend fun transactionAt(txid: String): TxAt = error("the source must use placedTransaction")
+        }
+        val tx = BackendChainSource(placed).transaction(txid)
+        assertEquals(txid, tx.tx.txid)
+        assertEquals(101, tx.height)
+        assertEquals(hash, tx.blockHash)
+        assertEquals(1761000000L, tx.blockTime)
+        assertTrue(tx.fromServer)
+    }
+
     @Test fun otherCallsDelegate(): Unit = runBlocking {
         val source = BackendChainSource(Fake(raw.hexToBytes(), TxAt(0, null, 0)))
         assertEquals("h7", source.blockHash(7))

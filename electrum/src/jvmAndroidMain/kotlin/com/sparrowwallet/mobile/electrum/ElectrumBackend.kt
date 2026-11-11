@@ -4,6 +4,7 @@ import com.sparrowwallet.mobile.crypto.hexToBytes
 import com.sparrowwallet.mobile.crypto.sha256d
 import com.sparrowwallet.mobile.crypto.toHex
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -74,11 +75,28 @@ class ElectrumBackend(
      * transaction; still mismatching after the retries throws.
      * Without confirmations the height is 0 and the block hash null; confirmations without a blockhash throw.
      */
-    override suspend fun transactionAt(txid: String): TxAt {
+    override suspend fun transactionAt(txid: String): TxAt = place(txid, null)
+
+    /**
+     * The bytes and the place from one verbose transaction.get. The verbose answer's top-level hex is used only when it
+     * passes the txid hash check [rawTransaction] applies; without hex, or when it is not valid or hashes to another
+     * transaction, the bytes come from the (checked) raw call. The placement is [transactionAt]'s, on this same answer.
+     */
+    override suspend fun placedTransaction(txid: String): PlacedTx {
+        val json = client.getTransactionVerbose(txid)
+        val hex = json["hex"]?.let { it as? JsonPrimitive }?.takeIf { it.isString }?.content
+        val raw = hex?.let { try { verifiedRawTransaction(txid, it) } catch(e: IOException) { null } } ?: rawTransaction(txid)
+        return PlacedTx(raw, place(txid, json))
+    }
+
+    /** [transactionAt]'s placement loop; [first] is a verbose answer already read for [txid], used for the first pass. */
+    private suspend fun place(txid: String, first: JsonObject?): TxAt {
         var tip = placingTip ?: client.tipHeight().also { placingTip = it }
         var retries = 0
+        var pending = first
         while(true) {
-            val json = client.getTransactionVerbose(txid)
+            val json = pending ?: client.getTransactionVerbose(txid)
+            pending = null
             val confirmations = json["confirmations"]?.jsonPrimitive?.longOrNull ?: 0L
             if(confirmations <= 0L) return TxAt(0, null, 0)
             val time = (json["blocktime"] ?: json["time"])?.jsonPrimitive?.longOrNull ?: 0L

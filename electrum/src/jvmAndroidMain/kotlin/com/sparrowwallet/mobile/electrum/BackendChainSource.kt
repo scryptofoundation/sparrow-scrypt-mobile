@@ -15,8 +15,9 @@ import kotlinx.coroutines.withContext
  */
 class BackendChainSource(private val backend: ChainBackend) : ChainSource {
     override suspend fun transaction(txid: String): ChainTx = withContext(NoRateLimitWait) {
-        val parsed = RawTx.parse(backend.rawTransaction(txid))
-        val at = backend.transactionAt(txid)
+        val placed = backend.placedTransaction(txid)
+        val parsed = RawTx.parse(placed.raw)
+        val at = placed.at
         ChainTx(parsed, at.height, at.blockHash, at.time, fromServer = true)
     }
 
