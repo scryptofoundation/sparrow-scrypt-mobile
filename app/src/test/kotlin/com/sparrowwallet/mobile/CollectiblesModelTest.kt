@@ -10,6 +10,7 @@ import com.sparrowwallet.mobile.electrum.indexer.RuneBalance
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import java.util.Locale
 import kotlin.test.Test
@@ -40,8 +41,9 @@ class CollectiblesModelTest {
 
     private fun view(
         checks: Map<String, InscriptionCheck>? = emptyMap(), status: CheckStatus? = null,
-        setting: InscriptionSetting = InscriptionSetting.BuiltIn, coin: Coin = Coin.LITECOIN, queued: Set<String> = emptySet()
-    ) = CollectiblesModel.build(checks, status, setting, coin, queued)
+        setting: InscriptionSetting = InscriptionSetting.BuiltIn, coin: Coin = Coin.LITECOIN, queued: Set<String> = emptySet(),
+        airGapped: Boolean = false
+    ) = CollectiblesModel.build(checks, status, setting, coin, queued, airGapped)
 
     @Test fun headerStates() {
         assertEquals("Not checked yet", view(null).header)
@@ -280,9 +282,25 @@ class CollectiblesModelTest {
         assertFalse(v.empty)
     }
 
-    @Test fun uncheckedAndMarkedKeepsItsOwnReason() {
-        val v = view(map(marked(0, null, Verdict.UNCHECKED).copy(reason = "Server error: x")), setting = InscriptionSetting.Public)
-        assertEquals(listOf("Server error: x"), v.unchecked.map { it.reason })
+    /** A coin Send holds by an indexer's mark: a deeper trace cannot free it, so it says it is held and offers no Check deeper. */
+    @Test fun uncheckedAndHeldShowsHeldWithNoCheckDeeper() {
+        for(reason in listOf("Server error: x", InscriptionTracer.BUDGET_USED, InscriptionTracer.FEES_NEED_DEEPER)) {
+            for(setting in listOf(InscriptionSetting.Public, InscriptionSetting.BuiltIn)) {
+                val v = view(map(marked(0, null, Verdict.UNCHECKED).copy(reason = reason)), setting = setting)
+                val row = v.unchecked.single()
+                assertEquals(CollectiblesModel.HELD, row.reason, reason)
+                assertFalse(row.canCheckDeeper, reason)
+                assertEquals(DeeperButton.NONE, CollectiblesModel.deeperButton(row, airGapped = false))
+            }
+        }
+    }
+
+    @Test fun airGappedSaysChecksAreOff() {
+        for(status in listOf(null, CheckStatus(3, 40, false, true), CheckStatus(40, 40, true, false))) {
+            assertEquals("Checks are off while air-gapped", view(map(row(0)), status, InscriptionSetting.Public, airGapped = true).header)
+            assertEquals("Checks are off while air-gapped", view(null, status, airGapped = true).header)
+        }
+        assertEquals(CollectiblesModel.CHECKS_OFF, view(map(row(0)), airGapped = true).header)
     }
 
     @Test fun emptyIsFalseWheneverAnythingIsListed() {
@@ -293,10 +311,10 @@ class CollectiblesModelTest {
     }
 
     @Test fun reasonsAreSingleLineSafeAndShortButDeeperStillWorks() {
-        val hostile = "Server error\nline two‮evil​ " + "x".repeat(500)
+        val hostile = "Server error\nline two\u202eevil\u200b " + "x".repeat(500)
         val v = view(map(row(0, Verdict.UNCHECKED, reason = hostile, block = null)))
         val shown = v.unchecked.single().reason
-        assertFalse(shown.any { it == '\n' || it == '‮' || it == '​' })
+        assertFalse(shown.any { it == '\n' || it == '\u202e' || it == '\u200b' })
         assertTrue(shown.startsWith("Server error line twoevil"))
         assertTrue(shown.length <= 120)
         assertFalse(v.unchecked.single().canCheckDeeper)
@@ -390,7 +408,7 @@ class CollectiblesModelTest {
         val image = assertIs<InscriptionPreview.Shown.Image>(InscriptionPreview.shown(t, false, false, InscriptionContent("image/png", null, png)))
         assertEquals(64 to 32, image.width to image.height)
         assertEquals(InscriptionPreview.Shown.Text("hi\tthere"),
-            InscriptionPreview.shown(t, false, false, InscriptionContent("text/plain;charset=utf-8", null, "hi\tthere‮".encodeToByteArray())))
+            InscriptionPreview.shown(t, false, false, InscriptionContent("text/plain;charset=utf-8", null, "hi\tthere\u202e".encodeToByteArray())))
         assertEquals(InscriptionPreview.Shown.Placeholder("text/html", "1,500 bytes"),
             InscriptionPreview.shown(t, false, false, InscriptionContent("text/html", null, ByteArray(1_500))))
         assertEquals(InscriptionPreview.Shown.Placeholder("image/png", "24 bytes"),
@@ -399,9 +417,80 @@ class CollectiblesModelTest {
             InscriptionPreview.shown(t, false, false, InscriptionContent(null, null, ByteArray(0))))
     }
 
+    /** Content over the limit (its body never assembled) shows its type and size with "Preview unavailable". */
+    @Test fun oversizedContentShowsItsTypeAndSize() {
+        val t = tile()
+        val big = InscriptionContent("image/png", null, ByteArray(0), size = 512_000, complete = false)
+        assertEquals(InscriptionPreview.Shown.Placeholder("image/png", "512,000 bytes", "Preview unavailable"),
+            InscriptionPreview.shown(t, false, false, big))
+        assertEquals("image/png, 512,000 bytes", InscriptionPreview.contentLine(big))
+        val unknown = InscriptionContent(null, null, ByteArray(0), size = 400_000, complete = false, sizeOver = true)
+        assertEquals(InscriptionPreview.Shown.Placeholder("Unknown type", "Over 400,000 bytes", "Preview unavailable"),
+            InscriptionPreview.shown(t, false, false, unknown))
+        //A complete placeholder has no note
+        assertNull((InscriptionPreview.shown(t, false, false, InscriptionContent("text/html", null, ByteArray(3)))
+            as InscriptionPreview.Shown.Placeholder).note)
+    }
+
+    @Test fun previewsDecodeOneAtATime(): Unit = runBlocking {
+        val decodes = OneAtATime()
+        val inside = java.util.concurrent.atomic.AtomicInteger()
+        val most = java.util.concurrent.atomic.AtomicInteger()
+        (1..6).map {
+            async(kotlinx.coroutines.Dispatchers.Default) {
+                decodes.run {
+                    most.accumulateAndGet(inside.incrementAndGet()) { a, b -> maxOf(a, b) }
+                    Thread.sleep(20)
+                    inside.decrementAndGet()
+                }
+            }
+        }.forEach { it.await() }
+        assertEquals(1, most.get())
+    }
+
+    /** A tile that leaves while its decode waits for its turn never decodes. */
+    @Test fun aDecodeWhoseTileLeftNeverStarts(): Unit = runBlocking {
+        val decodes = OneAtATime()
+        val holding = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val first = async(kotlinx.coroutines.Dispatchers.Default) { decodes.run { holding.countDown(); release.await() } }
+        holding.await()
+        val ran = java.util.concurrent.atomic.AtomicBoolean()
+        val second = launch(kotlinx.coroutines.Dispatchers.Default) { decodes.run { ran.set(true) } }
+        kotlinx.coroutines.delay(50)
+        second.cancel()
+        second.join()
+        release.countDown()
+        first.await()
+        assertFalse(ran.get())
+        //and a caller already cancelled when its turn comes does not decode either
+        val gone = launch(kotlinx.coroutines.Dispatchers.Default, start = kotlinx.coroutines.CoroutineStart.LAZY) { decodes.run { ran.set(true) } }
+        gone.cancel()
+        gone.join()
+        assertFalse(ran.get())
+    }
+
+    @Test fun aCancelledLoadReleasesItsPermit(): Unit = runBlocking {
+        val permits = kotlinx.coroutines.sync.Semaphore(1)
+        val cache = ContentCache(64)
+        val started = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val stuck = launch(kotlinx.coroutines.Dispatchers.Default) {
+            ContentLoading.load(cache, "a", airGapped = false, permits = permits) { started.complete(Unit); kotlinx.coroutines.awaitCancellation() }
+        }
+        started.await()
+        assertEquals(0, permits.availablePermits)
+        stuck.cancel()
+        stuck.join()
+        assertEquals(1, permits.availablePermits)
+        val next = kotlinx.coroutines.withTimeout(5_000) {
+            ContentLoading.load(cache, "b", airGapped = false, permits = permits) { InscriptionContent("text/plain", null, "x".encodeToByteArray()) }
+        }
+        assertNotNull(next)
+    }
+
     @Test fun aHostileContentTypeIsShownSafelyAndShort() {
-        val shown = InscriptionPreview.typeText("text/x\n‮evil​" + "y".repeat(500))
-        assertFalse(shown.any { it == '\n' || it == '‮' || it == '​' })
+        val shown = InscriptionPreview.typeText("text/x\n\u202eevil\u200b" + "y".repeat(500))
+        assertFalse(shown.any { it == '\n' || it == '\u202e' || it == '\u200b' })
         assertTrue(shown.startsWith("text/x evil"))
         assertTrue(shown.length <= InscriptionPreview.MAX_TYPE_CHARS)
     }
@@ -448,8 +537,10 @@ class CollectiblesModelTest {
         assertFalse("Number" in bare || "Value" in bare || "Address" in bare || "Content" in bare)
         assertEquals("Unconfirmed", InscriptionDetail.lines(tile(label = "Unconfirmed", height = 0, time = 0), Coin.LITECOIN, null, null)
             .single { it.label == "Minted" }.value)
-        assertEquals(listOf("Built-in", "Your own indexer", "Public indexer"),
-            listOf(InscriptionCheck.Source.BUILT_IN, InscriptionCheck.Source.YOUR_OWN, InscriptionCheck.Source.PUBLIC).map { InscriptionDetail.source(it) })
+        //Named as the setting names them; the wallet's own trace is the built-in one
+        assertEquals(listOf("Built-in", "Built-in", "Your own indexer", "Public indexer"),
+            listOf(InscriptionCheck.Source.BUILT_IN, InscriptionCheck.Source.OWN, InscriptionCheck.Source.YOUR_OWN, InscriptionCheck.Source.PUBLIC)
+                .map { InscriptionDetail.source(it) })
     }
 
     @Test fun onlyAReceiveOrChangePositionGivesAnAddress() {

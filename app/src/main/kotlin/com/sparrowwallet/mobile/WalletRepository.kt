@@ -43,7 +43,7 @@ import com.sparrowwallet.mobile.storage.SparrowLink
 import com.sparrowwallet.mobile.storage.VaultData
 import com.sparrowwallet.mobile.storage.WalletVault
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
@@ -365,21 +365,31 @@ class WalletRepository(context: Context) {
      * the running one (see [InscriptionChecker.requestDeeper]). The run is Home's: the same listing and [checkWithIndexer]
      * path, so the setting, proxy, notice and air-gap rules are read when it runs. Like [startInscriptionCheck] it keeps
      * only the xpub and the shown-receive count. MWEB wallets, uncovered coins and air-gapped mode queue nothing.
+     *
+     * Cheap on the main thread: the coin shows as queued at once, and the account xpub is derived in the process's own
+     * scope (leaving the screen does not drop the request); taps while one derivation for the wallet goes share it.
      */
-    fun requestDeeperCheck(data: VaultData, account: HDKey, outpoint: String) {
+    fun requestDeeperCheck(data: VaultData, outpoint: String) {
         val name = sessionNames[data] ?: return
         val coin = coin(data)
-        if(!checkApplies(data.scriptType, coin)) {
+        val scriptType = data.scriptType
+        if(!deeperCheckAllowed(coin, scriptType, NetworkPolicy.blocked)) {
             return
         }
         val network = network(data)
-        val scriptType = data.scriptType
-        val xpub = account.xpub(params(data).xpubHeader)
         val receiveTo = receiveShownTo(data)
-        inscriptionChecker.requestDeeper(name, outpoint) { deeper ->
-            runCheck(name, coin, network, scriptType, deeper, { false }, XpubKey.fromXpub(xpub), receiveTo)
+        val xpub = deriving.computeIfAbsent(name) {
+            backgroundScope.async(start = kotlinx.coroutines.CoroutineStart.LAZY) { accountXpub(data) }
+        }
+        xpub.invokeOnCompletion { deriving.remove(name, xpub) }
+        xpub.start()
+        requestDeeperIfAllowed(inscriptionChecker, name, coin, scriptType, NetworkPolicy.blocked, outpoint) { deeper ->
+            runCheck(name, coin, network, scriptType, deeper, { false }, XpubKey.fromXpub(xpub.await()), receiveTo)
         }
     }
+
+    /** Account xpubs being derived for Check deeper, by wallet name: only while derivation goes. */
+    private val deriving get() = derivingXpubs
 
     /** The address at a position of the wallet's account ([chain] 0 receive, 1 change). Derives keys: call it off the main thread. */
     fun addressAt(data: VaultData, chain: Int, index: Int): String =
@@ -544,11 +554,12 @@ class WalletRepository(context: Context) {
     suspend fun inscriptionContent(data: VaultData, inscriptionId: String, mintTxid: String): InscriptionContent? {
         val coin = coin(data)
         val network = network(data)
-        return ContentLoading.load(contentCache, ContentLoading.key(coin, network, inscriptionId), NetworkPolicy.blocked) {
-            //Each load opens its own server connection: a screenful of tiles takes turns, a few at a time
-            contentLoads.withPermit { withBackend(coin, network) { backend ->
-                InscriptionContent.fromChain(inscriptionId, mintTxid, BackendChainSource(backend), PreviewRules.MAX_CONTENT_BYTES)
-            } }
+        //Each load opens its own server connection: a screenful of tiles takes turns, a few at a time. Content over the
+        //limit comes back as its type and size only (its body is never assembled), so the tile can say what it is
+        return ContentLoading.load(contentCache, ContentLoading.key(coin, network, inscriptionId), NetworkPolicy.blocked, contentLoads) {
+            withBackend(coin, network) { backend ->
+                InscriptionContent.readFromChain(inscriptionId, mintTxid, BackendChainSource(backend), PreviewRules.MAX_CONTENT_BYTES)
+            }
         }
     }
 
@@ -1376,6 +1387,10 @@ class WalletRepository(context: Context) {
         }
     }
 }
+
+/** The process's own scope for work a screen starts but must not lose by being left (Check deeper's xpub derivation). */
+private val backgroundScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
+private val derivingXpubs = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.Deferred<String>>()
 
 private val inscriptionCheckerLock = Any()
 @Volatile private var inscriptionCheckerInstance: InscriptionChecker? = null

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridScope
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,7 +35,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,13 +49,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import com.sparrowwallet.mobile.crypto.track.InscriptionContent
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.storage.VaultData
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /*
@@ -66,9 +64,18 @@ import kotlinx.coroutines.withContext
 /** The stored rows once read (null inside: never checked), so "not read yet" is told from "never checked". */
 private class StoredRows(val checks: Map<String, InscriptionCheck>?)
 
+/** One visit of a wallet's Collectibles, the grid and its detail screens: the grid's place and the previews that failed. */
+internal class CollectiblesVisit {
+    val grid = LazyGridState()
+    val failures = PreviewFailures()
+}
+
+/** Preview decodes, one at a time across the app (see [OneAtATime]). */
+private val previewDecodes = OneAtATime()
+
 @Composable
-internal fun CollectiblesScreen(repo: WalletRepository, data: VaultData, onTile: (CollectibleTile) -> Unit, onBack: () -> Unit) {
-    val scope = rememberCoroutineScope()
+internal fun CollectiblesScreen(repo: WalletRepository, data: VaultData, visit: CollectiblesVisit, onTile: (CollectibleTile) -> Unit,
+                                onBack: () -> Unit) {
     val coin = remember(data) { repo.coin(data) }
     val network = remember(data) { repo.network(data) }
     val gapped = NetworkPolicy.blocked
@@ -78,21 +85,14 @@ internal fun CollectiblesScreen(repo: WalletRepository, data: VaultData, onTile:
     // read again whenever the run moves on: each decided coin is saved as the run goes
     val stored by produceState<StoredRows?>(null, data, status, queued) { value = StoredRows(repo.loadInscriptionChecks(data)) }
     val view = remember(stored, status, queued, setting) {
-        stored?.let { CollectiblesModel.build(it.checks, status, setting, coin, queued) }
+        stored?.let { CollectiblesModel.build(it.checks, status, setting, coin, queued, gapped) }
     }
-    val failures = remember(data) { PreviewFailures() }
-    var account by remember(data) { mutableStateOf<HDKey?>(null) }
-
-    fun checkDeeper(outpoint: String) {
-        scope.launch {
-            val key = account ?: withContext(Dispatchers.Default) { repo.accountKey(data) }.also { account = it }
-            repo.requestDeeperCheck(data, key, outpoint)
-        }
-    }
+    val failures = visit.failures
 
     // one lazy grid holds the whole screen, so nothing scrolls inside anything else
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
+        state = visit.grid,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(24.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -121,7 +121,7 @@ internal fun CollectiblesScreen(repo: WalletRepository, data: VaultData, onTile:
                 full("unchecked/title") { Text("Coins not yet checked", style = MaterialTheme.typography.titleSmall) }
                 items(view.unchecked, key = { "unchecked/${it.outpoint}" }, span = { GridItemSpan(maxLineSpan) },
                     contentType = { "unchecked" }) { row ->
-                    UncheckedCard(row, coin, gapped, onCheckDeeper = { checkDeeper(row.outpoint) })
+                    UncheckedCard(row, coin, gapped, onCheckDeeper = { repo.requestDeeperCheck(data, row.outpoint) })
                 }
             }
         }
@@ -148,7 +148,7 @@ private fun CollectibleTileCard(repo: WalletRepository, data: VaultData, tile: C
             content = loaded
         }
     }
-    val shown = InscriptionPreview.shown(tile, gapped, failed, content)
+    val shown = remember(tile, gapped, failed, content) { InscriptionPreview.shown(tile, gapped, failed, content) }
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(modifier = Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             PreviewBox(shown, tile.label, InscriptionPreview.THUMB_TARGET, InscriptionPreview.TILE_TEXT_LINES,
@@ -187,11 +187,16 @@ private fun PreviewBox(shown: InscriptionPreview.Shown, description: String, tar
                     maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(shown.size, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
+                shown.note?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
             }
             is InscriptionPreview.Shown.Image -> {
                 // keyed on the body (the cached content's own array), so a recomposition does not decode again
                 val bitmap by produceState<ImageBitmap?>(null, shown.body, target) {
-                    val decoded = withContext(Dispatchers.Default) { decodeStill(shown, target) }
+                    //One decode at a time across the app; a tile that left while waiting never decodes
+                    val decoded = previewDecodes.run { decodeStill(shown, target) }
                     if(decoded == null) onDecodeFailed() else value = decoded.asImageBitmap()
                 }
                 bitmap?.let {
@@ -269,27 +274,34 @@ private fun UncheckedCard(row: UncheckedRow, coin: com.sparrowwallet.mobile.cryp
 
 /** One inscription: its preview, the facts [InscriptionDetail] lists, and Copy for the id and the outpoint. */
 @Composable
-internal fun InscriptionScreen(repo: WalletRepository, data: VaultData, tile: CollectibleTile, onBack: () -> Unit) {
+internal fun InscriptionScreen(repo: WalletRepository, data: VaultData, tile: CollectibleTile, visit: CollectiblesVisit,
+                                onBack: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     val coin = remember(data) { repo.coin(data) }
     val gapped = NetworkPolicy.blocked
     var content by remember(tile.key) { mutableStateOf<InscriptionContent?>(null) }
-    var failed by remember(tile.key) { mutableStateOf(false) }
+    var failed by remember(tile.key) { mutableStateOf(tile.key in visit.failures) }
     var copied by remember(tile.key) { mutableStateOf<String?>(null) }
     LaunchedEffect(tile.key) {
-        if(!InscriptionPreview.shouldLoad(tile, gapped, PreviewFailures())) return@LaunchedEffect
+        if(!InscriptionPreview.shouldLoad(tile, gapped, visit.failures)) return@LaunchedEffect
         val loaded = repo.inscriptionContent(data, tile.inscriptionId, tile.mintTxid)
-        if(loaded == null) failed = true else content = loaded
+        if(loaded == null) {
+            visit.failures.add(tile.key)
+            failed = true
+        } else {
+            content = loaded
+        }
     }
     // the address is derived from the wallet's keys: off the main thread
     val address by produceState<String?>(null, tile.key) {
         val position = InscriptionDetail.position(tile) ?: return@produceState
         value = withContext(Dispatchers.Default) { runCatching { repo.addressAt(data, position.first, position.second) }.getOrNull() }
     }
-    val shown = InscriptionPreview.shown(tile, gapped, failed, content)
+    val shown = remember(tile, gapped, failed, content) { InscriptionPreview.shown(tile, gapped, failed, content) }
     ScreenColumn {
         Text(tile.label, style = MaterialTheme.typography.headlineSmall)
-        PreviewBox(shown, tile.label, InscriptionPreview.DETAIL_TARGET, Int.MAX_VALUE, onDecodeFailed = { failed = true },
+        PreviewBox(shown, tile.label, InscriptionPreview.DETAIL_TARGET, Int.MAX_VALUE,
+            onDecodeFailed = { visit.failures.add(tile.key); failed = true },
             modifier = if(shown is InscriptionPreview.Shown.Text) Modifier.fillMaxWidth() else Modifier.fillMaxWidth().aspectRatio(1f))
         InscriptionDetail.carries(tile)?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
         Card(modifier = Modifier.fillMaxWidth()) {

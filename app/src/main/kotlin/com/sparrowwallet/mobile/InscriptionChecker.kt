@@ -117,6 +117,7 @@ class InscriptionChecker(
         //Its Check deeper requests go too, before its run is cancelled, so no follow-up starts for it
         synchronized(deeperLock) {
             deeperQueues.remove(key)
+            reruns.remove(key)
             publishDeeper(key)
         }
         jobs[key]?.cancel()
@@ -140,18 +141,38 @@ class InscriptionChecker(
      * Starts [work] (a wallet's check) in the checker's own scope unless one is already going for the wallet; returns
      * its job, or null when skipped. Not tied to any screen: it runs to its end unless [forget] cancels it. A failure
      * is swallowed (what the run decided is already saved).
+     *
+     * Skipped because a Check deeper run holds the wallet (one that checks only what it was asked to and lists coins
+     * before Home's sync saw new ones), [work] is kept and run once when that run ends: one rerun however many times it
+     * was skipped (the latest work is kept), through the same guard. Skipped by any other run, nothing is kept: that run
+     * checks the wallet's coins itself.
      */
     fun start(walletName: String, work: suspend () -> Map<String, InscriptionCheck>): Job? {
         val key = key(walletName)
-        if(!running.add(key)) {
-            return null
+        synchronized(deeperLock) {
+            if(!running.add(key)) {
+                if(deeperQueues[key]?.inFlight?.isNotEmpty() == true) {
+                    reruns[key] = work
+                }
+                return null
+            }
         }
         return launchClaimed(walletName, key, {}, work)
     }
 
+    /** Checks skipped by a Check deeper run, to run once it ends; by wallet key. Guarded by [deeperLock]. */
+    private val reruns = HashMap<String, suspend () -> Map<String, InscriptionCheck>>()
+
+    private fun startRerun(walletName: String) {
+        val work = synchronized(deeperLock) { reruns.remove(key(walletName)) } ?: return
+        //Taken again by a deeper run that started first, it is kept again for that run's end
+        start(walletName, work)
+    }
+
     /**
-     * Launches [work] for a wallet whose guard the caller has just taken. When it ends, however it ends, [onEnd] runs,
-     * the guard is let go, and then any Check deeper waiting for the wallet starts (see [requestDeeper]).
+     * Launches [work] for a wallet whose guard the caller has just taken. When it ends, however it ends, [onEnd] runs and
+     * the guard is let go (together, so [start] sees either both or neither), then any Check deeper waiting for the
+     * wallet starts (see [requestDeeper]), then a check a deeper run displaced (see [start]).
      */
     private fun launchClaimed(walletName: String, key: String, onEnd: () -> Unit, work: suspend () -> Map<String, InscriptionCheck>): Job {
         claim(key)
@@ -166,11 +187,14 @@ class InscriptionChecker(
         }
         jobs[key] = job
         job.invokeOnCompletion {
-            onEnd()
             jobs.remove(key, job)
             claimedEpochs.remove(key)
-            running.remove(key)
+            synchronized(deeperLock) {
+                onEnd()
+                running.remove(key)
+            }
             startDeeper(walletName)
+            startRerun(walletName)
         }
         job.start()
         return job
@@ -203,6 +227,12 @@ class InscriptionChecker(
      * screen shows them as Queued.
      */
     fun deeperQueued(walletName: String): StateFlow<Set<String>> = deeperFlow(key(walletName))
+
+    /** Whether the wallet's queue holds a runner (and what it captured): only while something waits or runs. */
+    internal fun holdsDeeperRunner(walletName: String): Boolean = synchronized(deeperLock) { deeperQueues[key(walletName)]?.run != null }
+
+    /** Test hook: runs after a deeper run has taken its outpoints and before it is launched. */
+    @Volatile internal var beforeDeeperLaunch: () -> Unit = {}
 
     /**
      * Asks for [outpoint] to be checked deeper. [run] is the wallet's check with a deeper set (in the app, the same path
@@ -246,16 +276,23 @@ class InscriptionChecker(
             queue.inFlight = taken
             publishDeeper(key)
         }
+        //Called under deeperLock. A drained queue is dropped, runner and all
         val onEnd = {
-            synchronized(deeperLock) {
-                val queue = deeperQueues[key]
-                if(queue != null && queue.inFlight === taken) {
-                    queue.inFlight = emptySet()
-                    publishDeeper(key)
+            val queue = deeperQueues[key]
+            if(queue != null && queue.inFlight === taken) {
+                queue.inFlight = emptySet()
+                if(queue.waiting.isEmpty()) {
+                    deeperQueues.remove(key)
                 }
+                publishDeeper(key)
             }
         }
+        beforeDeeperLaunch()
         return launchClaimed(walletName, key, onEnd) {
+            //Forgotten (deleted) since its outpoints were taken: nothing is checked or written for it
+            if(synchronized(deeperLock) { deeperQueues[key]?.inFlight !== taken }) {
+                return@launchClaimed emptyMap()
+            }
             val unspent = taken.filterTo(LinkedHashSet()) { it in results(walletName) }
             if(unspent.isEmpty()) emptyMap() else run(unspent)
         }
@@ -729,3 +766,21 @@ internal suspend fun checkWithIndexer(checker: InscriptionChecker, walletName: S
         }
     }
 }
+
+/**
+ * The Check deeper gate the repository uses: an MWEB wallet, a coin the check does not cover, or air-gapped mode queue
+ * nothing (no row is left showing Queued for a run that never comes). Otherwise asks [checker] (see
+ * [InscriptionChecker.requestDeeper]); returns whether it was asked.
+ */
+internal fun requestDeeperIfAllowed(checker: InscriptionChecker, walletName: String, coin: Coin, scriptType: String, airGapped: Boolean,
+                                    outpoint: String, run: suspend (Set<String>) -> Map<String, InscriptionCheck>): Boolean {
+    if(!deeperCheckAllowed(coin, scriptType, airGapped)) {
+        return false
+    }
+    checker.requestDeeper(walletName, outpoint, run)
+    return true
+}
+
+/** Whether a Check deeper may be asked for: a public wallet on a covered coin, not air-gapped. */
+internal fun deeperCheckAllowed(coin: Coin, scriptType: String, airGapped: Boolean): Boolean =
+    scriptType != "MWEB" && ChainRules.covers(coin) && !airGapped

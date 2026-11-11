@@ -17,6 +17,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -187,6 +188,49 @@ class InscriptionContentTest {
         val walked = stepsWalked(steps, 100)
         assertTrue(walked < steps.size)
         assertEquals(1 + walked, chain.transactionCalls)
+    }
+
+    /**
+     * Over the limit, readFromChain still says what the inscription is: its type and size, with no body assembled (the
+     * parts are counted, not kept). fromChain keeps answering null for it.
+     */
+    @Test
+    fun oversizedContentGivesItsTypeAndSizeWithoutTheBody() = runBlocking {
+        val chain = FakeChainSource()
+        val big = ByteArray(1_300) { 7 }
+        val reveal = chain.add(reveal(listOf(at(1)), listOf(script(envelopeOf("image/png", big))), 10_000), 100)
+        val ord = assertNotNull(InscriptionContent.readFromChain(reveal.txid + "i0", null, chain, 1_299))
+        assertEquals("image/png", ord.contentType)
+        assertEquals(0, ord.body.size)
+        assertEquals(1_300L, ord.size)
+        assertFalse(ord.complete)
+        assertFalse(ord.sizeOver)
+        assertNull(InscriptionContent.fromChain(reveal.txid + "i0", null, chain, 1_299))
+        //Within the limit it is the content, complete
+        val whole = assertNotNull(InscriptionContent.readFromChain(reveal.txid + "i0", null, chain, 1_300))
+        assertTrue(whole.complete)
+        assertEquals(1_300L, whole.size)
+
+        val data = body(4_000)
+        val steps = doginalsSteps(data, hash(9))
+        for(step in steps) {
+            chain.add(step, 101)
+        }
+        //Over the limit once assembled: type and exact size
+        val doginal = assertNotNull(InscriptionContent.readFromChain(steps.first().txid + "i0", steps.last().txid, chain, 3_999))
+        assertEquals("image/png", doginal.contentType)
+        assertEquals(4_000L, doginal.size)
+        assertEquals(0, doginal.body.size)
+        assertFalse(doginal.complete)
+        //Far over: the walk stops early, so neither the type nor the full size is known, only that it is over the limit
+        val walked = assertNotNull(InscriptionContent.readFromChain(steps.first().txid + "i0", steps.last().txid, chain, 100))
+        assertNull(walked.contentType)
+        assertEquals(100L, walked.size)
+        assertTrue(walked.sizeOver)
+        assertFalse(walked.complete)
+        assertEquals(0, walked.body.size)
+        //An id the transactions do not hold is still nothing
+        assertNull(InscriptionContent.readFromChain(reveal.txid + "i1", null, chain, 1_299))
     }
 
     private fun payloadOf(step: com.sparrowwallet.mobile.crypto.RawTx.Parsed): Int {

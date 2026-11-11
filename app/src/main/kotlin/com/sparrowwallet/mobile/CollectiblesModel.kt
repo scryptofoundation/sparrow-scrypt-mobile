@@ -10,6 +10,11 @@ import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import java.math.BigDecimal
 import java.math.BigInteger
 
@@ -63,6 +68,8 @@ object CollectiblesModel {
     const val CHECK_DEEPER = "Check deeper"
     const val QUEUED = "Queued"
     const val EMPTY = "No inscriptions in this wallet."
+    /** The header while air-gapped: no checks run, the saved results show (spec, Errors). */
+    const val CHECKS_OFF = "Checks are off while air-gapped"
 
     /** Whether Home offers Collectibles: public wallets on the coins the check covers, never an MWEB wallet. */
     fun available(coin: Coin, scriptType: String): Boolean = scriptType != "MWEB" && ChainRules.covers(coin)
@@ -77,7 +84,7 @@ object CollectiblesModel {
 
     fun build(
         checks: Map<String, InscriptionCheck>?, status: CheckStatus?, setting: InscriptionSetting,
-        coin: Coin, deeperQueued: Set<String>
+        coin: Coin, deeperQueued: Set<String>, airGapped: Boolean = false
     ): CollectiblesView {
         val rows = checks?.values?.sortedWith(compareBy({ it.txid }, { it.vout })) ?: emptyList()
         val tiles = rows.flatMap { tiles(it) }.sortedWith(
@@ -88,7 +95,7 @@ object CollectiblesModel {
         val sums = if(withRunes) sumRunes(rows) else null
         val unchecked = rows.mapNotNull { unchecked(it, deeperQueued, sums?.represented ?: emptySet()) }
         return CollectiblesView(
-            header = header(checks != null, status, setting),
+            header = if(airGapped) CHECKS_OFF else header(checks != null, status, setting),
             tiles = tiles,
             runes = sums?.rows,
             runesNote = when {
@@ -166,6 +173,8 @@ object CollectiblesModel {
      * made safe to show.
      */
     private fun unchecked(row: InscriptionCheck, queued: Set<String>, represented: Set<String>): UncheckedRow? = when {
+        //Send holds it by an indexer's mark, which a deeper trace cannot lift: it says so, with no Check deeper
+        row.verdict == Verdict.UNCHECKED && row.runes -> UncheckedRow(row.outpoint, row.value, HELD, false)
         row.verdict == Verdict.UNCHECKED -> {
             val reason = row.reason ?: NO_REASON
             val asked = row.outpoint in queued
@@ -273,9 +282,14 @@ object ContentLoading {
      * Content from [cache] or from [load], which is cached only when it gives content (a failure or a missing body is
      * never kept). Callers asking for one key at once share one load (a failure is shared by those callers only; a
      * cancelled load is retried by the next waiting caller). Null on any failure and, with no network call and no cache
-     * read, while [airGapped]. Cancellation is rethrown.
+     * read, while [airGapped]. Cancellation is rethrown. With [permits], the load holds one while it reads (each load
+     * opens its own server connection), and gives it back however it ends, cancelled included.
      */
-    suspend fun load(cache: ContentCache, key: String, airGapped: Boolean, load: suspend () -> InscriptionContent?): InscriptionContent? {
+    suspend fun load(cache: ContentCache, key: String, airGapped: Boolean, load: suspend () -> InscriptionContent?): InscriptionContent? =
+        load(cache, key, airGapped, null, load)
+
+    suspend fun load(cache: ContentCache, key: String, airGapped: Boolean, permits: Semaphore?,
+                     load: suspend () -> InscriptionContent?): InscriptionContent? {
         if(airGapped) return null
         while(true) {
             cache.get(key)?.let { return it }
@@ -288,7 +302,7 @@ object ContentLoading {
                 continue
             }
             try {
-                val content = load()
+                val content = if(permits == null) load() else permits.withPermit { load() }
                 if(content != null) cache.put(key, content)
                 mine.complete(true to content)
                 return content
@@ -328,7 +342,8 @@ object InscriptionPreview {
         /** Bytes [PreviewRules] cleared for the platform decoder, with the size their header declares. */
         class Image(val body: ByteArray, val width: Int, val height: Int) : Shown
         data class Text(val text: String) : Shown
-        data class Placeholder(val type: String, val size: String) : Shown
+        /** [note]: "Preview unavailable" for content over the size limit, whose body was never read. */
+        data class Placeholder(val type: String, val size: String, val note: String? = null) : Shown
     }
 
     /**
@@ -340,6 +355,7 @@ object InscriptionPreview {
         airGapped -> Shown.Unavailable(AIR_GAPPED)
         failed -> Shown.Unavailable(UNAVAILABLE)
         content == null -> Shown.Loading
+        !content.complete -> Shown.Placeholder(typeText(content.contentType), sizeText(content), UNAVAILABLE)
         else -> when(PreviewRules.kind(content.contentType, content.contentEncoding, content.body)) {
             PreviewRules.Kind.IMAGE -> PreviewRules.dimensions(content.body)?.let { (w, h) -> Shown.Image(content.body, w, h) }
                 ?: Shown.Unavailable(UNAVAILABLE)
@@ -358,8 +374,12 @@ object InscriptionPreview {
 
     fun sizeText(bytes: Int): String = "${CollectiblesModel.group(bytes.toLong())} bytes"
 
+    /** The content's size: counted, or only a bound when the reader stopped before the end. */
+    fun sizeText(content: InscriptionContent): String =
+        (if(content.sizeOver) "Over " else "") + "${CollectiblesModel.group(content.size)} bytes"
+
     /** The content line of the detail screen: type and size. */
-    fun contentLine(content: InscriptionContent): String = "${typeText(content.contentType)}, ${sizeText(content.body.size)}"
+    fun contentLine(content: InscriptionContent): String = "${typeText(content.contentType)}, ${sizeText(content)}"
 
     /**
      * The decoder's own bounds ([outWidth] x [outHeight], from a bounds-only pass) checked again: positive, never larger
@@ -402,7 +422,7 @@ object InscriptionDetail {
         InscriptionCheck.Source.PUBLIC -> "Public indexer"
         InscriptionCheck.Source.YOUR_OWN -> "Your own indexer"
         InscriptionCheck.Source.BUILT_IN -> "Built-in"
-        InscriptionCheck.Source.OWN -> "This wallet"
+        InscriptionCheck.Source.OWN -> "Built-in"
     }
 
     /** The coin's address position to derive its address from: receive (0) or change (1) and an unhardened index, else null. */
@@ -414,4 +434,18 @@ object InscriptionDetail {
 
     /** "This coin carries N inscriptions." when the coin holds more than one, else null. */
     fun carries(tile: CollectibleTile): String? = if(tile.onCoin > 1) "This coin carries ${tile.onCoin} inscriptions." else null
+}
+
+/**
+ * Runs preview decodes one at a time, off the main thread: a decode can take tens of megabytes whatever its sample size
+ * (a progressive JPEG decodes at full size), so a fling over many tiles must not start one per core. A caller cancelled
+ * while it waits for its turn (its tile left the screen) never decodes.
+ */
+class OneAtATime(private val context: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.Default) {
+    private val turn = Semaphore(1)
+
+    suspend fun <T> run(block: () -> T): T = turn.withPermit {
+        currentCoroutineContext().ensureActive()
+        withContext(context) { block() }
+    }
 }

@@ -140,9 +140,22 @@ internal fun backTarget(screen: Screen): Screen? = when(screen) {
     is Screen.LinkSend, is Screen.Unlock -> Screen.WalletList
 }
 
+/**
+ * The wallet whose Collectibles visit [screen] belongs to: the grid and its detail screens share one visit (scroll
+ * position, failed previews); any other screen ends it. Null outside the visit.
+ */
+internal fun collectiblesVisit(screen: Screen): String? = when(screen) {
+    is Screen.Collectibles -> screen.home.name
+    is Screen.Inscription -> screen.home.name
+    else -> null
+}
+
 @Composable
 private fun App(repo: WalletRepository) {
     var screen by remember { mutableStateOf<Screen>(Screen.WalletList) }
+    // held above the grid and the detail screen, so going back to the grid keeps its place and its failed previews
+    val visitWallet = collectiblesVisit(screen)
+    val visit = remember(visitWallet) { visitWallet?.let { CollectiblesVisit() } }
     var airGapped by remember { mutableStateOf(NetworkPolicy.blocked) }
     BackHandler(enabled = backTarget(screen) != null) { backTarget(screen)?.let { screen = it } }
 
@@ -303,10 +316,11 @@ private fun App(repo: WalletRepository) {
             is Screen.PsbtSign -> PsbtSignScreen(repo, s.home, s.unsigned, onBack = { screen = s.home })
             is Screen.SignPsbt -> SignPsbtScreen(repo, s.home, onBack = { screen = s.home })
             is Screen.ExportToDesktop -> ExportToDesktopScreen(repo, s.home.data, onBack = { screen = s.home })
-            is Screen.Collectibles -> CollectiblesScreen(repo, s.home.data,
+            is Screen.Collectibles -> CollectiblesScreen(repo, s.home.data, visit ?: remember { CollectiblesVisit() },
                 onTile = { tile -> screen = Screen.Inscription(s.home, tile) },
                 onBack = { screen = s.home })
-            is Screen.Inscription -> InscriptionScreen(repo, s.home.data, s.tile, onBack = { screen = Screen.Collectibles(s.home) })
+            is Screen.Inscription -> InscriptionScreen(repo, s.home.data, s.tile, visit ?: remember { CollectiblesVisit() },
+                onBack = { screen = Screen.Collectibles(s.home) })
             is Screen.Server -> ServerScreen(repo, s.home.data, onBack = { screen = s.home })
             is Screen.Details -> DetailsScreen(repo, s.home.name, s.home.data,
                 onExport = { screen = Screen.ExportToDesktop(s.home) },

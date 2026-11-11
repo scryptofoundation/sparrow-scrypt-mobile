@@ -24,6 +24,18 @@ class NavigationTest {
         assertEquals(Screen.Collectibles(home), backTarget(Screen.Inscription(home, tile)))
     }
 
+    /** The Collectibles visit (grid position, failed previews) lasts across the detail screen, and ends at Home. */
+    @Test
+    fun theCollectiblesVisitLastsAcrossTheDetailOnly() {
+        val tile = CollectibleTile("${"a".repeat(64)}i0", "${"b".repeat(64)}:0", "#1", "a".repeat(64), 100, 1_000L, 1, 10_000L,
+            com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck.Source.BUILT_IN)
+        assertEquals("w", collectiblesVisit(Screen.Collectibles(home)))
+        assertEquals("w", collectiblesVisit(Screen.Inscription(home, tile)))
+        assertNull(collectiblesVisit(home))
+        assertNull(collectiblesVisit(Screen.Send(home)))
+        assertNull(collectiblesVisit(Screen.WalletList))
+    }
+
     @Test
     fun backFromHomeAndSetupScreensReturnsToTheList() {
         assertEquals(Screen.WalletList, backTarget(home))

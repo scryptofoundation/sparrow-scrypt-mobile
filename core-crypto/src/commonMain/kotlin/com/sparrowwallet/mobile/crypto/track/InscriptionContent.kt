@@ -3,8 +3,15 @@ package com.sparrowwallet.mobile.crypto.track
 import com.sparrowwallet.mobile.crypto.RawTx
 import com.sparrowwallet.mobile.crypto.ScriptReader
 
-/** An inscription's content as its transactions carry it, read without an indexer. */
-class InscriptionContent(val contentType: String?, val contentEncoding: String?, val body: ByteArray) {
+/**
+ * An inscription's content as its transactions carry it, read without an indexer. [size] is the body's size in bytes.
+ * An incomplete content ([complete] false) is one over the reader's limit: its body is empty (never assembled) and
+ * [size] is what it counted, or with [sizeOver] only a bound the body is larger than (the type is then unknown too).
+ */
+class InscriptionContent(
+    val contentType: String?, val contentEncoding: String?, val body: ByteArray,
+    val size: Long = body.size.toLong(), val complete: Boolean = true, val sizeOver: Boolean = false
+) {
     companion object {
         private const val OP_0 = 0x00
         private const val OP_IF = 0x63
@@ -20,7 +27,10 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
          * The index-th envelope of an ord reveal, counted across inputs as the inscription ids are, or null when there is
          * none, it cannot be read, or its body is over [maxBytes] (the body is not assembled then).
          */
-        fun ord(reveal: RawTx.Parsed, index: Int, maxBytes: Int = Int.MAX_VALUE): InscriptionContent? {
+        fun ord(reveal: RawTx.Parsed, index: Int, maxBytes: Int = Int.MAX_VALUE): InscriptionContent? =
+            ord(reveal, index, maxBytes, keepOversized = false)
+
+        private fun ord(reveal: RawTx.Parsed, index: Int, maxBytes: Int, keepOversized: Boolean): InscriptionContent? {
             var seen = 0
             for(i in reveal.inputs.indices) {
                 for(push in reveal.witnesses.getOrElse(i) { emptyList() }) {
@@ -35,7 +45,7 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
                         if(chunks[at].opcode == OP_0 && chunks[at + 1].opcode == OP_IF && chunks[at + 2].data.contentEquals(ORD)) {
                             found++
                             if(seen++ == index) {
-                                return envelope(chunks, at + 3, maxBytes)
+                                return envelope(chunks, at + 3, maxBytes, keepOversized)
                             }
                         }
                     }
@@ -53,7 +63,7 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
             return null
         }
 
-        private fun envelope(chunks: List<ScriptReader.Chunk>, from: Int, maxBytes: Int): InscriptionContent? {
+        private fun envelope(chunks: List<ScriptReader.Chunk>, from: Int, maxBytes: Int, keepOversized: Boolean): InscriptionContent? {
             var contentType: String? = null
             var contentEncoding: String? = null
             var i = from
@@ -82,12 +92,20 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
                     if(data != null) {
                         size += data.size
                         if(size > maxBytes) {
-                            return null
+                            if(!keepOversized) {
+                                return null
+                            }
+                            //Counted on, never kept: the body is not assembled
+                            parts.clear()
+                        } else {
+                            parts.add(data)
                         }
-                        parts.add(data)
                     }
                     i++
                 }
+            }
+            if(size > maxBytes) {
+                return InscriptionContent(contentType, contentEncoding, ByteArray(0), size, complete = false)
             }
             return InscriptionContent(contentType, contentEncoding, join(parts, size.toInt()))
         }
@@ -108,7 +126,15 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
          * the transactions hold no such inscription, a Doginals id comes without its last step, or the body would be over
          * [maxBytes] (reading stops before it is assembled). Failures reading a transaction throw from the source.
          */
-        suspend fun fromChain(inscriptionId: String, lastStep: String?, source: ChainSource, maxBytes: Int): InscriptionContent? {
+        suspend fun fromChain(inscriptionId: String, lastStep: String?, source: ChainSource, maxBytes: Int): InscriptionContent? =
+            readFromChain(inscriptionId, lastStep, source, maxBytes)?.takeIf { it.complete }
+
+        /**
+         * As [fromChain], but an inscription over [maxBytes] gives an incomplete content (see [InscriptionContent]) instead
+         * of null: its type and counted size, or for a Doginals walk stopped at its allowance only that it is over the
+         * limit. The body is never assembled past the limit.
+         */
+        suspend fun readFromChain(inscriptionId: String, lastStep: String?, source: ChainSource, maxBytes: Int): InscriptionContent? {
             val at = inscriptionId.lastIndexOf('i')
             if(at != 64) {
                 return null
@@ -121,7 +147,7 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
             val named = source.transaction(txid).tx
             val ordIndex = InscriptionLocator.ordIds(named).indexOf(inscriptionId)
             if(ordIndex >= 0) {
-                return ord(named, ordIndex, maxBytes)
+                return ord(named, ordIndex, maxBytes, keepOversized = true)
             }
             if(lastStep == null || index != 0) {
                 return null
@@ -141,11 +167,11 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
                     pieceBytes += pushes[k].data?.size ?: 0
                 }
                 if(pieceBytes > walkLimit) {
-                    return null
+                    return InscriptionContent(null, null, ByteArray(0), maxBytes.toLong(), complete = false, sizeOver = true)
                 }
                 if(step.genesis) {
                     steps.reverse()
-                    return if(current.txid == txid) doginals(steps, maxBytes) else null
+                    return if(current.txid == txid) doginals(steps, maxBytes, keepOversized = true) else null
                 }
                 current = source.transaction(step.previousTxid).tx
             }
@@ -158,7 +184,10 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
          * pairs. Null when the body is over [maxBytes], or when the steps do not hold every part the genesis step declares
          * (the desktop reader does not check this; the phone refuses to show part of an inscription as the whole).
          */
-        fun doginals(genesisToLast: List<RawTx.Parsed>, maxBytes: Int = Int.MAX_VALUE): InscriptionContent? {
+        fun doginals(genesisToLast: List<RawTx.Parsed>, maxBytes: Int = Int.MAX_VALUE): InscriptionContent? =
+            doginals(genesisToLast, maxBytes, keepOversized = false)
+
+        private fun doginals(genesisToLast: List<RawTx.Parsed>, maxBytes: Int, keepOversized: Boolean): InscriptionContent? {
             val envelope = ArrayList<ScriptReader.Chunk>()
             for(step in genesisToLast) {
                 if(step.inputs.isEmpty()) {
@@ -185,11 +214,18 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
                 if(data != null) {
                     size += data.size
                     if(size > maxBytes) {
-                        return null
+                        if(!keepOversized) {
+                            return null
+                        }
+                        parts.clear()
+                    } else {
+                        parts.add(data)
                     }
-                    parts.add(data)
                 }
                 i += 2
+            }
+            if(size > maxBytes) {
+                return InscriptionContent(contentType, null, ByteArray(0), size, complete = false)
             }
             return InscriptionContent(contentType, null, join(parts, size.toInt()))
         }
