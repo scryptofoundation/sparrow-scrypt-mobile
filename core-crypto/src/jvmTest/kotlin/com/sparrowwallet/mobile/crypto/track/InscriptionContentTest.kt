@@ -90,7 +90,9 @@ class InscriptionContentTest {
         assertNull(InscriptionContent.ord(reveal(listOf(at(1)), listOf(null), 10_000), 0))
         //A push that runs past the end: the chunks before it are still read, nothing throws
         val cut = script(envelope("hello")).let { it.copyOfRange(0, it.size - 3) }
-        assertNotNull(InscriptionContent.ord(reveal(listOf(at(1)), listOf(cut), 10_000), 0))
+        val truncated = assertNotNull(InscriptionContent.ord(reveal(listOf(at(1)), listOf(cut), 10_000), 0))
+        assertEquals("text/plain;charset=utf-8", truncated.contentType)
+        assertEquals(0, truncated.body.size)
         assertNull(InscriptionContent.ord(reveal(listOf(at(1)), listOf(byteArrayOf(0x4d, 5)), 10_000), 0))
     }
 
@@ -127,6 +129,11 @@ class InscriptionContentTest {
         assertNull(InscriptionContent.fromChain(steps[1].txid + "i0", steps.last().txid, chain, 1_000_000))
         assertNull(InscriptionContent.fromChain("nonsense", null, chain, 1_000_000))
         assertNull(InscriptionContent.fromChain(steps.first().txid + "ix", null, chain, 1_000_000))
+        //Only the canonical index spelling names an inscription
+        val genesis = steps.first().txid
+        assertNull(InscriptionContent.fromChain(genesis + "i+0", steps.last().txid, chain, 1_000_000))
+        assertNull(InscriptionContent.fromChain(genesis + "i00", steps.last().txid, chain, 1_000_000))
+        assertNull(InscriptionContent.fromChain(genesis.uppercase() + "i0", steps.last().txid, chain, 1_000_000))
     }
 
     @Test
@@ -145,9 +152,70 @@ class InscriptionContentTest {
         }
         assertContentEquals(data, assertNotNull(InscriptionContent.fromChain(steps.first().txid + "i0", steps.last().txid, chain, 4_000)).body)
         assertNull(InscriptionContent.fromChain(steps.first().txid + "i0", steps.last().txid, chain, 3_999))
-        //A limit far below the chain stops the walk before it fetches every step
+        //A limit far below the chain stops the walk once the payload read passes the walk allowance: one fetch for the
+        //named transaction, then one per step walked
         chain.transactionCalls = 0
         assertNull(InscriptionContent.fromChain(steps.first().txid + "i0", steps.last().txid, chain, 100))
-        assertTrue(chain.transactionCalls < steps.size + 1, "walked ${chain.transactionCalls} for ${steps.size} steps")
+        val walked = stepsWalked(steps, 100)
+        assertTrue(walked < steps.size)
+        assertEquals(1 + walked, chain.transactionCalls)
+    }
+
+    private fun payloadOf(step: com.sparrowwallet.mobile.crypto.RawTx.Parsed): Int {
+        val chunks = com.sparrowwallet.mobile.crypto.ScriptReader.chunksUpToError(step.scriptSigs[0])
+        return chunks.subList(0, chunks.size - 2).sumOf { it.data?.size ?: 0 }
+    }
+
+    /** The steps walked back from the last before the data pushes read pass maxBytes plus 2% and 1 KB. */
+    private fun stepsWalked(steps: List<com.sparrowwallet.mobile.crypto.RawTx.Parsed>, maxBytes: Int): Int {
+        var payload = 0L
+        var walked = 0
+        for(step in steps.reversed()) {
+            walked++
+            payload += payloadOf(step)
+            if(payload > maxBytes.toLong() + maxBytes / 50 + 1_024) break
+        }
+        return walked
+    }
+
+    @Test
+    fun aBodyNearTheLimitMadeOfFullPiecesIsReturned() = runBlocking {
+        val chain = FakeChainSource()
+        val data = body(50_000)
+        val steps = doginalsSteps(data, hash(9))
+        assertTrue(steps.size > 30)
+        for(step in steps) {
+            chain.add(step, 101)
+        }
+        assertContentEquals(data, assertNotNull(InscriptionContent.fromChain(steps.first().txid + "i0", steps.last().txid, chain, 50_000)).body)
+        assertNull(InscriptionContent.fromChain(steps.first().txid + "i0", steps.last().txid, chain, 49_999))
+        //Far over: the walk stops early, exactly when the payload read passes the allowance
+        chain.transactionCalls = 0
+        assertNull(InscriptionContent.fromChain(steps.first().txid + "i0", steps.last().txid, chain, 20_000))
+        val walked = stepsWalked(steps, 20_000)
+        assertTrue(walked < steps.size)
+        assertEquals(1 + walked, chain.transactionCalls)
+    }
+
+    @Test
+    fun numberingFollowsTheLocatorsIds() {
+        //Push A writes "ord" with OP_PUSHDATA1, so it lacks the minimal envelope bytes the locator numbers by; push B is normal
+        val a = script(listOf(op(OP_0), op(OP_IF), byteArrayOf(0x4c, 3) + "ord".encodeToByteArray(), op(OP_0),
+            push("X".encodeToByteArray()), op(OP_ENDIF)))
+        val b = script(envelope("Y"))
+        val tx = reveal(listOf(at(1), at(2)), listOf(a, b), 10_000)
+        assertEquals(listOf(tx.txid + "i0"), InscriptionLocator.ordIds(tx))
+        assertEquals("Y", text(assertNotNull(InscriptionContent.ord(tx, 0)).body))
+        assertNull(InscriptionContent.ord(tx, 1))
+    }
+
+    @Test
+    fun anEnvelopeInsideAPushedBlobTakesAnIdAndHasNoContent() {
+        //Deliberate divergence from the Java: the locator counts these bytes as an envelope, so the id stays in step
+        val blob = script(listOf(push(byteArrayOf(0x00, 0x63, 0x03, 0x6f, 0x72, 0x64))))
+        val tx = reveal(listOf(at(1), at(2)), listOf(blob, script(envelope("real"))), 10_000)
+        assertEquals(listOf(tx.txid + "i0", tx.txid + "i1"), InscriptionLocator.ordIds(tx))
+        assertNull(InscriptionContent.ord(tx, 0))
+        assertEquals("real", text(assertNotNull(InscriptionContent.ord(tx, 1)).body))
     }
 }

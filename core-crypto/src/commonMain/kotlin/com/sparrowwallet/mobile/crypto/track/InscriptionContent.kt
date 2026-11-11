@@ -24,6 +24,11 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
             var seen = 0
             for(i in reveal.inputs.indices) {
                 for(push in reveal.witnesses.getOrElse(i) { emptyList() }) {
+                    //Numbered exactly as InscriptionLocator.ordIds does: only a push holding the minimal envelope bytes counts
+                    val counted = InscriptionLocator.envelopeCount(push)
+                    if(counted == 0) {
+                        continue
+                    }
                     val chunks = ScriptReader.chunksUpToError(push)
                     var found = 0
                     for(at in 0 until chunks.size - 2) {
@@ -37,7 +42,7 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
                     //InscriptionLocator.ordIds also counts an envelope prefix found in a push's bytes that does not parse as
                     //one; count it here so later indexes line up, though it has no content to read
                     if(found == 0) {
-                        repeat(InscriptionLocator.envelopeCount(push)) {
+                        repeat(counted) {
                             if(seen++ == index) {
                                 return null
                             }
@@ -110,7 +115,7 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
             }
             val txid = inscriptionId.substring(0, at)
             val index = inscriptionId.substring(at + 1).toIntOrNull() ?: return null
-            if(index < 0 || !txid.all { it in '0'..'9' || it in 'a'..'f' }) {
+            if(index < 0 || index.toString() != inscriptionId.substring(at + 1) || !txid.all { it in '0'..'9' || it in 'a'..'f' }) {
                 return null
             }
             val named = source.transaction(txid).tx
@@ -121,8 +126,9 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
             if(lastStep == null || index != 0) {
                 return null
             }
-            //The pieces carry the body plus a small countdown and framing each; give the walk that much room, the exact
-            //limit is checked once the body is read
+            //Counts the data pushes of each piece (not the signature and redeem script every step also carries); they hold
+            //the body plus a small countdown each, so give the walk that much room, the exact limit is checked once the
+            //body is read
             val walkLimit = maxBytes.toLong() + maxBytes / 50 + 1_024
             var pieceBytes = 0L
             val steps = ArrayList<RawTx.Parsed>()
@@ -130,7 +136,10 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
             for(n in 0 until MAX_DOGINALS_STEPS) {
                 steps.add(current)
                 val step = InscriptionLocator.doginals(current) ?: return null
-                pieceBytes += current.scriptSigs.firstOrNull()?.size ?: 0
+                val pushes = ScriptReader.chunksUpToError(current.scriptSigs.getOrElse(0) { ByteArray(0) })
+                for(k in 0 until maxOf(0, pushes.size - 2)) {
+                    pieceBytes += pushes[k].data?.size ?: 0
+                }
                 if(pieceBytes > walkLimit) {
                     return null
                 }
