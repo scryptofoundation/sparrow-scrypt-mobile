@@ -28,12 +28,12 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** The BIP39 test vector seed drongo's vectors/coins.json was generated from; never a real wallet's. */
-private const val ABANDON = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+internal const val ABANDON = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
 /** drongo's Electrum seed vector (vectors/electrum-seed-vector.json). */
-private const val ELECTRUM = "coach fan denial rifle frost rival join install one wasp cool antique"
+internal const val ELECTRUM = "coach fan denial rifle frost rival join install one wasp cool antique"
 
-private class TestCipher : StoreCipher {
+internal class TestCipher : StoreCipher {
     private val key = SecretKeySpec(ByteArray(32).also { SecureRandom().nextBytes(it) }, "AES")
     override fun seal(plain: ByteArray): ByteArray {
         val c = Cipher.getInstance("AES/GCM/NoPadding")
@@ -52,7 +52,7 @@ private class TestCipher : StoreCipher {
  * [WalletVault], <name>.meta by [WalletMeta], written with [writeAtomically]), with the inscription results and the
  * sync cache deleted as the repository deletes them. Vaults use few PBKDF2 rounds so the tests stay quick.
  */
-private class DirFiles(val dir: File = java.nio.file.Files.createTempDirectory("wallets").toFile()) : CompanionFiles {
+internal class DirFiles(val dir: File = java.nio.file.Files.createTempDirectory("wallets").toFile()) : CompanionFiles {
     val inscriptions = InscriptionStore(File(dir, "inscriptions"), TestCipher())
     val forgotten = mutableListOf<String>()
     val opened = mutableListOf<String>()
@@ -70,8 +70,10 @@ private class DirFiles(val dir: File = java.nio.file.Files.createTempDirectory("
 
     override fun wallets(): List<WalletRepository.WalletInfo> =
         dir.listFiles { f -> f.name.endsWith(".vault") }.orEmpty().map { it.name.removeSuffix(".vault") }.sorted().map { name ->
-            val m = WalletMeta.decode(meta(name).readText())
-            WalletRepository.WalletInfo(name, m.network, m.scriptType, m.links, m.coin)
+            //an unreadable meta reads as mainnet Litecoin, as the repository's list reads it
+            runCatching { WalletMeta.decode(meta(name).readText()) }.fold(
+                { WalletRepository.WalletInfo(name, it.network, it.scriptType, it.links, it.coin) },
+                { WalletRepository.WalletInfo(name, Network.MAINNET) })
         }
 
     override fun open(name: String, password: String): VaultData {
@@ -97,8 +99,7 @@ private class DirFiles(val dir: File = java.nio.file.Files.createTempDirectory("
     override fun deleteOne(name: String) {
         forgotten += name
         deleteWalletCaches(name, inscriptions, SyncStore.cacheFile(dir, name))
-        vault(name).delete()
-        meta(name).delete()
+        deleteWalletFiles(dir, name)
     }
 
     fun add(name: String, data: VaultData, password: String) = assertNull(save(name, data, password))
@@ -175,14 +176,64 @@ class TaprootCompanionTest {
         assertEquals(TaprootCompanion.name(long), walletFileName(TaprootCompanion.name(long)))
         //a cut that ends in a space leaves no double space
         assertEquals("abc Taproot", TaprootCompanion.name("abc" + " ".repeat(29) + "defghijk"))
-        //two long names that share their first 32 characters collide: the second is refused by name
+        assertEquals("A wallet named Main Taproot already exists.", TaprootCompanion.nameTaken("Main Taproot"))
+    }
+
+    @Test
+    fun aShortenedNameTakenByAnotherWalletsCompanionIsRefusedByAdd() {
+        //two long names that share their first 32 characters collide: the second is refused by name, by add alone
         val a = "y".repeat(32) + "-first"
         val b = "y".repeat(32) + "-other"
         assertEquals(TaprootCompanion.name(a), TaprootCompanion.name(b))
-        assertEquals(TaprootCompanion.nameTaken(TaprootCompanion.name(b)),
-            TaprootCompanion.problem(info(b), listOf(info(a, links = WalletLinks(taproot = TaprootCompanion.name(a))), info(b),
-                info(TaprootCompanion.name(a), scriptType = "P2TR", links = WalletLinks(parent = a))), true, "BIP39"))
-        assertEquals("A wallet named Main Taproot already exists.", TaprootCompanion.nameTaken("Main Taproot"))
+        val files = DirFiles()
+        files.add(a, seed(), "pw")
+        files.add(b, seed(), "pw")
+        assertNull(TaprootCompanion.add(files, a, "pw"))
+        //problem() leaves the name to add(), so the same-seed linking path stays reachable
+        assertNull(TaprootCompanion.problem(files.info(b)!!, files.wallets(), true, "BIP39"))
+        assertTrue(TaprootCompanion.offered(files.info(b)!!, true, "BIP39", files.wallets()))
+        assertEquals(TaprootCompanion.nameTaken(TaprootCompanion.name(b)), TaprootCompanion.add(files, b, "pw"))
+        assertEquals(WalletLinks(), files.info(b)!!.links)
+    }
+
+    @Test
+    fun problemLeavesAnExistingNameToAdd() {
+        val other = info("Main Taproot", scriptType = "P2PKH")
+        assertNull(TaprootCompanion.problem(info(), listOf(info(), other), true, "BIP39"))
+    }
+
+    @Test
+    fun theParentIsJudgedByItsVault() {
+        //a vault whose meta was lost reads as a mainnet Litecoin P2WPKH wallet; the vault itself decides
+        val cases = listOf(
+            seed(scriptType = ScriptType.P2WPKH).copy(scriptType = "MWEB", derivationPath = "m/1000'") to TaprootCompanion.NOT_THIS_WALLET,
+            seed(scriptType = ScriptType.P2TR) to TaprootCompanion.NOT_THIS_WALLET,
+            seed(Coin.DOGECOIN, scriptType = ScriptType.P2PKH) to TaprootCompanion.NOT_AVAILABLE,
+            seed(Coin.BELLSCOIN, Network.TESTNET) to TaprootCompanion.NOT_AVAILABLE
+        )
+        for((vault, refusal) in cases) {
+            val files = DirFiles()
+            files.add("Main", vault, "pw")
+            File(files.dir, "Main.meta").writeText("{torn")
+            assertEquals("P2WPKH", files.info("Main")!!.scriptType)
+            val before = files.snapshot()
+            assertEquals(refusal, TaprootCompanion.add(files, "Main", "pw"), vault.scriptType + " " + vault.coin)
+            val after = files.snapshot()
+            assertEquals(before.keys, after.keys)
+            for(k in before.keys) assertContentEquals(before[k], after[k], k)
+        }
+    }
+
+    @Test
+    fun aParentWithALostMetaIsWrittenFromItsVault() {
+        val files = DirFiles()
+        files.add("Main", seed(network = Network.TESTNET), "pw")
+        File(files.dir, "Main.meta").writeText("{torn")
+        assertNull(TaprootCompanion.add(files, "Main", "pw"))
+        val parent = files.info("Main")!!
+        assertEquals(Network.TESTNET, parent.network)
+        assertEquals(WalletLinks(taproot = "Main Taproot"), parent.links)
+        assertEquals(Network.TESTNET, files.info("Main Taproot")!!.network)
     }
 
     @Test
@@ -405,7 +456,7 @@ class TaprootCompanionTest {
         files.add("Main", seed(), "pw")
         files.add("Main Taproot", seed(scriptType = ScriptType.P2TR), "pw")
         files.failMetaWrite(1)
-        assertEquals(TaprootCompanion.SAVE_FAILED, TaprootCompanion.add(files, "Main", "pw"))
+        assertEquals("The Taproot wallet could not be linked.", TaprootCompanion.add(files, "Main", "pw"))
         files.failMetaWrite(null)
         assertEquals(listOf("Main", "Main Taproot"), files.wallets().map { it.name })
         assertEquals(WalletLinks(), files.info("Main")!!.links)
@@ -420,96 +471,6 @@ class TaprootCompanionTest {
         val data = files.open("Electrum Taproot", "pw")
         assertEquals("ELECTRUM", data.seedType)
         assertEquals("m/86'/2'/0'", data.derivationPath)
-    }
-
-    // ---- deleting ----
-
-    private fun family(files: DirFiles) {
-        files.add("Main", seed(), "pw")
-        files.add("Main Private", seed().copy(scriptType = "MWEB", derivationPath = "m/1000'"), "pw")
-        files.add("Other", seed(scriptType = ScriptType.P2PKH), "pw")
-        //the MWEB pair as the previous build wrote it: only the old linkedWallet field
-        File(files.dir, "Main.meta").writeText("""{"network":"mainnet","coin":"litecoin","scriptType":"P2WPKH","linkedWallet":"Main Private"}""")
-        File(files.dir, "Main Private.meta").writeText("""{"network":"mainnet","coin":"litecoin","scriptType":"MWEB","linkedWallet":"Main"}""")
-        assertNull(TaprootCompanion.add(files, "Main", "pw"))
-        for(name in listOf("Main", "Main Private", "Main Taproot", "Other")) {
-            files.inscriptions.save(name, emptyMap())
-            SyncStore.cacheFile(files.dir, name).apply { parentFile!!.mkdirs(); writeBytes(byteArrayOf(1)) }
-        }
-    }
-
-    @Test
-    fun deletingAParentDeletesItsCompanions() {
-        val files = DirFiles()
-        family(files)
-        assertEquals(listOf("Main Private", "Main Taproot"), CompanionDeletion.deletedWith("Main", files.wallets()))
-        CompanionDeletion.delete(files, "Main")
-        assertEquals(listOf("Other"), files.wallets().map { it.name })
-        for(name in listOf("Main", "Main Private", "Main Taproot")) {
-            assertNull(files.inscriptions.loadOrNull(name), name)
-            assertFalse(SyncStore.cacheFile(files.dir, name).exists(), name)
-            assertFalse(File(files.dir, "$name.meta").exists(), name)
-        }
-        //companions first, the wallet last
-        assertEquals(listOf("Main Private", "Main Taproot", "Main"), files.forgotten)
-        assertNotNull(files.inscriptions.loadOrNull("Other"))
-        assertTrue(SyncStore.cacheFile(files.dir, "Other").exists())
-    }
-
-    @Test
-    fun deletingACompanionUnlinksItsParent() {
-        val files = DirFiles()
-        family(files)
-        assertEquals(emptyList(), CompanionDeletion.deletedWith("Main Taproot", files.wallets()))
-        CompanionDeletion.delete(files, "Main Taproot")
-        assertEquals(listOf("Main", "Main Private", "Other"), files.wallets().map { it.name })
-        assertEquals(WalletLinks(mweb = "Main Private"), files.info("Main")!!.links)
-        assertNull(files.inscriptions.loadOrNull("Main Taproot"))
-        assertEquals(listOf("Main Taproot"), files.forgotten)
-        //and it can be added again
-        assertTrue(TaprootCompanion.offered(files.info("Main")!!, true, "BIP39", files.wallets()))
-        CompanionDeletion.delete(files, "Main Private")
-        assertEquals(WalletLinks(), files.info("Main")!!.links)
-        assertNull(files.info("Main")!!.linkedWallet)
-    }
-
-    @Test
-    fun aWalletThatDoesNotNameItsParentBackIsNotDeletedWithIt() {
-        val files = DirFiles()
-        files.add("Main", seed(), "pw")
-        files.add("Main Taproot", seed(scriptType = ScriptType.P2TR), "pw")
-        files.rewriteMeta(files.info("Main")!!.copy(links = WalletLinks(taproot = "Main Taproot", mweb = "Gone")))
-        assertEquals(emptyList(), CompanionDeletion.deletedWith("Main", files.wallets()))
-        CompanionDeletion.delete(files, "Main")
-        assertEquals(listOf("Main Taproot"), files.wallets().map { it.name })
-    }
-
-    @Test
-    fun aCrashMidDeleteLeavesNoHiddenWallet() {
-        //the delete stopped at each of its meta writes in turn: whatever is left is listed, or shown under a parent that names it
-        //two writes per companion: it drops its parent, then the parent drops it
-        for(failing in 0..3) {
-            val files = DirFiles()
-            family(files)
-            files.failMetaWrite(failing)
-            assertFailsWith<IOException> { CompanionDeletion.delete(files, "Main") }
-            files.failMetaWrite(null)
-            val wallets = files.wallets()
-            assertTrue("Main" in wallets.map { it.name }, "the wallet goes last")
-            val shown = groupByCoin(wallets).flatMap { it.second }.map { it.name }.toSet()
-            for(w in wallets) {
-                val parent = w.links.parent
-                assertTrue(w.name in shown || (parent in shown && wallets.first { it.name == parent }.links.companions.contains(w.name)),
-                    "${w.name} hidden when write $failing failed")
-            }
-        }
-    }
-
-    @Test
-    fun theConfirmationNamesTheLinkedWallets() {
-        assertNull(CompanionDeletion.confirmation(emptyList()))
-        assertEquals("This also deletes its linked wallets: Main Private, Main Taproot.",
-            CompanionDeletion.confirmation(listOf("Main Private", "Main Taproot")))
     }
 
     // ---- the atomic meta write ----

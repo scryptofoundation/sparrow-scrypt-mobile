@@ -953,11 +953,33 @@ private fun UnlockScreen(name: String, repo: WalletRepository, onUnlocked: (Vaul
         } else {
             Text("This removes the wallet from this phone. Without the seed words it CANNOT be recovered.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            remember(name) { CompanionDeletion.confirmation(repo.deletionAlsoRemoves(name)) }?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            val family = remember(name) { repo.deleteFamily(name) }
+            val choices = remember(name) { repo.deleteChoices(name) }
+            var chosen by remember(name) { mutableStateOf<DeleteChoice?>(null) }
+            var deleteError by remember(name) { mutableStateOf<String?>(null) }
+            fun delete(choice: DeleteChoice) {
+                if(repo.deleteWallets(choice)) onDeleted() else deleteError = DELETE_FAILED
             }
-            Button(onClick = { repo.deleteWallet(name); onDeleted() }, modifier = Modifier.fillMaxWidth()) {
-                Text("Yes, delete \"$name\"")
+            if(choices.isEmpty()) {
+                deleteError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                Button(onClick = { delete(DeleteChoice.only(name)) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Yes, delete \"$name\"")
+                }
+            } else {
+                Text(LINKED_SEED_WORDS, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                for((member, layer) in family) {
+                    Text("$member (${layer.label})", style = MaterialTheme.typography.bodyMedium)
+                }
+                for(choice in choices) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = chosen == choice, onClick = { chosen = choice })
+                        Text(choice.label, modifier = Modifier.weight(1f))
+                    }
+                }
+                deleteError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                Button(onClick = { chosen?.let { delete(it) } }, enabled = chosen != null, modifier = Modifier.fillMaxWidth()) {
+                    Text("Delete")
+                }
             }
             TextButton(onClick = { confirmDelete = false }) { Text("Keep it") }
         }

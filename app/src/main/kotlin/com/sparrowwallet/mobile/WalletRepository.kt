@@ -121,15 +121,18 @@ class WalletRepository(context: Context) {
     val pendingPsbts = PendingPsbts()
 
     /**
-     * Deletes the wallet and its companions (see [CompanionDeletion.delete]), or a companion alone, taking it out of its
-     * parent's links. A failed meta write stops the delete; what is left stays listed, and deleting again finishes it.
+     * Deletes the wallets [choice] names (see [deleteWallets]); true when all of them went. On false (a write or a file
+     * delete failed, or a link changed since the choice was offered) what is left stays listed.
      */
-    fun deleteWallet(name: String) {
-        runCatching { CompanionDeletion.delete(companionFiles, safeName(name)) }
-    }
+    fun deleteWallets(choice: DeleteChoice): Boolean = deleteWallets(companionFiles, choice)
 
-    /** The linked wallets [deleteWallet] also deletes, for the delete confirmation. */
-    fun deletionAlsoRemoves(name: String): List<String> = CompanionDeletion.deletedWith(safeName(name), listWallets())
+    /** The delete confirmation's choices for a wallet (see [deleteChoices]); none for a wallet without linked wallets. */
+    fun deleteChoices(name: String): List<DeleteChoice> =
+        listWallets().let { all -> all.firstOrNull { it.name == safeName(name) }?.let { deleteChoices(it, all) }.orEmpty() }
+
+    /** The wallet's family by name and layer, for the delete confirmation (see [deleteFamily]). */
+    fun deleteFamily(name: String): List<Pair<String, Layer>> =
+        listWallets().let { all -> all.firstOrNull { it.name == safeName(name) }?.let { deleteFamily(it, all) }.orEmpty() }
 
     /**
      * Adds the same seed's Taproot wallet beside [parentName], sealed with [password] (see [TaprootCompanion.add]);
@@ -139,7 +142,10 @@ class WalletRepository(context: Context) {
     fun addTaprootCompanion(parentName: String, password: String): String? =
         TaprootCompanion.add(companionFiles, parentName, password)
 
-    /** One wallet and everything kept for it; its vault goes after its caches, so a stop midway leaves it listed. */
+    /**
+     * One wallet and everything kept for it; its vault goes after its caches, so a stop midway leaves it listed, and
+     * before its meta (see [deleteWalletFiles], which throws when a file will not go).
+     */
     private fun deleteOneWallet(name: String) {
         //forget first: it stops a running check from writing the file back after it is deleted
         inscriptionChecker.forget(name)
@@ -147,8 +153,7 @@ class WalletRepository(context: Context) {
         sessionTotals.remove(safeName(name))
         sessionNames.values.removeAll { it == safeName(name) }
         pendingPsbts.drop(name)
-        vaultFile(name).delete()
-        metaFile(name).delete()
+        deleteWalletFiles(walletsDir, safeName(name))
     }
 
     /** The wallet files as adding and deleting companions see them. */
@@ -302,11 +307,16 @@ class WalletRepository(context: Context) {
     /**
      * Opens a wallet's vault; throws VaultException on wrong password. A [session] unlock (the
      * wallet being opened to use) lets its syncs record the wallet list's in-memory balance;
-     * a password check (Reveal, export, leaving air-gapped mode) does not keep the vault.
+     * a password check (Reveal, export, leaving air-gapped mode, adding a Taproot wallet) does not keep the vault and
+     * writes nothing, not even the background sync's credentials (those are cached by the session unlock).
      */
     fun unlock(name: String, password: String, session: Boolean = true): VaultData =
-        WalletVault.open(vaultFile(name).readBytes(), password)
-            .also { if(session) sessionNames[it] = safeName(name); runCatching { cacheSyncCredentials(name, it) } }
+        WalletVault.open(vaultFile(name).readBytes(), password).also {
+            if(session) {
+                sessionNames[it] = safeName(name)
+                runCatching { cacheSyncCredentials(name, it) }
+            }
+        }
 
     /**
      * Seals the vaults of a restore from another wallet app and links a second one (Cake's MWEB

@@ -199,7 +199,7 @@ class WalletGroupsTest {
     fun aParentThatIsItselfACompanionHidesNothing() {
         val wallets = listOf(
             w("top", Coin.LITECOIN, "P2WPKH", links = WalletLinks(taproot = "mid")),
-            w("mid", Coin.LITECOIN, "P2WPKH", links = WalletLinks(parent = "top", taproot = "low")),
+            w("mid", Coin.LITECOIN, "P2TR", links = WalletLinks(parent = "top", taproot = "low")),
             w("low", Coin.LITECOIN, "P2TR", links = WalletLinks(parent = "mid"))
         )
         assertEquals(listOf("low", "top"), shown(wallets))
@@ -227,6 +227,19 @@ class WalletGroupsTest {
         assertFalse(linkedBack(family[0], family[3]))
         val self = w("a", Coin.LITECOIN, "P2TR", links = WalletLinks(taproot = "a", parent = "a"))
         assertFalse(linkedBack(self, self))
+    }
+
+    @Test
+    fun aCompanionOfTheWrongKindIsAnOrdinaryRow() {
+        // linked both ways, but in a slot that is not its kind: Home would leave it out, so the list must show it
+        val wallets = listOf(
+            w("pub", Coin.LITECOIN, "P2WPKH", links = WalletLinks(mweb = "x", taproot = "y")),
+            w("x", Coin.LITECOIN, "P2WPKH", links = WalletLinks(parent = "pub")),
+            w("y", Coin.LITECOIN, "MWEB", links = WalletLinks(parent = "pub"))
+        )
+        assertFalse(linkedBack(wallets[0], wallets[1]))
+        assertFalse(linkedBack(wallets[0], wallets[2]))
+        assertEquals(listOf("pub", "x", "y"), shown(wallets))
     }
 
     @Test

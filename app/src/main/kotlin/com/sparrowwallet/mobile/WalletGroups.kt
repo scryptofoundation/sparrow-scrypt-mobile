@@ -43,13 +43,16 @@ fun walletBalance(info: WalletRepository.WalletInfo, wallets: List<WalletReposit
 
 /**
  * Whether [companion] is [parent]'s companion with the link running both ways: two different wallets, the parent not
- * itself a companion, the parent naming it among its companions and it naming the parent. A one-sided link (a stop
+ * itself a companion, the parent naming it among its companions in the slot of its kind (MWEB in `mweb`, P2TR in
+ * `taproot`) and it naming the parent. A one-sided link or one of the wrong kind (a stop
  * between the two link writes, an older build that dropped a field, a parent relinked elsewhere) counts as none.
  * The one test of a link: the list hides, balances add, deletes take and screens open only companions that pass it.
  */
 fun linkedBack(parent: WalletRepository.WalletInfo, companion: WalletRepository.WalletInfo): Boolean =
     parent.name != companion.name && parent.links.parent == null &&
-        companion.links.parent == parent.name && companion.name in parent.links.companions
+        companion.links.parent == parent.name &&
+        ((parent.links.mweb == companion.name && companion.scriptType == "MWEB") ||
+            (parent.links.taproot == companion.name && companion.scriptType == "P2TR"))
 
 /** The wallet name of a file in the wallets directory: only a `.vault` file is a wallet. */
 fun walletVaultName(fileName: String): String? = if(fileName.endsWith(".vault")) fileName.removeSuffix(".vault") else null
