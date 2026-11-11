@@ -143,15 +143,40 @@ object CollectiblesModel {
         BigDecimal(total, divisibility).toPlainString()
 }
 
-/** A thread-safe least-recently-used map of loaded inscription content. */
-class ContentCache(private val capacity: Int) {
-    private val map = object : LinkedHashMap<String, InscriptionContent>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, InscriptionContent>?): Boolean = size > capacity
-    }
+/**
+ * A thread-safe least-recently-used map of loaded inscription content: at most [capacity] entries and [maxBytes] of
+ * bodies in all, the least recently used out first. A body larger than [maxBytes] is not cached.
+ */
+class ContentCache(private val capacity: Int, private val maxBytes: Long = MAX_BYTES) {
+    private val map = LinkedHashMap<String, InscriptionContent>(16, 0.75f, true)
+    private var total = 0L
 
     fun get(key: String): InscriptionContent? = synchronized(map) { map[key] }
-    fun put(key: String, content: InscriptionContent) { synchronized(map) { map[key] = content } }
+
+    fun put(key: String, content: InscriptionContent) {
+        synchronized(map) {
+            if(content.body.size > maxBytes) return
+            map.put(key, content)?.let { total -= it.body.size }
+            total += content.body.size
+            val eldest = map.entries.iterator()
+            while((map.size > capacity || total > maxBytes) && eldest.hasNext()) {
+                val entry = eldest.next()
+                if(entry.key == key) continue
+                total -= entry.value.body.size
+                eldest.remove()
+            }
+        }
+    }
+
     fun size(): Int = synchronized(map) { map.size }
+
+    /** The bodies' bytes held. */
+    fun bytes(): Long = synchronized(map) { total }
+
+    companion object {
+        /** The most body bytes held in all: 8 MiB. */
+        const val MAX_BYTES = 8L * 1024 * 1024
+    }
 }
 
 /** The rules around reading an inscription's content for a preview: kept apart from the repository so they are tested. */

@@ -17,13 +17,15 @@ import java.util.concurrent.TimeUnit
 internal class TinyHttp(private val route: (method: String, path: String, body: String) -> String?) : AutoCloseable {
     private val server = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
     private val release = CountDownLatch(1)
+    /** Every request received, as "METHOD path", in order. */
+    val requests = java.util.concurrent.CopyOnWriteArrayList<String>()
     val url = "http://127.0.0.1:${server.localPort}"
 
     init {
         Thread {
             while(!server.isClosed) {
                 val socket = runCatching { server.accept() }.getOrNull() ?: break
-                Thread { serve(socket) }.apply { isDaemon = true }.start()
+                Thread { runCatching { serve(socket) } }.apply { isDaemon = true }.start()
             }
         }.apply { isDaemon = true }.start()
     }
@@ -37,6 +39,7 @@ internal class TinyHttp(private val route: (method: String, path: String, body: 
             val length = lines.drop(1).firstOrNull { line -> line.lowercase().startsWith("content-length:") }
                 ?.substringAfter(':')?.trim()?.toIntOrNull() ?: 0
             val body = ByteArray(length).also { bytes -> var read = 0; while(read < length) { val n = input.read(bytes, read, length - read); if(n < 0) break; read += n } }
+            requests += "$method $path"
             val answer = route(method, path, body.decodeToString())
             if(answer == null) {
                 release.await(30, TimeUnit.SECONDS)

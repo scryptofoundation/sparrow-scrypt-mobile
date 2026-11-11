@@ -283,5 +283,35 @@ class CollectiblesModelTest {
         assertNull(cache.get("k1"))
         assertNotNull(cache.get("k64"))
         assertEquals(64, cache.size())
+        assertEquals(64L * content.body.size, cache.bytes())
+    }
+
+    /** The cache also holds at most 8 MiB of bodies, oldest out first; a body over the bound is not cached. */
+    @Test fun cacheIsBoundedByBytes() {
+        assertEquals(8L * 1024 * 1024, ContentCache.MAX_BYTES)
+        val big = InscriptionContent("image/png", null, ByteArray(400_000))
+        val cache = ContentCache(64)
+        for(i in 0 until 64) cache.put("k$i", big)
+        assertEquals(20, cache.size(), "20 bodies of 400,000 bytes fit in 8 MiB")
+        assertTrue(cache.bytes() <= ContentCache.MAX_BYTES)
+        assertNull(cache.get("k43"))
+        assertNotNull(cache.get("k44"))
+        assertNotNull(cache.get("k63"))
+
+        val small = ContentCache(64, maxBytes = 1_000)
+        val part = InscriptionContent("text/plain", null, ByteArray(400))
+        small.put("a", part)
+        small.put("b", part)
+        small.get("a")
+        small.put("c", part)
+        assertNotNull(small.get("a"), "recently used stays")
+        assertNull(small.get("b"), "oldest out first")
+        assertEquals(800L, small.bytes())
+        small.put("huge", InscriptionContent("text/plain", null, ByteArray(1_001)))
+        assertNull(small.get("huge"), "over the bound: not cached")
+        assertEquals(2, small.size())
+        //replacing an entry counts its new size only
+        small.put("a", InscriptionContent("text/plain", null, ByteArray(100)))
+        assertEquals(500L, small.bytes())
     }
 }

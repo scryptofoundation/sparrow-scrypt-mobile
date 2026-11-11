@@ -266,7 +266,7 @@ class InscriptionChecker(
                     )
                     val checks: Map<String, InscriptionCheck> = run.mapValuesTo(LinkedHashMap()) { (_, decided) -> stamp(decided) }
                     //The final save drops spent coins, keeping the indexer marks of the ones that were only left out
-                    marks = keptMarks(stored, storedMarks, listed.keys, now())
+                    marks = marksToKeep(stored, storedMarks, listed.keys, now())
                     if(checks != saved || memory[key]?.checked != true || memory[key]?.blocks != keep || memory[key]?.marks != marks) {
                         persist(walletName, key, epoch, checks, keep, marks)
                     }
@@ -393,22 +393,28 @@ class InscriptionChecker(
     }
 
     /**
-     * The indexer marks to keep for outpoints this run did not list ([listed]): those already kept and still missing, plus
-     * the marks of stored rows whose coins are missing now (from [now]). A coin can drop out of one listing and come back
-     * (an Electrum server leaves out outputs spent in its mempool, and that spend can be evicted or replaced), so a mark
-     * is dropped only by its bound: missing for more than [MARK_KEPT_MS], or past the newest [MAX_KEPT_MARKS].
+     * The indexer marks to keep for outpoints this finished run did not list ([listed]): those already kept and still
+     * missing (one more run missed), plus the marks of stored rows whose coins are missing now (since [now], one run). A
+     * coin can drop out of one listing and come back (an Electrum server leaves out outputs spent in its mempool, and that
+     * spend can be evicted or replaced), so a mark is dropped only by its bound: missing for more than [MARK_KEPT_MS] AND
+     * for at least [MIN_MISSING_RUNS] runs (so a clock jump alone drops nothing), or past the newest [MAX_KEPT_MARKS]
+     * (ties in outpoint order, so the same marks stay every time).
      */
-    private fun keptMarks(stored: Map<String, InscriptionCheck>, kept: Map<String, KeptMark>, listed: Set<String>, now: Long): Map<String, KeptMark> {
+    private fun marksToKeep(stored: Map<String, InscriptionCheck>, kept: Map<String, KeptMark>, listed: Set<String>, now: Long): Map<String, KeptMark> {
         val marks = HashMap<String, KeptMark>()
         for((outpoint, mark) in kept) {
-            if(outpoint !in listed) marks[outpoint] = mark
+            if(outpoint !in listed) marks[outpoint] = mark.copy(missingRuns = mark.missingRuns + 1)
         }
         for(row in stored.values) {
-            if(row.outpoint !in listed && row.outpoint !in marks) markOf(row, now)?.let { marks[row.outpoint] = it }
+            if(row.outpoint !in listed && row.outpoint !in marks) markOf(row, now)?.let { marks[row.outpoint] = it.copy(missingRuns = 1) }
         }
-        return marks.entries.filter { now - it.value.since <= MARK_KEPT_MS }
-            .sortedByDescending { it.value.since }.take(MAX_KEPT_MARKS).associate { it.key to it.value }
+        return marks.entries.filter { now - it.value.since <= MARK_KEPT_MS || it.value.missingRuns < MIN_MISSING_RUNS }
+            .sortedWith(compareByDescending<Map.Entry<String, KeptMark>> { it.value.since }.thenBy { it.key })
+            .take(MAX_KEPT_MARKS).associate { it.key to it.value }
     }
+
+    /** The indexer marks kept for the wallet's outpoints its last listing left out (not coins). Reads the file the first time. */
+    fun keptMarks(walletName: String): Map<String, KeptMark> = entry(walletName).marks
 
     /** One inscription lookup's answer, so a lookup that gives up at the deadline is told from one that found nothing. */
     private class Looked(val inscription: IndexerInscription?)
@@ -525,6 +531,9 @@ class InscriptionChecker(
         /** How long an indexer's mark is kept for an outpoint the listings leave out. */
         const val MARK_KEPT_MS = 30L * 24 * 60 * 60 * 1000
 
+        /** The fewest finished runs a kept mark must have been missing from before [MARK_KEPT_MS] may drop it. */
+        const val MIN_MISSING_RUNS = 10
+
         /** The most indexer marks kept for outpoints the listings leave out (the newest). */
         const val MAX_KEPT_MARKS = 1_000
 
@@ -587,20 +596,26 @@ class InscriptionChecker(
 /**
  * A wallet's check run with the indexer the [setting] names: lists [listed]'s coins with their address positions, opens
  * the reader with [open] (in the app [Indexers.open], through the coin's [proxy]; none on Built-in, before the notice is
- * answered, or [airGapped]; within the run's time), lends it to [readers] so a settings change closes it mid-run, runs
- * [InscriptionChecker.check], and closes it. Home's runs and the background worker's both come here.
+ * answered, or [airGapped]; within the run's time), lends it to [readers] so a settings change closes it mid-open or
+ * mid-run, runs [InscriptionChecker.check], and closes it. [generation] is the readers' generation the caller took before
+ * reading [setting] and [proxy]. Home's runs and the background worker's both come here.
  */
 internal suspend fun checkWithIndexer(checker: InscriptionChecker, walletName: String, coin: Coin, network: Network, backend: ChainBackend,
                                       listed: List<WalletScanner.ChainUtxo>, setting: InscriptionSetting, proxy: SocksProxy?,
                                       airGapped: Boolean, readers: IndexerReaders, deeper: Set<String> = emptySet(),
                                       timeUp: () -> Boolean = { false },
+                                      generation: Int = readers.generation,
                                       open: suspend (String, Coin, Network, SocksProxy?) -> InscriptionIndexer =
                                           { url, c, n, p -> Indexers.open(url, c, n, p) }): Map<String, InscriptionCheck> {
     val utxos = listed.map { it.utxo }
     val positions = listed.associate { "${it.utxo.txHash}:${it.utxo.txPos}" to (it.chain to it.index) }
-    val generation = readers.generation
-    val picked = if(utxos.isEmpty() || !ChainRules.covers(coin)) CheckIndexer(null, null)
-        else openCheckIndexer(setting, coin, network, proxy, airGapped, timeUp, open)
+    val picked = when {
+        utxos.isEmpty() || !ChainRules.covers(coin) -> CheckIndexer(null, null)
+        //The setting and proxy were read before a settings change ([generation] is the one taken before reading them):
+        //open nothing over them, and count the indexer as unreachable for this run
+        generation != readers.generation -> CheckIndexer(null, checkSource(setting, coin, network, airGapped))
+        else -> openCheckIndexer(setting, coin, network, proxy, airGapped, timeUp, readers.opening, open)
+    }
     //A reader opened across a settings change is closed at once: the run goes on as if it could not be reached
     val reader = picked.reader?.takeIf { readers.lend(it, generation) }
     try {

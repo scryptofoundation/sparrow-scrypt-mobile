@@ -52,10 +52,11 @@ class KeystoreCipher(private val alias: String) : StoreCipher {
  * An indexer's mark that a coin carries something, kept for an outpoint the last listing left out (see
  * [InscriptionChecker]): [runes] true for a runes mark (held whatever its next check says), false for an Inscribed result
  * an indexer gave (held unless the coin is found Inscribed again); [runeList] the indexer's balances; [since] when the
- * coin was first missing (milliseconds), which bounds how long the mark is kept. A mark is not a coin.
+ * coin was first missing (milliseconds) and [missingRuns] how many finished runs have missed it since (added later,
+ * defaulted, so older files load): together they bound how long the mark is kept. A mark is not a coin.
  */
 @Serializable
-data class KeptMark(val runes: Boolean, val runeList: Map<String, RuneBalance>? = null, val since: Long)
+data class KeptMark(val runes: Boolean, val runeList: Map<String, RuneBalance>? = null, val since: Long, val missingRuns: Int = 0)
 
 /**
  * [blocks] (block hashes by height, deep enough not to change) and [marks] (indexer marks of outpoints the last listing

@@ -307,6 +307,8 @@ internal class IndexerReaders(
     private val locks = java.util.concurrent.ConcurrentHashMap<Key, kotlinx.coroutines.sync.Mutex>()
     private val failedAt = java.util.concurrent.ConcurrentHashMap<Key, Long>()
     private val lent = java.util.concurrent.ConcurrentHashMap.newKeySet<InscriptionIndexer>()
+    /** Readers whose open is still in flight (a Send pass's or a check run's, see [openWithin]): [clear] closes them too. */
+    internal val opening: MutableSet<InscriptionIndexer> = java.util.concurrent.ConcurrentHashMap.newKeySet()
     /** Bumped by [clear], so a reader opened before a settings change and lent after it is closed at once. */
     @Volatile var generation = 0
         private set
@@ -316,9 +318,10 @@ internal class IndexerReaders(
      * when [airGapped], or for no coins.
      */
     suspend fun answers(setting: InscriptionSetting, coin: Coin, network: Network, proxy: SocksProxy?,
-                        coins: List<com.sparrowwallet.mobile.electrum.Utxo>, airGapped: Boolean = NetworkPolicy.blocked): Answers {
-        //The generation the setting and proxy were read in: once a change bumps it, this pass opens and asks nothing
-        val gen = generation
+                        coins: List<com.sparrowwallet.mobile.electrum.Utxo>, airGapped: Boolean = NetworkPolicy.blocked,
+                        gen: Int = generation): Answers {
+        //[gen] is the generation the setting and proxy were read in (the caller takes it before reading them): once a
+        //change bumps it, this pass opens and asks nothing
         //One deadline for the whole pass, the open included; past it the reader is closed, which ends a blocked request
         val deadline = System.nanoTime() + passDeadlineMs * 1_000_000L
         val expired = { System.nanoTime() >= deadline }
@@ -371,14 +374,15 @@ internal class IndexerReaders(
             failedAt[key]?.let { if(now() - it < FAILED_OPEN_MS) return@withLock null }
             kept.remove(key)
             val reader = try {
-                stopWhenTimeUp(expired, late = { it.close() }) { open(key.url, key.coin, key.network, key.proxy) }
+                openWithin(expired, opening) { open(key.url, key.coin, key.network, key.proxy) }
             } catch(e: CancellationException) {
                 throw e
             } catch(e: Exception) {
                 null
             }
             if(reader == null) {
-                failedAt[key] = now()
+                //An open a settings change cut short is not a failure of the indexer
+                if(gen == generation) failedAt[key] = now()
                 return@withLock null
             }
             failedAt.remove(key)
@@ -416,10 +420,13 @@ internal class IndexerReaders(
         lent.remove(reader)
     }
 
-    /** Closes every reader (the lent ones too) and forgets every answer and failure: a server or inscription setting changed. */
+    /**
+     * Closes every reader (the lent ones and those still opening too) and forgets every answer and failure: a server or
+     * inscription setting changed.
+     */
     fun clear() {
         generation++
-        val open = ArrayList(readers.values) + ArrayList(lent)
+        val open = ArrayList(readers.values) + ArrayList(lent) + ArrayList(opening)
         readers.clear()
         kept.clear()
         failedAt.clear()
@@ -441,21 +448,48 @@ fun indexerProxy(server: WalletRepository.ServerSettings?): SocksProxy? =
 
 /**
  * Send's decision for each of the [ready] coins (outpoint to coin): the effective [setting]'s indexer asked once through
- * [readers] (nothing on Built-in or [airGapped]), then [classifyCoins] with the wallet's stored [results] (ignored for a
- * coin the check does not cover). [writesTokens] reads whether the coin's creating transaction writes a runestone or
+ * [readers] (nothing on Built-in or [airGapped], nor when [generation], taken before the setting and proxy were read,
+ * is stale), then [classifyCoins] with the wallet's stored [results] (ignored for a coin the check does not cover).
+ * [marks] are the indexer marks the check run kept for coins its last listing left out: a ready coin with no row of its
+ * own but such a mark gets a row carrying that mark ([InscriptionCheck.runes], held by [coinState] rule 2), exactly as
+ * its stored row would have. [writesTokens] reads whether the coin's creating transaction writes a runestone or
  * dunestone; [localMayCarry] is the local guess, asked only when nothing else decides.
  */
 internal suspend fun classifySend(ready: Map<String, com.sparrowwallet.mobile.electrum.Utxo>, results: Map<String, InscriptionCheck>?,
                                   coin: Coin, network: Network, setting: InscriptionSetting, proxy: SocksProxy?,
                                   readers: IndexerReaders, airGapped: Boolean,
                                   writesTokens: suspend (com.sparrowwallet.mobile.electrum.Utxo) -> Boolean,
-                                  localMayCarry: suspend (com.sparrowwallet.mobile.electrum.Utxo) -> Boolean): CoinStates {
+                                  localMayCarry: suspend (com.sparrowwallet.mobile.electrum.Utxo) -> Boolean,
+                                  marks: Map<String, KeptMark> = emptyMap(),
+                                  generation: Int = readers.generation): CoinStates {
     val covered = com.sparrowwallet.mobile.crypto.track.ChainRules.covers(coin)
-    val answers = readers.answers(setting, coin, network, proxy, ready.values.toList(), airGapped)
-    return classifyCoins(ready.keys.toList(), if(covered) results else null, covered,
+    val answers = readers.answers(setting, coin, network, proxy, ready.values.toList(), airGapped, generation)
+    return classifyCoins(ready.keys.toList(), if(covered) withKeptMarks(results, marks, ready) else null, covered,
         com.sparrowwallet.mobile.crypto.track.ChainRules.hasRuneLikeTokens(coin), answers.runesAware,
         { op -> indexerCarries(answers.of(op), answers.tokensIndexed) { writesTokens(ready.getValue(op)) } }
     ) { op -> localMayCarry(ready.getValue(op)) }
+}
+
+/** The kept-mark reason on a row Send builds for a listed coin that has only its kept mark. */
+const val KEPT_MARK_REASON = "An indexer said this coin carries something"
+
+/**
+ * [results] with a row for each of the [ready] coins that has a kept mark in [marks] and no row: Unchecked, carrying the
+ * mark ([InscriptionCheck.runes]) and its rune balances. A coin with a row keeps it. Null [results] (no readable file)
+ * stays null: the marks live in that file.
+ */
+private fun withKeptMarks(results: Map<String, InscriptionCheck>?, marks: Map<String, KeptMark>,
+                          ready: Map<String, com.sparrowwallet.mobile.electrum.Utxo>): Map<String, InscriptionCheck>? {
+    if(results == null || marks.isEmpty()) return results
+    val rows = results.values.associateBy { it.outpoint }
+    val added = HashMap<String, InscriptionCheck>()
+    for((outpoint, utxo) in ready) {
+        val mark = marks[outpoint] ?: continue
+        if(outpoint in rows) continue
+        added[outpoint] = InscriptionCheck(utxo.txHash, utxo.txPos, Verdict.UNCHECKED, InscriptionCheck.Source.BUILT_IN, true,
+            emptyList(), KEPT_MARK_REASON, null, emptyList(), runeList = mark.runeList)
+    }
+    return if(added.isEmpty()) results else results + added
 }
 
 /**
@@ -464,22 +498,30 @@ internal suspend fun classifySend(ready: Map<String, com.sparrowwallet.mobile.el
  */
 class CheckIndexer(val reader: InscriptionIndexer?, val source: InscriptionCheck.Source?)
 
+/** The source a check run's indexer answers count as under [setting]: null when it names none (Built-in, air-gapped). */
+fun checkSource(setting: InscriptionSetting, coin: Coin, network: Network, airGapped: Boolean): InscriptionCheck.Source? = when {
+    airGapped || setting.url(coin, network) == null -> null
+    setting is InscriptionSetting.YourOwn -> InscriptionCheck.Source.YOUR_OWN
+    else -> InscriptionCheck.Source.PUBLIC
+}
+
 /**
  * Opens the check run's reader for [setting] with [open] (in the app [Indexers.open]): none on Built-in, with no indexer
  * for the coin, or when [airGapped], contacting nothing. A failed open (unreachable, wrong chain, an unsupported kind,
  * plain http through the proxy, a malformed URL) is no reader, not an error; so is an open still going when [timeUp]
- * says the run's time is up or after [INDEXER_DEADLINE_MS] (a reader that arrives after that is closed). Cancellation is
- * rethrown.
+ * says the run's time is up or after [INDEXER_DEADLINE_MS] (see [openWithin]: it is stopped and what it holds closed).
+ * While it opens, the reader is in [track] (the readers' [IndexerReaders.opening]), so a settings change closes it.
+ * Cancellation is rethrown.
  */
 suspend fun openCheckIndexer(setting: InscriptionSetting, coin: Coin, network: Network, proxy: SocksProxy?, airGapped: Boolean,
                              timeUp: () -> Boolean = { false },
+                             track: MutableSet<InscriptionIndexer>? = null,
                              open: suspend (String, Coin, Network, SocksProxy?) -> InscriptionIndexer): CheckIndexer {
-    val url = setting.url(coin, network) ?: return CheckIndexer(null, null)
-    if(airGapped) return CheckIndexer(null, null)
-    val source = if(setting is InscriptionSetting.YourOwn) InscriptionCheck.Source.YOUR_OWN else InscriptionCheck.Source.PUBLIC
+    val source = checkSource(setting, coin, network, airGapped) ?: return CheckIndexer(null, null)
+    val url = setting.url(coin, network)!!
     val deadline = System.nanoTime() + INDEXER_DEADLINE_MS * 1_000_000L
     return try {
-        CheckIndexer(stopWhenTimeUp({ timeUp() || System.nanoTime() >= deadline }, late = { it.close() }) { open(url, coin, network, proxy) }, source)
+        CheckIndexer(openWithin({ timeUp() || System.nanoTime() >= deadline }, track) { open(url, coin, network, proxy) }, source)
     } catch(e: CancellationException) {
         throw e
     } catch(e: Exception) {
@@ -488,22 +530,50 @@ suspend fun openCheckIndexer(setting: InscriptionSetting, coin: Coin, network: N
 }
 
 /**
+ * Runs an indexer [open] until it gives its reader or [expired]. The reader [Indexers.open] builds is seen before its
+ * first request ([com.sparrowwallet.mobile.electrum.indexer.IndexerOpening]) and kept in [track] while the open runs, so
+ * a settings change ([IndexerReaders.clear]) can close it mid-open. On giving up, the open is cancelled and the reader
+ * it holds is closed at once (a request in flight ends, later ones are refused), and one it delivers late is closed: an
+ * abandoned open asks nothing more. Null when it gave up; its failure, cancellation included, is rethrown.
+ */
+internal suspend fun openWithin(expired: () -> Boolean, track: MutableSet<InscriptionIndexer>?,
+                                open: suspend () -> InscriptionIndexer): InscriptionIndexer? {
+    val held = java.util.concurrent.ConcurrentHashMap.newKeySet<InscriptionIndexer>()
+    val gaveUp = java.util.concurrent.atomic.AtomicBoolean(false)
+    val seen = com.sparrowwallet.mobile.electrum.indexer.IndexerOpening { reader ->
+        held.add(reader)
+        track?.add(reader)
+        if(gaveUp.get()) runCatching { reader.close() }
+    }
+    try {
+        val reader = kotlinx.coroutines.withContext(seen) {
+            stopWhenTimeUp(expired, late = { runCatching { it.close() } }) { open() }
+        }
+        if(reader == null) {
+            gaveUp.set(true)
+            held.forEach { runCatching { it.close() } }
+        }
+        return reader
+    } finally {
+        track?.removeAll(held)
+    }
+}
+
+/**
  * Runs [block] until it ends or [timeUp] says the time is up (asked before it starts and about four times a second), then
- * gives up on it: null, and the block cancelled, or with [late] left to finish and its result handed to [late]. The block runs apart from
- * the caller, so giving up does not wait for a request it is blocked in. Its failure, cancellation included, is rethrown.
+ * gives up on it: null, and the block cancelled; a result it still delivers is handed to [late]. The block runs apart
+ * from the caller, so giving up does not wait for a request it is blocked in. Its failure, cancellation included, is
+ * rethrown.
  */
 internal suspend fun <T> stopWhenTimeUp(timeUp: () -> Boolean, late: ((T) -> Unit)? = null, block: suspend () -> T): T? {
     if(timeUp()) return null
     val scope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.currentCoroutineContext().minusKey(kotlinx.coroutines.Job) + kotlinx.coroutines.SupervisorJob())
     val work = scope.async { block() }
-    var handedOver = false
     try {
         while(!work.isCompleted) {
             if(timeUp()) {
                 if(late != null) {
-                    //left to finish, so what it opens is closed rather than lost
-                    handedOver = true
                     work.invokeOnCompletion { cause -> if(cause == null) scope.launch { runCatching { late(work.await()) } } }
                 }
                 return null
@@ -512,7 +582,7 @@ internal suspend fun <T> stopWhenTimeUp(timeUp: () -> Boolean, late: ((T) -> Uni
         }
         return work.await()
     } finally {
-        if(!handedOver && !work.isCompleted) work.cancel()
+        if(!work.isCompleted) work.cancel()
     }
 }
 

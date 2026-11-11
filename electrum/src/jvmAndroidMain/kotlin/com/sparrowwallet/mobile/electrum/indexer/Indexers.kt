@@ -58,6 +58,8 @@ object Indexers {
             throw IndexerException(e.message ?: "Not an http or https URL", e)
         }
         try {
+            //A caller that may give up on this open sees the reader before its first request, so it can close it
+            kotlinx.coroutines.currentCoroutineContext()[IndexerOpening]?.created?.invoke(indexer)
             //Nintondo's status names the coin and network; ord's names the network, and is refused if it is not ord's
             indexer.status()
             if(indexer is OrdIndexer) requireGenesis(indexer, coin, network)
@@ -106,4 +108,14 @@ object Indexers {
         Coin.JUNKCOIN -> "a2effa738145e377e08a61d76179c21703e13e48910b30a2a87f0dfe794b64c6"
         else -> null
     }
+}
+
+/**
+ * Put in the coroutine context of an [Indexers.open] call: [created] is told of the reader as soon as it exists, before
+ * its first request. A caller that gives up on the open (a deadline, a settings change) closes it there, which ends a
+ * request in flight and refuses every later one, so an abandoned open asks nothing more over the old route.
+ */
+class IndexerOpening(val created: (InscriptionIndexer) -> Unit) :
+    kotlin.coroutines.AbstractCoroutineContextElement(IndexerOpening) {
+    companion object Key : kotlin.coroutines.CoroutineContext.Key<IndexerOpening>
 }

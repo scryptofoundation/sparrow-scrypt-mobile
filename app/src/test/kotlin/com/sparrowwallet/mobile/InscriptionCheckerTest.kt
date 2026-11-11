@@ -1284,13 +1284,22 @@ class InscriptionCheckerTest {
         fun at() = InscriptionChecker(InscriptionStore(dir, cipher), now = { clock })
         at().withIndexer(chain, listOf(Utxo(a, 0, 100, 100_000)), FakeIndexer { asked -> asked.associateWith { runesOn(it) } })
         val onlyB = listOf(Utxo(b, 0, 100, 60_000))
+        fun marks() = InscriptionStore(dir, cipher).loadMarks(wallet)
+        //runs while it is missing: 1
         at().withIndexer(chain, onlyB, null, null)
-        clock += 29 * day
+        //a clock jump alone (far past 30 days, after 2 runs) drops nothing
+        clock += 400 * day
         at().withIndexer(chain, onlyB, null, null)
-        assertEquals(setOf("$a:0"), InscriptionStore(dir, cipher).loadMarks(wallet).keys, "29 days: kept")
-        clock += 2 * day
+        assertEquals(setOf("$a:0"), marks().keys, "a clock jump alone")
+        clock -= 400 * day
+        //runs alone (10 and more, within 30 days) drop nothing
+        repeat(10) { at().withIndexer(chain, onlyB, null, null) }
+        assertEquals(setOf("$a:0"), marks().keys, "runs alone")
+        assertTrue(marks().getValue("$a:0").missingRuns >= InscriptionChecker.MIN_MISSING_RUNS)
+        //both: dropped
+        clock += 31 * day
         at().withIndexer(chain, onlyB, null, null)
-        assertTrue(InscriptionStore(dir, cipher).loadMarks(wallet).isEmpty(), "31 days: dropped")
+        assertTrue(marks().isEmpty(), "31 days and 10 runs: dropped")
 
         //at most the newest 1,000
         val many = (1..1_005).associate { i -> "%064x:0".format(i) to KeptMark(true, null, clock - i * 1_000L) }
@@ -1300,6 +1309,12 @@ class InscriptionCheckerTest {
         val kept = InscriptionStore(dir, cipher).loadMarks(wallet)
         assertEquals(1_000, kept.size)
         assertEquals((1..1_000).map { "%064x:0".format(it) }.toSet(), kept.keys, "the newest")
+
+        //ties (the same time) are cut in outpoint order, so the cap keeps the same marks every time
+        val tied = (1..1_003).associate { i -> "%064x:0".format(i) to KeptMark(true, null, clock) }
+        store.save(wallet, store.load(wallet), store.loadBlocks(wallet), tied.entries.reversed().associate { it.key to it.value })
+        at().withIndexer(chain, onlyB, null, null)
+        assertEquals((1..1_000).map { "%064x:0".format(it) }.toSet(), InscriptionStore(dir, cipher).loadMarks(wallet).keys)
     }
 
     /**
@@ -1332,5 +1347,47 @@ class InscriptionCheckerTest {
         } finally {
             server.close()
         }
+    }
+
+    /**
+     * Re-check item 1: a coin whose mark was kept while it was missing from the check run's listing, and that is listed
+     * again at Send before the next run, is held by that mark (not Unchecked for want of a row).
+     */
+    @Test fun sendHoldsACoinByItsKeptMark(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val a = oldCoin(chain, 100_000)
+        val b = oldCoin(chain, 60_000)
+        val both = listOf(Utxo(a, 0, 100, 100_000), Utxo(b, 0, 100, 60_000))
+        checker(dir, cipher).withIndexer(chain, both, FakeIndexer { asked -> asked.associateWith { if(it.startsWith(a)) runesOn(it) else nothing(it) } })
+        val checker = checker(dir, cipher)
+        checker.withIndexer(chain, both.drop(1), null, null)
+        assertTrue("$a:0" !in checker.storedResults(wallet)!!)
+        val ready = both.associateBy { "${it.txHash}:${it.txPos}" }
+        val states = classifySend(ready, checker.storedResults(wallet), Coin.LITECOIN, Network.MAINNET, InscriptionSetting.BuiltIn, null,
+            IndexerReaders(), false, { false }, { false }, marks = checker.keptMarks(wallet))
+        assertEquals(CoinState.HELD, states.state("$a:0"))
+        assertEquals(CoinState.CLEAN, states.state("$b:0"))
+    }
+
+    /**
+     * Re-check item 4: a run whose setting and proxy were read before a settings change (the generation it was given is
+     * stale) opens nothing, and counts the indexer as unreachable for that run.
+     */
+    @Test fun aRunGivenAStaleGenerationOpensNothing(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val listed = listOf(com.sparrowwallet.mobile.electrum.WalletScanner.ChainUtxo(Utxo(a, 0, 100, 50_000), 0, 0))
+        val readers = IndexerReaders()
+        val stale = readers.generation
+        readers.clear()
+        var opens = 0
+        val checker = checker(newDir(), CheckerCipher())
+        val rows = checkWithIndexer(checker, wallet, Coin.LITECOIN, Network.MAINNET, chain, listed, InscriptionSetting.Public, null,
+            airGapped = false, readers = readers, generation = stale, open = { _, _, _, _ -> opens++; FakeIndexer { emptyMap() } })
+        assertEquals(0, opens)
+        assertEquals(InscriptionCheck.Source.BUILT_IN, rows.getValue("$a:0").source)
+        assertTrue(checker.status(wallet).value!!.indexerUnreachable)
     }
 }

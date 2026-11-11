@@ -317,6 +317,12 @@ class WalletRepository(context: Context) {
         return withContext(Dispatchers.IO) { inscriptionChecker.storedResults(name) }
     }
 
+    /** The indexer marks the check run kept for the wallet's coins its last listing left out (not coins), off the main thread. */
+    private suspend fun loadKeptMarks(data: VaultData): Map<String, KeptMark> {
+        val name = sessionNames[data] ?: return emptyMap()
+        return withContext(Dispatchers.IO) { inscriptionChecker.keptMarks(name) }
+    }
+
     /**
      * Starts the check of an open public wallet's coins for inscriptions, in the checker's own scope (leaving Home does
      * not cancel it): on one server connection it lists the unspent coins (the shown receive addresses included, as
@@ -379,8 +385,12 @@ class WalletRepository(context: Context) {
             val listed = WalletScanner(client, walletScriptType(scriptType)).utxos(key, watchReceiveTo = watchReceiveTo).utxos
             //The setting's indexer, opened (and its chain checked) for this run only and closed by a settings change;
             //Built-in and air-gapped open none, and one that cannot be opened is an unreachable indexer, not a failed check
-            checkWithIndexer(inscriptionChecker, name, coin, network, client, listed, inscriptionSetting(coin, network),
-                indexerProxy(serverSettings(coin, network)), NetworkPolicy.blocked, indexerReaders, deeper, timeUp)
+            //The readers' generation first, then the setting and proxy: a change between the two reads is never missed
+            val generation = indexerReaders.generation
+            val setting = inscriptionSetting(coin, network)
+            val proxy = indexerProxy(serverSettings(coin, network))
+            checkWithIndexer(inscriptionChecker, name, coin, network, client, listed, setting, proxy, NetworkPolicy.blocked,
+                indexerReaders, deeper, timeUp, generation)
         }
 
     /**
@@ -736,11 +746,16 @@ class WalletRepository(context: Context) {
         val coin = coin(data)
         val network = network(data)
         val results = if(ChainRules.covers(coin)) loadInscriptionChecks(data) else null
+        //The marks the check run kept for coins its last listing left out: such a coin listed here is held by its mark
+        val marks = if(ChainRules.covers(coin)) loadKeptMarks(data) else emptyMap()
         val ready = scan.utxos.filter { spendable(data, tip, it) }.associate { outpoint(it) to it.utxo }
-        return classifySend(ready, results, coin, network, inscriptionSetting(coin, network), indexerProxy(serverSettings(coin, network)),
-            indexerReaders, NetworkPolicy.blocked,
-            { utxo -> creatingTx(client, utxo.txHash)?.let { CarrierScan.hasRunestone(it) || CarrierScan.hasDunestone(it) } == true }
-        ) { utxo -> localMayCarry(coin, client, utxo) }
+        //The readers' generation first, then the setting and proxy: a change between the two reads is never missed
+        val generation = indexerReaders.generation
+        val setting = inscriptionSetting(coin, network)
+        val proxy = indexerProxy(serverSettings(coin, network))
+        return classifySend(ready, results, coin, network, setting, proxy, indexerReaders, NetworkPolicy.blocked,
+            { utxo -> creatingTx(client, utxo.txHash)?.let { CarrierScan.hasRunestone(it) || CarrierScan.hasDunestone(it) } == true },
+            { utxo -> localMayCarry(coin, client, utxo) }, marks, generation)
     }
 
     private suspend fun localMayCarry(coin: Coin, client: ChainBackend, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean {

@@ -838,4 +838,62 @@ class InscriptionChecksTest {
             server.close()
         }
     }
+
+    /** An indexer whose status answer comes [delayMs] late (then answers it), with its block 0; logs every request. */
+    private fun slowStatus(delayMs: Long) = TinyHttp { _, path, _ ->
+        when(path) {
+            "/status" -> { Thread.sleep(delayMs); """{"chain":"mainnet","height":5,"rune_index":true}""" }
+            "/blockhash/0" -> "12a765e31ffd4059bada1e25190f6e98c99d9714d334efa41a195a7e7e04bfe2"
+            else -> "[]"
+        }
+    }
+
+    /**
+     * Re-check item 2: an open given up at the deadline is stopped, not left to run: when its first request finally
+     * answers, no further request (block 0 over the old route) follows, even after a settings change.
+     */
+    @Test
+    fun anAbandonedOpenSendsNothingMore(): Unit = runBlocking {
+        val a = clean.outpoint
+        slowStatus(1_500).use { server ->
+            val readers = IndexerReaders(passDeadlineMs = 500)
+            assertNull(readers.answers(InscriptionSetting.YourOwn(server.url), Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false).of(a))
+            readers.clear()
+            kotlinx.coroutines.delay(2_500)
+            assertEquals(listOf("GET /status"), server.requests.toList())
+        }
+    }
+
+    /** Re-check item 2: a settings change reaches an open still in flight: it is closed, and asks nothing more. */
+    @Test
+    fun aSettingsChangeReachesAnOpenInFlight(): Unit = runBlocking {
+        val a = clean.outpoint
+        slowStatus(1_500).use { server ->
+            val readers = IndexerReaders(passDeadlineMs = 20_000)
+            val pass = async(kotlinx.coroutines.Dispatchers.Default) {
+                readers.answers(InscriptionSetting.YourOwn(server.url), Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+            }
+            kotlinx.coroutines.withTimeout(10_000) { while(server.requests.isEmpty()) kotlinx.coroutines.delay(20) }
+            readers.clear()
+            val answers = kotlinx.coroutines.withTimeout(5_000) { pass.await() }
+            assertNull(answers.of(a))
+            kotlinx.coroutines.delay(2_500)
+            assertEquals(listOf("GET /status"), server.requests.toList())
+        }
+    }
+
+    /** Re-check item 4: a pass given the generation its setting and proxy were read in opens nothing once it is stale. */
+    @Test
+    fun aPassGivenAStaleGenerationOpensNothing(): Unit = runBlocking {
+        val a = clean.outpoint
+        var opens = 0
+        val readers = IndexerReaders { _, _, _, _ -> opens++; SendIndexer { asked -> asked.associateWith { nothing(it) } } }
+        val stale = readers.generation
+        readers.clear()
+        assertNull(readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false, stale).of(a))
+        assertEquals(0, opens)
+        assertEquals(CoinState.HELD, classifySend(ready(a), null, Coin.LITECOIN, Network.MAINNET, InscriptionSetting.Public, null, readers,
+            false, { false }, { true }, generation = stale).state(a))
+        assertEquals(0, opens)
+    }
 }
