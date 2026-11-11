@@ -12,11 +12,12 @@ object PreviewRules {
 
     const val MAX_CONTENT_BYTES = 400_000
     const val MAX_TEXT_CHARS = 4_000
+    const val MAX_TEXT_LINES = 200
+    private const val MAX_MARKS_PER_BASE = 2
     const val MAX_SIDE = 4_096
     const val MAX_PIXELS = 2_048L * 2_048L
 
     private const val MAX_JPEG_STEPS = 1_000
-    private const val MAX_GIF_STEPS = 100_000
 
     fun kind(contentType: String?, contentEncoding: String?, body: ByteArray): Kind {
         // Any encoding at all (br, gzip, even identity) means the bytes are not what they appear to be
@@ -30,7 +31,11 @@ object PreviewRules {
         return if (type == "text/plain" || type == "application/json") Kind.TEXT else Kind.PLACEHOLDER
     }
 
-    /** Width and height declared by the header, or null when unsupported, truncated or not positive. */
+    /**
+     * Width and height declared by the header, or null when unsupported, truncated or not positive. For WebP this is
+     * the canvas size: animated WebP frames are not counted (nor are APNG frames), which is acceptable because the
+     * platform decoder used shows the first frame only and clamps to the header canvas, so Task 9 decodes still frames only.
+     */
     fun dimensions(body: ByteArray): Pair<Int, Int>? {
         val d = try {
             when {
@@ -46,8 +51,17 @@ object PreviewRules {
         return if (d != null && d.first > 0 && d.second > 0) d else null
     }
 
-    /** Number of frames in a GIF (at least 1); 1 for every other format. */
-    fun frames(body: ByteArray): Int = if (isGif(body)) maxOf(1, gifFrames(body)) else 1
+    /**
+     * Number of frames in a GIF (at least 1), or Int.MAX_VALUE when the GIF cannot be walked cleanly to its trailer
+     * or has a frame outside its screen (so it is never safe to decode); 1 for every other format. Animated WebP and
+     * APNG frames are not counted: the decoder used shows the first frame only and clamps to the header canvas, so
+     * Task 9 decodes still frames only.
+     */
+    fun frames(body: ByteArray): Int {
+        if (!isGif(body)) return 1
+        val n = gifFrames(body)
+        return if (n < 0) Int.MAX_VALUE else maxOf(1, n)
+    }
 
     fun safeToDecode(body: ByteArray): Boolean {
         if (body.size > MAX_CONTENT_BYTES) return false
@@ -57,17 +71,36 @@ object PreviewRules {
         return w.toLong() * h.toLong() * frames(body).toLong() <= MAX_PIXELS
     }
 
-    /** UTF-8 text without control or format characters (bidi overrides, zero width, BOM) except newline and tab, capped. */
+    /**
+     * UTF-8 text without control, format or invisible characters (bidi overrides, zero width, BOM, filler and
+     * variation selectors) except newline and tab, at most 2 combining marks per base character, capped at
+     * MAX_TEXT_CHARS characters and MAX_TEXT_LINES lines.
+     */
     fun text(body: ByteArray): String {
         val decoded = String(body, Charsets.UTF_8)
         val out = StringBuilder()
         var i = 0
+        var lines = 1
+        var marks = 0
         while (i < decoded.length) {
             val cp = decoded.codePointAt(i)
             val n = Character.charCount(cp)
-            if (out.length + n > MAX_TEXT_CHARS) break
-            if (cp == '\n'.code || cp == '\t'.code || !isStripped(cp)) out.appendCodePoint(cp)
             i += n
+            if (cp == '\n'.code) {
+                if (lines >= MAX_TEXT_LINES || out.length + n > MAX_TEXT_CHARS) break
+                lines++
+                marks = 0
+                out.append('\n')
+                continue
+            }
+            if (cp != '\t'.code && isStripped(cp)) continue
+            if (isMark(cp)) {
+                if (++marks > MAX_MARKS_PER_BASE) continue
+            } else {
+                marks = 0
+            }
+            if (out.length + n > MAX_TEXT_CHARS) break
+            out.appendCodePoint(cp)
         }
         return out.toString()
     }
@@ -86,10 +119,17 @@ object PreviewRules {
 
     private fun isStripped(cp: Int): Boolean {
         if (Character.isISOControl(cp)) return true
+        if (cp == 0x3164 || cp == 0x115F || cp == 0x1160 || cp == 0x2800 || cp == 0x034F) return true
+        if (cp in 0xFE00..0xFE0F || cp in 0x180B..0x180F || cp in 0xE0100..0xE01EF) return true
         return when (Character.getType(cp)) {
             Character.FORMAT.toInt(), Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt() -> true
             else -> false
         }
+    }
+
+    private fun isMark(cp: Int): Boolean = when (Character.getType(cp)) {
+        Character.NON_SPACING_MARK.toInt(), Character.ENCLOSING_MARK.toInt(), Character.COMBINING_SPACING_MARK.toInt() -> true
+        else -> false
     }
 
     private fun u8(b: ByteArray, i: Int): Int = b[i].toInt() and 0xff
@@ -162,19 +202,30 @@ object PreviewRules {
         return null
     }
 
-    // Walks the GIF blocks with bounds checks; stops at the trailer, on anything unknown or at the end of the array
+    // Walks the GIF blocks with bounds checks. Returns the frame count, or -1 when the walk does not end cleanly at
+    // the trailer (unknown block, data ran out, step budget spent) or a frame is empty or leaves the logical screen.
+    // Every step consumes at least 3 bytes, so size / 3 + 2 steps is more than any honest file needs.
     private fun gifFrames(b: ByteArray): Int {
-        if (b.size < 13) return 0
+        if (b.size < 13) return -1
+        val screenW = le16(b, 6)
+        val screenH = le16(b, 8)
         var pos = 13
         val flags = u8(b, 10)
         if (flags and 0x80 != 0) pos += 3 * (1 shl ((flags and 7) + 1))
         var frames = 0
         var steps = 0
-        while (pos < b.size && steps++ < MAX_GIF_STEPS) {
+        val maxSteps = b.size / 3 + 2
+        while (pos < b.size && steps++ < maxSteps) {
             when (u8(b, pos)) {
+                0x3b -> return frames
                 0x2c -> {
+                    if (pos + 10 > b.size) return -1
+                    val left = le16(b, pos + 1)
+                    val top = le16(b, pos + 3)
+                    val w = le16(b, pos + 5)
+                    val h = le16(b, pos + 7)
+                    if (w == 0 || h == 0 || left + w > screenW || top + h > screenH) return -1
                     frames++
-                    if (pos + 10 > b.size) break
                     val local = u8(b, pos + 9)
                     pos += 10
                     if (local and 0x80 != 0) pos += 3 * (1 shl ((local and 7) + 1))
@@ -182,11 +233,11 @@ object PreviewRules {
                     pos = skipSubBlocks(b, pos)
                 }
                 0x21 -> pos = skipSubBlocks(b, pos + 2)
-                else -> break // trailer (0x3b) or garbage
+                else -> return -1
             }
-            if (pos < 0) break
+            if (pos < 0) return -1
         }
-        return frames
+        return -1
     }
 
     // Returns the position after the terminating zero length block, or -1 when the data runs out first

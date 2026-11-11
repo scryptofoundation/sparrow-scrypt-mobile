@@ -174,9 +174,11 @@ class PreviewRulesTest {
         repeat(20_000) { many += bytes(0xff, 0xe0, 0x00, 0x02) }
         assertNull(PreviewRules.dimensions(many + jpeg(5, 5).copyOfRange(2, jpeg(5, 5).size)))
         // GIF sub-block lengths pointing past the end
-        val hostileGif = ascii("GIF89a") + le16(10) + le16(10) + bytes(0x80, 0, 0) + bytes(0x2c, 0, 0, 0, 0, 10, 0, 10, 0, 0x80, 0x02, 0xff)
+        val hostileGif = ascii("GIF89a") + le16(10) + le16(10) + bytes(0x00, 0, 0) +
+            bytes(0x2c, 0, 0, 0, 0, 10, 0, 10, 0, 0x80) + ByteArray(6) + bytes(0x02, 0xff, 1, 2, 3)
         assertEquals(10 to 10, PreviewRules.dimensions(hostileGif))
-        assertEquals(1, PreviewRules.frames(hostileGif))
+        assertEquals(Int.MAX_VALUE, PreviewRules.frames(hostileGif))
+        assertFalse(PreviewRules.safeToDecode(hostileGif))
         // PNG with the high bit set in a dimension, GIF with a zero canvas
         assertNull(PreviewRules.dimensions(png(-5, 5)))
         assertNull(PreviewRules.dimensions(gif(0, 0, 1)))
@@ -199,14 +201,14 @@ class PreviewRulesTest {
 
     @Test
     fun textIsCappedAndStripped() {
-        val dirty = "a\u0000b\u0007c\u001bd‮e⁦f​g﻿h\u0085i j k\nl\tm\r"
+        val dirty = "a\u0000b\u0007c\u001bd\u202Ee\u2066f\u200Bg\uFEFFh\u0085i\u2028j\u2029k\nl\tm\r"
         assertEquals("abcdefghijk\nl\tm", PreviewRules.text(dirty.toByteArray(Charsets.UTF_8)))
         val long = "x".repeat(10_000)
         assertEquals(PreviewRules.MAX_TEXT_CHARS, PreviewRules.text(long.toByteArray()).length)
         // Invalid UTF-8 does not throw
         assertTrue(PreviewRules.text(bytes(0xff, 0xfe, 0x41, 0xc3)).contains('A'))
         // A surrogate pair is never split at the cap
-        val emoji = "😀"
+        val emoji = "\uD83D\uDE00"
         val s = "y".repeat(PreviewRules.MAX_TEXT_CHARS - 1) + emoji
         val out = PreviewRules.text(s.toByteArray(Charsets.UTF_8))
         assertTrue(out.length <= PreviewRules.MAX_TEXT_CHARS)
@@ -228,5 +230,103 @@ class PreviewRulesTest {
         assertEquals(1, PreviewRules.sampleSize(-5, 100, 200))
         assertEquals(1, PreviewRules.sampleSize(1_000, 1_000, 0))
         assertEquals(1, PreviewRules.sampleSize(1_000, 1_000, -4))
+    }
+
+    @Test
+    fun everyCutOfEveryHeaderIsHandled() {
+        val needs = listOf(png(10, 10) to 24, jpeg(10, 10) to jpeg(10, 10).size, gif(10, 10, 1) to 10,
+            webpVp8(10, 10) to 30, webpVp8l(10, 10) to 25, webpVp8x(10, 10) to 30)
+        for ((full, need) in needs) {
+            for (cut in 0..full.size) {
+                val b = full.copyOf(cut)
+                val d = PreviewRules.dimensions(b)
+                PreviewRules.frames(b); PreviewRules.safeToDecode(b); PreviewRules.kind("image/png", null, b)
+                if (cut < need) assertNull(d, "size ${full.size} cut $cut") else assertEquals(10 to 10, d)
+            }
+        }
+    }
+
+    @Test
+    fun gifFrameCountFailsClosed() {
+        // Many empty extensions then many tiny frames on a 512 x 512 screen: every frame is counted
+        val ext = bytes(0x21, 0xf9, 0x00)
+        val extBlock = ByteArray(ext.size * 99_990) { ext[it % ext.size] }
+        val frame = bytes(0x2c) + le16(0) + le16(0) + le16(1) + le16(1) + bytes(0x00, 0x02, 0x00)
+        val frames = ByteArray(frame.size * 5_000) { frame[it % frame.size] }
+        val many = ascii("GIF89a") + le16(512) + le16(512) + bytes(0, 0, 0) + extBlock + frames + bytes(0x3b)
+        assertTrue(many.size < PreviewRules.MAX_CONTENT_BYTES)
+        assertEquals(5_000, PreviewRules.frames(many))
+        assertFalse(PreviewRules.safeToDecode(many))
+        // No trailer
+        val noTrailer = gif(10, 10, 1).let { it.copyOf(it.size - 1) }
+        assertEquals(Int.MAX_VALUE, PreviewRules.frames(noTrailer))
+        assertFalse(PreviewRules.safeToDecode(noTrailer))
+        // Unknown block
+        val unknown = gif(10, 10, 1).let { it.copyOf(it.size - 1) + bytes(0x99, 0x3b) }
+        assertFalse(PreviewRules.safeToDecode(unknown))
+    }
+
+    @Test
+    fun gifFramesMustStayInsideTheScreen() {
+        fun withFrame(l: Int, t: Int, w: Int, h: Int) = ascii("GIF89a") + le16(100) + le16(50) + bytes(0, 0, 0) +
+            bytes(0x2c) + le16(l) + le16(t) + le16(w) + le16(h) + bytes(0x00, 0x02, 0x00, 0x3b)
+        assertTrue(PreviewRules.safeToDecode(withFrame(0, 0, 100, 50)))
+        assertTrue(PreviewRules.safeToDecode(withFrame(90, 40, 10, 10)))
+        assertFalse(PreviewRules.safeToDecode(withFrame(91, 0, 10, 10)))
+        assertFalse(PreviewRules.safeToDecode(withFrame(0, 41, 10, 10)))
+        assertFalse(PreviewRules.safeToDecode(withFrame(0, 0, 101, 10)))
+        assertFalse(PreviewRules.safeToDecode(withFrame(0, 0, 0, 10)))
+        assertFalse(PreviewRules.safeToDecode(withFrame(0, 0, 10, 0)))
+        assertFalse(PreviewRules.safeToDecode(withFrame(65_535, 65_535, 65_535, 65_535)))
+    }
+
+    @Test
+    fun gifWithRealColourTables() {
+        val global = ascii("GIF89a") + le16(4) + le16(4) + bytes(0x80, 0, 0) + ByteArray(6) +
+            bytes(0x2c) + le16(0) + le16(0) + le16(4) + le16(4) + bytes(0x80) + ByteArray(6) +
+            bytes(0x02, 0x03, 1, 2, 3, 0x00, 0x3b)
+        assertEquals(1, PreviewRules.frames(global))
+        assertTrue(PreviewRules.safeToDecode(global))
+    }
+
+    @Test
+    fun jpegAndPngRuleEdges() {
+        val dht = bytes(0xff, 0xd8, 0xff, 0xc4, 0x00, 0x04, 0x00, 0x00) +
+            bytes(0xff, 0xc0, 0x00, 0x0b, 8, 0, 7, 0, 9, 1, 1, 0x11, 0)
+        assertEquals(9 to 7, PreviewRules.dimensions(dht))
+        val progressive = bytes(0xff, 0xd8, 0xff, 0xc2, 0x00, 0x0b, 8, 0, 7, 0, 9, 1, 1, 0x11, 0)
+        assertEquals(9 to 7, PreviewRules.dimensions(progressive))
+        val fill = bytes(0xff, 0xd8, 0xff, 0xff, 0xff, 0xc0, 0x00, 0x0b, 8, 0, 7, 0, 9, 1, 1, 0x11, 0)
+        assertEquals(9 to 7, PreviewRules.dimensions(fill))
+        assertNull(PreviewRules.dimensions(png(-1, 5)))
+        assertNull(PreviewRules.dimensions(png(5, -1)))
+        assertTrue(PreviewRules.safeToDecode(png(4_096, 512)))
+        assertFalse(PreviewRules.safeToDecode(png(4_097, 1)))
+        assertTrue(PreviewRules.safeToDecode(png(4_096, 1_024)))
+        assertFalse(PreviewRules.safeToDecode(png(4_096, 1_025)))
+    }
+
+    @Test
+    fun moreInvisibleCharactersAreStripped() {
+        val invisibles = "\u3164\u115F\u1160\u2800\u034F\u180B\u180C\u180D\u180E\u180F" +
+            (0xFE00..0xFE0F).joinToString("") { it.toChar().toString() } +
+            (0xE0100..0xE01EF).joinToString("") { String(Character.toChars(it)) }
+        assertEquals("ab", PreviewRules.text(("a" + invisibles + "b").toByteArray(Charsets.UTF_8)))
+    }
+
+    @Test
+    fun combiningMarkRunsAreLimitedToTwo() {
+        val marks = "\u0301\u0302\u0303\u0304\u0305"
+        assertEquals("a\u0301\u0302b\u0301", PreviewRules.text(("a" + marks + "b\u0301").toByteArray(Charsets.UTF_8)))
+        assertEquals("\u0301\u0302x", PreviewRules.text((marks + "x").toByteArray(Charsets.UTF_8)))
+    }
+
+    @Test
+    fun textIsCappedAtTwoHundredLines() {
+        assertEquals(200, PreviewRules.MAX_TEXT_LINES)
+        val many = (1..1_000).joinToString("\n") { "l" }
+        assertEquals(200, PreviewRules.text(many.toByteArray()).split("\n").size)
+        val exact = (1..200).joinToString("\n") { "l" }
+        assertEquals(exact, PreviewRules.text(exact.toByteArray()))
     }
 }
