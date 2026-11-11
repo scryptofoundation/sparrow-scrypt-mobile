@@ -77,7 +77,7 @@ internal fun OtherWalletRestoreScreen(
         OutlinedTextField(
             value = password, onValueChange = { password = it },
             label = { Text("Wallet password (encrypts on this device)") },
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = PasswordVisualTransformation(), keyboardOptions = PasswordKeyboard,
             modifier = Modifier.fillMaxWidth()
         )
         error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }

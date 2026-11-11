@@ -47,7 +47,13 @@ data class RuneRow(val name: String, val symbol: String?, val amount: String)
  * [CollectibleTile]: Check deeper goes to the wallet on [layer].
  */
 data class UncheckedRow(val outpoint: String, val value: Long?, val reason: String, val canCheckDeeper: Boolean, val queued: Boolean = false,
-                        val layer: Layer = Layer.PUBLIC, val tag: String? = null)
+                        val layer: Layer = Layer.PUBLIC, val tag: String? = null) {
+    /** Unique within a view: the same outpoint text can be listed by both wallets of a family. */
+    val key: String get() = "${layer.name}/$outpoint"
+}
+
+/** Whether "Add Taproot wallet" is [offered], as judged after the [round]th add on this screen (0 before any). */
+data class TaprootOffer(val round: Int, val offered: Boolean)
 
 /**
  * One shown wallet's stored results: [checks] null when it was never checked, [status] its last or current run,
@@ -61,7 +67,9 @@ enum class DeeperButton { NONE, CHECK, QUEUED, OFF }
 
 data class CollectiblesView(
     val header: String, val tiles: List<CollectibleTile>, val runes: List<RuneRow>?,
-    val runesNote: String?, val unchecked: List<UncheckedRow>, val empty: Boolean
+    val runesNote: String?, val unchecked: List<UncheckedRow>, val empty: Boolean,
+    /** The Taproot hint and its "Add Taproot wallet" button, under the header. */
+    val showHint: Boolean = false
 )
 
 /**
@@ -126,16 +134,28 @@ object CollectiblesModel {
                       wallets: List<WalletRepository.WalletInfo>, layer: Layer): Boolean =
         layer == Layer.PUBLIC && info != null && TaprootCompanion.offered(info, hasSeed, seedType, wallets)
 
+    /** Whether [offer] still holds after [round] adds: one judged before the last add is stale, and shows nothing. */
+    fun offerNow(offer: TaprootOffer?, round: Int): Boolean = offer != null && offer.round == round && offer.offered
+
+    /**
+     * The wallet named on an inscription's detail screen: the one holding it ([holder]) when the screen opened from
+     * [shownFrom] shows two wallets, the public wallet's tiles included; none when it shows one.
+     */
+    fun detailWallet(family: WalletFamily, shownFrom: Layer, itemLayer: Layer): String? =
+        if(shownLayers(family, shownFrom).size > 1) holder(family, shownFrom, itemLayer)?.name else null
+
     /**
      * The view of [wallets] (one, or a public wallet and its Taproot wallet) together. One wallet gives the view it always
      * did. With two, items the Taproot wallet holds are tagged; the header runs while either runs (both wallets' counts
      * summed, a finished wallet's last count included), says an indexer was unreachable when either wallet's last run
-     * could not reach it, and "Not checked yet" only while neither has results; [CollectiblesView.empty] needs results
-     * and nothing listed from either. Rune balances are summed over both, rows in outpoint order (the public wallet's
-     * first on a tie). An MWEB wallet adds nothing.
+     * could not reach it, and "Not checked yet" while either has no results; [CollectiblesView.empty] needs results
+     * from both and nothing listed from either. Rune balances are summed over both, rows in outpoint order (the public wallet's
+     * first on a tie). An MWEB wallet adds nothing. [offerTaproot] ([companionHint], judged with the rows) shows the
+     * Taproot hint, never beside a Taproot wallet.
      */
     fun build(
-        wallets: List<WalletChecks>, setting: InscriptionSetting, coin: Coin, airGapped: Boolean = false
+        wallets: List<WalletChecks>, setting: InscriptionSetting, coin: Coin, airGapped: Boolean = false,
+        offerTaproot: Boolean = false
     ): CollectiblesView {
         val shown = wallets.filter { it.scriptType != "MWEB" }
         val tagged = shown.size > 1
@@ -163,7 +183,8 @@ object CollectiblesModel {
                 else -> null
             },
             unchecked = unchecked,
-            empty = shown.any { it.checks != null } && tiles.isEmpty() && unchecked.isEmpty()
+            empty = shown.isNotEmpty() && shown.all { it.checks != null } && tiles.isEmpty() && unchecked.isEmpty(),
+            showHint = offerTaproot && shown.none { it.layer == Layer.TAPROOT }
         )
     }
 
@@ -192,7 +213,8 @@ object CollectiblesModel {
         val unreachable = statuses.any { it.indexerUnreachable }
         return when {
             statuses.any { it.running } -> "Checked ${statuses.sumOf { it.done }} of ${statuses.sumOf { it.total }} coins"
-            wallets.none { it.checks != null } -> "Not checked yet"
+            //a wallet never checked (a Taproot wallet just added) may hold inscriptions: not "Up to date" until it is
+            wallets.isEmpty() || wallets.any { it.checks == null } -> "Not checked yet"
             unreachable && setting is InscriptionSetting.Public -> "Public indexer unreachable, checking on-chain"
             unreachable && setting is InscriptionSetting.YourOwn -> "Your indexer unreachable, checking on-chain"
             else -> "Up to date"
@@ -477,7 +499,7 @@ object InscriptionDetail {
     /**
      * The lines for [tile]: id, number (when an indexer gave one), mint block and date, [content] (type and size, once
      * loaded), the coin and its value, [address] (when the position is known), [wallet] (the name of the wallet holding
-     * it, said only for a tagged tile: one shown beside another wallet's), and the source. Unknown parts are left out.
+     * it, see [CollectiblesModel.detailWallet]), and the source. Unknown parts are left out.
      */
     fun lines(tile: CollectibleTile, coin: Coin, content: String?, address: String?, wallet: String? = null): List<DetailLine> = buildList {
         add(DetailLine("Inscription id", tile.inscriptionId, copy = true))
@@ -488,7 +510,7 @@ object InscriptionDetail {
         add(DetailLine("Coin", tile.outpoint, copy = true))
         tile.value?.let { add(DetailLine("Value", formatAmount(coin, it))) }
         address?.let { add(DetailLine("Address", it)) }
-        if(tile.tag != null) wallet?.let { add(DetailLine("Wallet", it)) }
+        wallet?.let { add(DetailLine("Wallet", it)) }
         add(DetailLine("Source", source(tile.source)))
     }
 

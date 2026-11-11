@@ -667,7 +667,7 @@ private fun AirGapSetting(
                             value = passwords[name] ?: "", onValueChange = { passwords[name] = it },
                             label = { Text(name) },
                             singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
+                            visualTransformation = PasswordVisualTransformation(), keyboardOptions = PasswordKeyboard,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -771,7 +771,7 @@ private fun LinkSendScreen(repo: WalletRepository, pairing: SparrowLink.Pairing,
         OutlinedTextField(
             value = password, onValueChange = { password = it },
             label = { Text("Wallet password") },
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = PasswordVisualTransformation(), keyboardOptions = PasswordKeyboard,
             modifier = Modifier.fillMaxWidth()
         )
         error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
@@ -831,21 +831,21 @@ private fun ImportSparrowScreen(
         OutlinedTextField(
             value = filePassword, onValueChange = { filePassword = it },
             label = { Text(if(linked == null) "Desktop wallet password" else "Desktop password: ${payload.wallet.name}") },
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = PasswordVisualTransformation(), keyboardOptions = PasswordKeyboard,
             modifier = Modifier.fillMaxWidth()
         )
         if(linked != null) {
             OutlinedTextField(
                 value = linkedPassword, onValueChange = { linkedPassword = it },
                 label = { Text("Desktop password: ${linked.name} (blank if same)") },
-                visualTransformation = PasswordVisualTransformation(),
+                visualTransformation = PasswordVisualTransformation(), keyboardOptions = PasswordKeyboard,
                 modifier = Modifier.fillMaxWidth()
             )
         }
         OutlinedTextField(
             value = devicePassword, onValueChange = { devicePassword = it },
             label = { Text("Password on this phone (can be the same)") },
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = PasswordVisualTransformation(), keyboardOptions = PasswordKeyboard,
             modifier = Modifier.fillMaxWidth()
         )
         OutlinedTextField(
@@ -971,7 +971,7 @@ private fun SaveWalletScreen(
         OutlinedTextField(
             value = password, onValueChange = { password = it },
             label = { Text("Wallet password (encrypts on this device)") },
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = PasswordVisualTransformation(), keyboardOptions = PasswordKeyboard,
             modifier = Modifier.fillMaxWidth()
         )
         error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
@@ -1003,7 +1003,7 @@ private fun UnlockScreen(name: String, repo: WalletRepository, unlockFamily: (St
         OutlinedTextField(
             value = password, onValueChange = { password = it },
             label = { Text("Password") },
-            visualTransformation = PasswordVisualTransformation(),
+            visualTransformation = PasswordVisualTransformation(), keyboardOptions = PasswordKeyboard,
             modifier = Modifier.fillMaxWidth()
         )
         error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
@@ -2815,7 +2815,7 @@ private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData,
             OutlinedTextField(
                 value = password, onValueChange = { password = it },
                 label = { Text("Password") },
-                visualTransformation = PasswordVisualTransformation(),
+                visualTransformation = PasswordVisualTransformation(), keyboardOptions = PasswordKeyboard,
                 modifier = Modifier.fillMaxWidth()
             )
             error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }

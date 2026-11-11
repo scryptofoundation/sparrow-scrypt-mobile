@@ -107,36 +107,39 @@ internal fun CollectiblesScreen(repo: WalletRepository, home: Screen.Home, visit
     val stored by produceState<StoredRows?>(null, members, runs) {
         value = StoredRows(members.associate { (layer, member) -> layer to repo.loadInscriptionChecks(member.data) })
     }
-    val view = remember(stored, members, runs, setting, gapped) {
-        stored?.takeIf { it.checks.keys == members.map { m -> m.first }.toSet() }?.let { rows ->
-            CollectiblesModel.build(
-                members.mapIndexed { i, (layer, member) ->
-                    WalletChecks(layer, rows.checks[layer], runs[i].first, runs[i].second, member.data.scriptType)
-                },
-                setting, coin, gapped
-            )
-        }
-    }
-    val failures = visit.failures
-
-    // "Add Taproot wallet": offered for the public wallet from the Public layer; the wallet list is read off the main thread
+    // "Add Taproot wallet" is judged from the wallet list (read off the main thread) once per add on this screen; the
+    // view waits for the first judgement, so the hint never pops in under a shown header
     var added by remember { mutableStateOf(0) }
-    val hint by produceState(false, home, added) {
-        // hidden until judged again (after an add it goes at once)
-        value = false
+    val offer by produceState<TaprootOffer?>(null, home, added) {
+        val round = added
         val public = family.public
-        value = withContext(Dispatchers.IO) {
+        value = TaprootOffer(round, withContext(Dispatchers.IO) {
             runCatching {
                 val wallets = repo.listWallets()
                 CollectiblesModel.companionHint(wallets.firstOrNull { it.name == walletFileName(public.name) },
                     public.data.mnemonic.isNotBlank(), public.data.seedType, wallets, home.layer)
             }.getOrDefault(false)
+        })
+    }
+    val view = remember(stored, members, runs, setting, gapped, offer, added) {
+        val judged = offer ?: return@remember null
+        stored?.takeIf { it.checks.keys == members.map { m -> m.first }.toSet() }?.let { rows ->
+            CollectiblesModel.build(
+                members.mapIndexed { i, (layer, member) ->
+                    WalletChecks(layer, rows.checks[layer], runs[i].first, runs[i].second, member.data.scriptType)
+                },
+                setting, coin, gapped, offerTaproot = CollectiblesModel.offerNow(judged, added)
+            )
         }
     }
+    val failures = visit.failures
+
+    // a line after an add whose wallet is not opened with the family this time
+    var note by remember { mutableStateOf<String?>(null) }
     val prompt = remember { PasswordPromptState() }
     val scope = rememberCoroutineScope()
     PasswordPrompt(prompt, title = CollectiblesModel.ADD_TAPROOT, confirm = "Add",
-        text = "Enter the password of \"${family.public.name}\".",
+        text = "Enter the password for ${family.public.name}",
         onConfirm = { typed ->
             // leaving the screen cancels the wait (the wallet itself is still made); a refusal keeps the dialog open
             scope.launch {
@@ -144,7 +147,9 @@ internal fun CollectiblesScreen(repo: WalletRepository, home: Screen.Home, visit
                     is AddTaprootOutcome.Refused -> prompt.refused(outcome.text)
                     is AddTaprootOutcome.Added -> {
                         prompt.done()
+                        // the offer judged before this add goes stale at once: the button is gone until judged again
                         added++
+                        note = outcome.note
                         onAdded(outcome.next)
                     }
                 }
@@ -170,7 +175,8 @@ internal fun CollectiblesScreen(repo: WalletRepository, home: Screen.Home, visit
                 Text(view.header, fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            if(hint) {
+            note?.let { line -> full("taproot-note") { Text(line, style = MaterialTheme.typography.bodyMedium) } }
+            if(view.showHint) {
                 full("taproot-hint") {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(CollectiblesModel.TAPROOT_HINT, style = MaterialTheme.typography.bodyMedium)
@@ -192,7 +198,7 @@ internal fun CollectiblesScreen(repo: WalletRepository, home: Screen.Home, visit
             }
             if(view.unchecked.isNotEmpty()) {
                 full("unchecked/title") { Text("Coins not yet checked", style = MaterialTheme.typography.titleSmall) }
-                items(view.unchecked, key = { "unchecked/${it.layer.name}/${it.outpoint}" }, span = { GridItemSpan(maxLineSpan) },
+                items(view.unchecked, key = { "unchecked/${it.key}" }, span = { GridItemSpan(maxLineSpan) },
                     contentType = { "unchecked" }) { row ->
                     UncheckedCard(row, coin, gapped, onCheckDeeper = {
                         // queued on the wallet holding the coin, never on the other's results
@@ -399,7 +405,8 @@ internal fun InscriptionScreen(repo: WalletRepository, home: Screen.Home, tile: 
         InscriptionDetail.carries(tile)?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                for(line in InscriptionDetail.lines(tile, coin, content?.let { InscriptionPreview.contentLine(it) }, address, holder?.name)) {
+                for(line in InscriptionDetail.lines(tile, coin, content?.let { InscriptionPreview.contentLine(it) }, address,
+                    CollectiblesModel.detailWallet(home.family, home.layer, tile.layer))) {
                     Column {
                         Text(line.label, fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)

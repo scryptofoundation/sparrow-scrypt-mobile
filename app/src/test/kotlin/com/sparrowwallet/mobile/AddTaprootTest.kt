@@ -36,6 +36,7 @@ class AddTaprootTest {
             })
         assertEquals(listOf("w" to "typed"), added)
         assertEquals(listOf(Triple("w", public.data, "session password")), reopenedWith)
+        assertNull(assertIs<AddTaprootOutcome.Added>(outcome).note)
         val next = assertIs<AddTaprootOutcome.Added>(outcome).next
         assertEquals(Layer.PUBLIC, next.home.layer)
         assertEquals(taproot, next.home.family.taproot)
@@ -44,9 +45,36 @@ class AddTaprootTest {
     }
 
     @Test
-    fun aReopenThatFailsStillLeavesTheScreenOnThePublicLayer() {
+    fun aReopenThatFailsKeepsTheFamilyAndSaysWhen() {
         val outcome = addTaprootAndReopen(home, "typed", add = { _, _ -> null }, reopen = { _, _, _ -> throw IllegalStateException("x") })
-        assertEquals(Screen.Collectibles(home), assertIs<AddTaprootOutcome.Added>(outcome).next)
+        val added = assertIs<AddTaprootOutcome.Added>(outcome)
+        assertEquals(Screen.Collectibles(home), added.next)
+        assertEquals("The Taproot wallet was added. It opens with the next unlock.", added.note)
+    }
+
+    /** A reopen whose unlock left out the new Taproot wallet, or dropped the Private one, is not taken. */
+    @Test
+    fun aReopenMissingAMemberKeepsTheFamilyAndSaysWhen() {
+        for(reopened in listOf(WalletFamily(public, private), WalletFamily(public, taproot = taproot), WalletFamily(public))) {
+            val outcome = addTaprootAndReopen(home, "typed", add = { _, _ -> null },
+                reopen = { _, _, password -> Screen.Home(reopened, Layer.PUBLIC, password) })
+            val added = assertIs<AddTaprootOutcome.Added>(outcome)
+            assertEquals(Screen.Collectibles(home), added.next, reopened.toString())
+            assertEquals(AddTaprootOutcome.OPENS_LATER, added.note)
+        }
+        //a wallet without a Private one needs only the Taproot one
+        val alone = Screen.Home(WalletFamily(public), Layer.PUBLIC, "session password")
+        val outcome = addTaprootAndReopen(alone, "typed", add = { _, _ -> null },
+            reopen = { _, _, password -> Screen.Home(WalletFamily(public, taproot = taproot), Layer.PUBLIC, password) })
+        val added = assertIs<AddTaprootOutcome.Added>(outcome)
+        assertEquals(taproot, added.next.home.family.taproot)
+        assertNull(added.note)
+    }
+
+    @Test
+    fun passwordFieldsTellTheKeyboardTheyArePasswords() {
+        assertEquals(androidx.compose.ui.text.input.KeyboardType.Password, PasswordKeyboard.keyboardType)
+        assertEquals(false, PasswordKeyboard.autoCorrectEnabled)
     }
 
     @Test

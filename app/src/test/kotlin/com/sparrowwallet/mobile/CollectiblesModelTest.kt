@@ -795,9 +795,13 @@ class CollectiblesModelTest {
     @Test fun headerCombinesBothWallets() {
         val one = map(row(0))
         assertEquals("Not checked yet", both(null, null).header)
-        assertEquals("Up to date", both(one, null).header)
-        assertEquals("Up to date", both(null, one).header)
+        //Not checked yet until every shown wallet has results (a Taproot wallet just added has none)
+        assertEquals("Not checked yet", both(one, null).header)
+        assertEquals("Not checked yet", both(null, one).header)
+        assertEquals("Not checked yet", both(emptyMap(), null).header)
         assertEquals("Up to date", both(one, one).header)
+        //A running check still shows its progress
+        assertEquals("Checked 0 of 10 coins", both(one, null, null, CheckStatus(0, 10, false, true)).header)
         //Running if either runs, both wallets' counts summed
         assertEquals("Checked 3 of 50 coins", both(one, one, CheckStatus(3, 40, false, true), CheckStatus(0, 10, false, true)).header)
         assertEquals("Checked 13 of 50 coins", both(one, one, CheckStatus(3, 40, false, true), CheckStatus(10, 10, false, false)).header)
@@ -818,7 +822,9 @@ class CollectiblesModelTest {
     @Test fun emptyNeedsBothEmpty() {
         assertFalse(both(null, null).empty)
         assertTrue(both(emptyMap(), emptyMap()).empty)
-        assertTrue(both(map(row(0)), null).empty)
+        //Both need results: a wallet never checked may hold inscriptions
+        assertFalse(both(map(row(0)), null).empty)
+        assertFalse(both(null, map(row(0))).empty)
         assertTrue(both(map(row(0)), map(row(1))).empty)
         val tile = map(row(0, Verdict.INSCRIBED, listOf(found("${"1".repeat(64)}i0"))))
         val unchecked = map(row(0, Verdict.UNCHECKED, reason = "x", block = null))
@@ -826,6 +832,22 @@ class CollectiblesModelTest {
         assertFalse(both(tile, map(row(0))).empty)
         assertFalse(both(emptyMap(), unchecked).empty)
         assertFalse(both(unchecked, null).empty)
+    }
+
+    /** Air-gapped with one wallet checked and one not: checks are off, and no "No inscriptions" line. */
+    @Test fun airGappedWithOneWalletNotCheckedSaysChecksAreOffAndNotEmpty() {
+        val v = both(map(row(0)), null, airGapped = true)
+        assertEquals(CollectiblesModel.CHECKS_OFF, v.header)
+        assertFalse(v.empty)
+    }
+
+    /** The same outpoint text in both wallets gives two unchecked rows with distinct grid keys. */
+    @Test fun theSameOutpointInBothWalletsGivesDistinctRowKeys() {
+        val r = map(row(0, Verdict.UNCHECKED, reason = InscriptionTracer.BUDGET_USED, block = null))
+        val rows = both(r, r).unchecked
+        assertEquals(2, rows.size)
+        assertEquals(1, rows.map { it.outpoint }.toSet().size)
+        assertEquals(2, rows.map { it.key }.toSet().size)
     }
 
     @Test fun uncheckedRowsNameTheirWallet() {
@@ -883,15 +905,40 @@ class CollectiblesModelTest {
         assertNull(CollectiblesModel.holder(WalletFamily(publicMember), Layer.PUBLIC, Layer.TAPROOT))
     }
 
-    @Test fun theDetailNamesTheWalletOfATaggedTile() {
-        val tagged = tile().copy(layer = Layer.TAPROOT, tag = "Taproot")
-        val lines = InscriptionDetail.lines(tagged, Coin.LITECOIN, null, "ltc1paddress", wallet = "w Taproot")
+    /** With two wallets shown every detail names its wallet, the public wallet's too; with one shown, none does. */
+    @Test fun theDetailNamesTheWalletWhenTwoAreShown() {
+        assertEquals("w Taproot", CollectiblesModel.detailWallet(fullFamily, Layer.PUBLIC, Layer.TAPROOT))
+        assertEquals("w", CollectiblesModel.detailWallet(fullFamily, Layer.PUBLIC, Layer.PUBLIC))
+        assertNull(CollectiblesModel.detailWallet(fullFamily, Layer.TAPROOT, Layer.TAPROOT))
+        assertNull(CollectiblesModel.detailWallet(WalletFamily(publicMember, privateMember), Layer.PUBLIC, Layer.PUBLIC))
+        assertNull(CollectiblesModel.detailWallet(fullFamily, Layer.PUBLIC, Layer.PRIVATE))
+
+        val lines = InscriptionDetail.lines(tile().copy(layer = Layer.TAPROOT, tag = "Taproot"), Coin.LITECOIN, null, "ltc1paddress",
+            wallet = "w Taproot")
         assertEquals("w Taproot", lines.single { it.label == "Wallet" }.value)
         assertFalse(lines.single { it.label == "Wallet" }.copy)
-        //An untagged tile (one wallet shown, or the public wallet's) has no wallet line
-        assertFalse(InscriptionDetail.lines(tile(), Coin.LITECOIN, null, null, wallet = "w").any { it.label == "Wallet" })
-        assertFalse(InscriptionDetail.lines(tile().copy(layer = Layer.TAPROOT), Coin.LITECOIN, null, null, wallet = "w Taproot")
-            .any { it.label == "Wallet" })
+        //an untagged tile (the public wallet's) is named too when a wallet is given
+        assertEquals("w", InscriptionDetail.lines(tile(), Coin.LITECOIN, null, null, wallet = "w").single { it.label == "Wallet" }.value)
+        assertFalse(InscriptionDetail.lines(tile(), Coin.LITECOIN, null, null, wallet = null).any { it.label == "Wallet" })
+    }
+
+    /** The hint is part of the view, so it shows with the header, never after it; and never beside a Taproot wallet. */
+    @Test fun theViewCarriesTheHint() {
+        val one = listOf(checks(Layer.PUBLIC, map(row(0))))
+        assertTrue(CollectiblesModel.build(one, InscriptionSetting.BuiltIn, Coin.LITECOIN, offerTaproot = true).showHint)
+        assertFalse(CollectiblesModel.build(one, InscriptionSetting.BuiltIn, Coin.LITECOIN).showHint)
+        assertTrue(CollectiblesModel.build(one, InscriptionSetting.BuiltIn, Coin.LITECOIN, airGapped = true, offerTaproot = true).showHint)
+        assertFalse(CollectiblesModel.build(listOf(checks(Layer.PUBLIC), checks(Layer.TAPROOT)), InscriptionSetting.BuiltIn,
+            Coin.LITECOIN, offerTaproot = true).showHint)
+    }
+
+    /** An offer judged before the last add is not shown: the button goes the moment an add succeeds. */
+    @Test fun anOfferJudgedBeforeTheLastAddIsNotShown() {
+        assertFalse(CollectiblesModel.offerNow(null, 0))
+        assertTrue(CollectiblesModel.offerNow(TaprootOffer(0, true), 0))
+        assertFalse(CollectiblesModel.offerNow(TaprootOffer(0, false), 0))
+        assertFalse(CollectiblesModel.offerNow(TaprootOffer(0, true), 1))
+        assertTrue(CollectiblesModel.offerNow(TaprootOffer(1, true), 1))
     }
 
     private fun info(name: String = "w", coin: Coin = Coin.LITECOIN, network: Network = Network.MAINNET,
