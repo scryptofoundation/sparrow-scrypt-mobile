@@ -210,7 +210,8 @@ class InscriptionChecker(val store: InscriptionStore) {
             val keep = keptBlocks(backend, kept, asked, utxos.map { it.height }.toSet())
 
             //The indexer, once for every coin; no answer at all unless it answered for each one
-            val outputs = if(indexer != null && coins.isNotEmpty()) indexerOutputs(indexer, coins.map { it.outpoint }) else null
+            val outputs = if(indexer != null && coins.isNotEmpty()) indexerOutputs(indexer, coins.map { it.outpoint })
+                ?.let { usable(it, coin, indexer) } else null
             if(indexer != null && coins.isNotEmpty() && outputs == null) {
                 unreachable = true
             }
@@ -281,6 +282,20 @@ class InscriptionChecker(val store: InscriptionStore) {
             return null
         }
         return asked.associateWith { answered.getValue(it) }
+    }
+
+    /**
+     * The answers as the run may use them (rule 2 of the Send rules, applied to the check too): on a chain with rune-like
+     * tokens, an indexed answer that carries nothing counts only from a runes-aware reader ([runesAwareIndexer]: Litecoin's
+     * ord with its rune index). Elsewhere (an ord server on Dogecoin, Pepecoin or Junkcoin cannot see dunes) it goes in as
+     * not indexed, so it never clears a "may carry runes" row or stands over a trace cut short; the trace decides. Answers
+     * that carry something always go in. Read after the reader's outputs call, which refreshes its rune index flag.
+     */
+    private fun usable(outputs: Map<String, IndexerOutput>, coin: Coin, indexer: InscriptionIndexer): Map<String, IndexerOutput> {
+        if(!ChainRules.hasRuneLikeTokens(coin) || runesAwareIndexer(coin, indexer)) {
+            return outputs
+        }
+        return outputs.mapValues { (outpoint, output) -> if(output.indexed && !output.carries) IndexerOutput.unknown(outpoint) else output }
     }
 
     /** An output naming more inscriptions than [MAX_INDEXER_IDS]: the first that many, and the rest counted as unlisted. */

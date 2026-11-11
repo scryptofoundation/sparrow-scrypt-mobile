@@ -405,18 +405,52 @@ class InscriptionCheckerTest {
     @Test fun tooManyInscriptionIdsAreCappedAndCarry(): Unit = runBlocking {
         val chain = FakeChain()
         val a = oldCoin(chain, 50_000)
+        //150 ids naming 150 different transactions the chain has, with no envelopes: each reveal check is one read
+        val ids = (0 until 150).map { "${chain.add(tx(listOf("dd".repeat(32) to it), listOf(1_000L)), 100)}i0" }
+        val indexer = FakeIndexer { asked -> asked.associateWith { IndexerOutput(it, true, ids, emptyMap(), false) } }
+        chain.rawCalls = 0
+        val row = checker(newDir(), CheckerCipher()).withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000)), indexer).getValue("$a:0")
+        assertTrue(row.verdict != Verdict.CLEAN, row.toString())
+        assertTrue(row.runes, "carries: $row")
+        assertEquals(CoinState.HELD, coinState(row, null, localMayCarry = false, hasAnyResults = true))
+        //the trace's own read, then one read per id up to the cap, never 150
+        assertTrue(chain.rawCalls in InscriptionChecker.MAX_INDEXER_IDS..InscriptionChecker.MAX_INDEXER_IDS + 3, "${chain.rawCalls} reads")
+
+        //a coin whose reveals cannot be read (an outage) is still marked as carrying once over the cap
         val b = oldCoin(chain, 60_000)
-        //ids naming transactions the chain has, with no envelopes: each reveal check reads a cached transaction
-        val ids = (0 until 150).map { "${a}i$it" }
-        val bIds = (0 until 150).map { "${"cd".repeat(32)}i$it" }
-        val indexer = FakeIndexer { asked -> asked.associateWith { IndexerOutput(it, true, if(it.startsWith(a)) ids else bIds, emptyMap(), false) } }
-        val result = checker(newDir(), CheckerCipher()).withIndexer(chain, listOf(Utxo(a, 0, 100, 50_000), Utxo(b, 0, 100, 60_000)), indexer)
-        for(row in result.values) {
-            assertTrue(row.verdict != Verdict.CLEAN, row.toString())
-            assertTrue(row.runes, "carries: $row")
-            assertEquals(CoinState.HELD, coinState(row, null, localMayCarry = false, hasAnyResults = true))
+        val unreadable = (0 until 150).map { "${"cd".repeat(32)}i$it" }
+        val outage = FakeIndexer { asked -> asked.associateWith { IndexerOutput(it, true, unreadable, emptyMap(), false) } }
+        val held = checker(newDir(), CheckerCipher()).withIndexer(chain, listOf(Utxo(b, 0, 100, 60_000)), outage).getValue("$b:0")
+        assertTrue(held.verdict != Verdict.CLEAN && held.runes, held.toString())
+    }
+
+    /**
+     * Rule 2 in the check run: ord's rune index never sees dunes, so off Litecoin an ord "nothing here" is no answer. A
+     * stored "may carry runes" row on Dogecoin stays as it was (held in Send), where on Litecoin a runes-aware clean
+     * answer settles it.
+     */
+    @Test fun aCleanOffLitecoinDoesNotClearMayCarryRunes(): Unit = runBlocking {
+        for(coin in listOf(Coin.DOGECOIN, Coin.LITECOIN)) {
+            val dir = newDir()
+            val cipher = CheckerCipher()
+            val chain = FakeChain()
+            val a = oldCoin(chain, 50_000)
+            val row = InscriptionCheck(a, 0, Verdict.UNCHECKED, InscriptionCheck.Source.BUILT_IN, false, emptyList(),
+                com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy.MAY_CARRY_RUNES, FakeChain.block(100), emptyList())
+            InscriptionStore(dir, cipher).save(wallet, mapOf("$a:0" to row))
+            val ord = FakeIndexer { asked -> asked.associateWith { nothing(it) } }
+            val result = checker(dir, cipher).check(wallet, coin, Network.MAINNET, chain, listOf(Utxo(a, 0, 100, 50_000)),
+                indexer = ord, indexerSource = InscriptionCheck.Source.YOUR_OWN).getValue("$a:0")
+            val state = coinState(result, null, localMayCarry = false, hasAnyResults = true, runeLike = true, runesIndexed = false)
+            if(coin == Coin.DOGECOIN) {
+                assertEquals(com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy.MAY_CARRY_RUNES, result.reason)
+                assertEquals(CoinState.HELD, state)
+                assertNull(result.runeList, "an answer that is not used keeps no rune list")
+            } else {
+                assertEquals(Verdict.CLEAN, result.verdict)
+                assertEquals(InscriptionCheck.Source.YOUR_OWN, result.source)
+            }
         }
-        assertTrue(chain.rawCalls <= 2 + InscriptionChecker.MAX_INDEXER_IDS)
     }
 
     /** Each row keeps the listed coin's value and address position, from the coin list. */
