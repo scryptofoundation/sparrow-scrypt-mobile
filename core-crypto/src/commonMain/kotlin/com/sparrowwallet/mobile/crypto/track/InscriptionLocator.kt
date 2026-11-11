@@ -75,6 +75,9 @@ object InscriptionLocator {
         return ids
     }
 
+    /** How many envelopes [ordIds] counts in a witness push. */
+    internal fun envelopeCount(push: ByteArray): Int = if(contains(push, ENVELOPE)) envelopePointers(push).size else 0
+
     /**
      * One entry per envelope in a witness push: its pointer, or null when it has none. Chunks are read as far as the
      * script parses (as drongo's Script keeps them). When it has no whole envelope, each envelope prefix found in the
