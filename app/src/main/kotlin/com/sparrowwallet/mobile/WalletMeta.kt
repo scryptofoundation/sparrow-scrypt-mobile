@@ -10,11 +10,34 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.io.File
+import java.io.FileOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
-/** A wallet's file name on disk: unsafe characters become _, at most 40 characters. */
+/** The longest wallet file name, in characters. */
+const val WALLET_NAME_MAX = 40
+
+/** A wallet's file name on disk: unsafe characters become _, at most [WALLET_NAME_MAX] characters. */
 fun walletFileName(name: String): String =
     name.trim().map { if(it.isLetterOrDigit() || it == ' ' || it == '-' || it == '_') it else '_' }
-        .joinToString("").take(40)
+        .joinToString("").take(WALLET_NAME_MAX)
+
+/**
+ * Replaces [file] with [bytes] in one step: they are written and synced to a temporary file beside it (its name ends in
+ * .tmp, so the wallet list never reads it), which is then moved over [file]. A crash leaves the old file or the new
+ * one, never a torn one. On failure the temporary file is removed and the error is thrown.
+ */
+internal fun writeAtomically(file: File, bytes: ByteArray,
+                             write: (File, ByteArray) -> Unit = { f, b -> FileOutputStream(f).use { it.write(b); it.fd.sync() } }) {
+    val tmp = File.createTempFile(file.name + ".", ".tmp", file.absoluteFile.parentFile)
+    try {
+        write(tmp, bytes)
+        Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    } finally {
+        tmp.delete()
+    }
+}
 
 /**
  * A wallet's links to other wallets on this phone, by name. A public wallet names its companions

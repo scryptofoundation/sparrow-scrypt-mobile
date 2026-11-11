@@ -89,7 +89,8 @@ class WalletRepository(context: Context) {
 
     private fun writeMeta(name: String, network: Network, scriptType: String = "P2WPKH", links: WalletLinks = WalletLinks(),
                           coin: Coin = Coin.LITECOIN) {
-        metaFile(name).writeText(WalletMeta.encode(network, coin, scriptType, links))
+        //in one step: a torn rewrite of a parent's links would read as a mainnet Litecoin wallet with none
+        writeAtomically(metaFile(name), WalletMeta.encode(network, coin, scriptType, links).encodeToByteArray())
     }
 
     /** Wallets whose metadata names a coin this build does not know are left out (and left on disk). */
@@ -121,15 +122,52 @@ class WalletRepository(context: Context) {
     /** Unsigned PSBTs out for external signing, by wallet name. */
     val pendingPsbts = PendingPsbts()
 
+    /**
+     * Deletes the wallet and its companions (see [CompanionDeletion.delete]), or a companion alone, taking it out of its
+     * parent's links. A failed meta write stops the delete; what is left stays listed, and deleting again finishes it.
+     */
     fun deleteWallet(name: String) {
-        vaultFile(name).delete()
-        metaFile(name).delete()
+        runCatching { CompanionDeletion.delete(companionFiles, safeName(name)) }
+    }
+
+    /** The linked wallets [deleteWallet] also deletes, for the delete confirmation. */
+    fun deletionAlsoRemoves(name: String): List<String> = CompanionDeletion.deletedWith(safeName(name), listWallets())
+
+    /**
+     * Adds the same seed's Taproot wallet beside [parentName], sealed with [password] (see [TaprootCompanion.add]);
+     * returns a refusal, or null. The parent's seed is read here and goes only into the new vault. Slow: two vaults
+     * are opened or sealed, so call it off the main thread.
+     */
+    fun addTaprootCompanion(parentName: String, password: String): String? =
+        TaprootCompanion.add(companionFiles, parentName, password)
+
+    /** One wallet and everything kept for it; its vault goes after its caches, so a stop midway leaves it listed. */
+    private fun deleteOneWallet(name: String) {
         //forget first: it stops a running check from writing the file back after it is deleted
         inscriptionChecker.forget(name)
         deleteWalletCaches(safeName(name), inscriptionStore, SyncStore.cacheFile(appContext.filesDir, name))
         sessionTotals.remove(safeName(name))
         sessionNames.values.removeAll { it == safeName(name) }
         pendingPsbts.drop(name)
+        vaultFile(name).delete()
+        metaFile(name).delete()
+    }
+
+    /** The wallet files as adding and deleting companions see them. */
+    private val companionFiles = object : CompanionFiles {
+        override fun wallets(): List<WalletInfo> = listWallets()
+
+        override fun open(name: String, password: String): VaultData = unlock(name, password, session = false)
+
+        override fun save(name: String, data: VaultData, password: String): String? =
+            saveWallet(name, data.mnemonic, data.passphrase, password, Network.fromId(data.network),
+                derivationOverride = data.derivationPath, scriptType = data.scriptType, seedTypeOverride = data.seedType,
+                coin = Coin.fromId(data.coin))
+
+        override fun rewriteMeta(info: WalletInfo) =
+            this@WalletRepository.writeMeta(info.name, info.network, info.scriptType, info.links, info.coin)
+
+        override fun deleteOne(name: String) = deleteOneWallet(name)
     }
 
     /**
@@ -174,8 +212,9 @@ class WalletRepository(context: Context) {
         }
         val derivation = derivationOverride ?: classified?.second ?: return invalid
         val data = VaultData(mnemonic.trim(), passphrase, type, derivation, network.id, scriptType, mwebHistory, txLabels, coin.id)
-        vaultFile(clean).writeBytes(WalletVault.seal(data, password))
+        //meta first: the list reads vaults, so a stop between the two leaves nothing listed rather than a vault without its meta
         writeMeta(clean, network, scriptType, coin = coin)
+        writeAtomically(vaultFile(clean), WalletVault.seal(data, password))
         return null
     }
 
@@ -581,13 +620,9 @@ class WalletRepository(context: Context) {
 
     fun scriptType(data: VaultData): ScriptType = walletScriptType(data.scriptType)
 
-    fun masterKey(data: VaultData): HDKey {
-        val seed = if(data.seedType == "ELECTRUM") ElectrumSeed.toSeed(data.mnemonic, data.passphrase)
-                   else Bip39.seed(data.mnemonic, data.passphrase)
-        return HDKey.fromSeed(seed)
-    }
+    fun masterKey(data: VaultData): HDKey = walletMasterKey(data)
 
-    fun accountKey(data: VaultData): HDKey = masterKey(data).derivePath(data.derivationPath)
+    fun accountKey(data: VaultData): HDKey = walletAccountKey(data)
 
     /** The account's derivation as child numbers (hardened ones with the 0x80000000 bit). */
     fun accountPath(data: VaultData): List<Long> = parsePathChildren(data.derivationPath)
@@ -595,7 +630,7 @@ class WalletRepository(context: Context) {
     fun receiveAddress(data: VaultData, account: HDKey, index: Int): String =
         Addresses.forKey(account.deriveChild(0).deriveChild(index.toLong()).pubKey, scriptType(data), params(data))
 
-    fun accountXpub(data: VaultData): String = accountKey(data).xpub(params(data).xpubHeader)
+    fun accountXpub(data: VaultData): String = walletAccountXpub(data)
 
     /** MWEB keys/address, derived exactly like desktop drongo's Keystore (m/1000', scan 0', spend 1'). */
     data class MwebInfo(val firstAddress: String, val scanSecretHex: String, val spendPubKeyHex: String)

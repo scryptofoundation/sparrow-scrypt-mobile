@@ -1,7 +1,9 @@
 package com.sparrowwallet.mobile
 
+import com.sparrowwallet.mobile.crypto.Bip39
 import com.sparrowwallet.mobile.crypto.ChainParams
 import com.sparrowwallet.mobile.crypto.Coin
+import com.sparrowwallet.mobile.crypto.ElectrumSeed
 import com.sparrowwallet.mobile.crypto.HDKey
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.ScriptType
@@ -9,6 +11,7 @@ import com.sparrowwallet.mobile.crypto.Scripts
 import com.sparrowwallet.mobile.crypto.SpendableInput
 import com.sparrowwallet.mobile.crypto.Tx
 import com.sparrowwallet.mobile.electrum.WalletScanner
+import com.sparrowwallet.mobile.storage.VaultData
 import kotlin.math.ceil
 
 /** Per-coin rules the repository and screens share; pure so they are tested on the JVM. */
@@ -18,6 +21,20 @@ fun walletParams(coin: Coin, network: Network): ChainParams = ChainParams.of(coi
 fun walletScriptType(scriptType: String): ScriptType =
     ScriptType.entries.firstOrNull { it.name == scriptType }
         ?: throw IllegalArgumentException("Not a public wallet script type: $scriptType")
+
+/** A wallet's master key from its seed and passphrase: an Electrum seed by Electrum's own stretch, any other by BIP39. */
+fun walletMasterKey(data: VaultData): HDKey {
+    val seed = if(data.seedType == "ELECTRUM") ElectrumSeed.toSeed(data.mnemonic, data.passphrase)
+               else Bip39.seed(data.mnemonic, data.passphrase)
+    return HDKey.fromSeed(seed)
+}
+
+/** The wallet's account key, at its derivation path. */
+fun walletAccountKey(data: VaultData): HDKey = walletMasterKey(data).derivePath(data.derivationPath)
+
+/** The wallet's account xpub, with its coin and network's header. */
+fun walletAccountXpub(data: VaultData): String =
+    walletAccountKey(data).xpub(walletParams(Coin.fromId(data.coin), Network.fromId(data.network)).xpubHeader)
 
 /**
  * A server's fee estimate as whole sats (lits) per vbyte, never below the coin's relay floor.

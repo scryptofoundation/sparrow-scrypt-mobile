@@ -940,6 +940,9 @@ private fun UnlockScreen(name: String, repo: WalletRepository, onUnlocked: (Vaul
         } else {
             Text("This removes the wallet from this phone. Without the seed words it CANNOT be recovered.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            remember(name) { CompanionDeletion.confirmation(repo.deletionAlsoRemoves(name)) }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             Button(onClick = { repo.deleteWallet(name); onDeleted() }, modifier = Modifier.fillMaxWidth()) {
                 Text("Yes, delete \"$name\"")
             }
