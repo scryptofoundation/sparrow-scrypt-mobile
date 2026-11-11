@@ -37,7 +37,11 @@ data class IndexerStatus(val chain: String, val runeIndex: Boolean, val height: 
  * other failure throws too, so a failed request never reads as an empty answer.
  */
 interface InscriptionIndexer {
-    /** True when the indexer says it indexes runes, so an output it lists with nothing on it has no runes either. */
+    /**
+     * True when the indexer says it indexes runes, so an output it lists with nothing on it has no runes either. ord's
+     * rune index speaks for Litecoin runes only: on other chains (dunes on Dogecoin, Pepecoin, Junkcoin) it never sees
+     * the tokens, so the caller must keep its per-coin gate and not read this as "no tokens" there.
+     */
     val runesAware: Boolean
 
     suspend fun status(): IndexerStatus

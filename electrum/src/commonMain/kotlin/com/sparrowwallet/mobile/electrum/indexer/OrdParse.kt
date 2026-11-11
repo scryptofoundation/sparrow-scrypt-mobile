@@ -11,9 +11,11 @@ import kotlinx.serialization.json.JsonPrimitive
  * Reads ord 0.20's JSON answers (/status, /outputs, /output, /inscription), a port of the desktop's Ord020Dialect with
  * its checks: inscription ids and rune names are matched before they are kept, rune balances must be whole and their
  * divisibility at most 38, and anything not understood marks the output as [IndexerOutput.unlisted], so it still
- * carries something. Stricter than the desktop: a field of the wrong type is unlisted rather than read as empty, and an
- * output is vouched for as empty only when the server indexes runes, lists both inscriptions and runes, and holds it
- * unspent; otherwise an empty answer is not indexed (unknown). A malformed answer throws [IllegalArgumentException].
+ * carries something. Anything shown as carried is kept, indexed and carrying, whatever else is missing. Stricter than
+ * the desktop: a field of the wrong type is unlisted rather than read as empty, and an output is vouched for as empty
+ * only when it says indexed (the literal true), the server indexes runes, lists both inscriptions and runes, and says
+ * spent is the literal false; otherwise an empty answer is not indexed (unknown). A malformed answer throws
+ * [IllegalArgumentException].
  */
 object OrdParse {
     const val MAX_JSON_CHARS = 4_000_000
@@ -34,16 +36,20 @@ object OrdParse {
         return IndexerStatus(chain, node["rune_index"].isTrue(), node["height"].long()?.takeIf { it >= 0 })
     }
 
-    fun output(outpoint: String, json: String, runeIndex: Boolean): IndexerOutput = output(outpoint, readTree(json), runeIndex)
+    fun output(outpoint: String, json: String, runeIndex: Boolean): IndexerOutput = output(outpoint, readTree(json), runeIndex, false)
 
-    /** The answer to POST /outputs, which carries no output index, so entries are matched to [outpoints] by position. */
+    /**
+     * The answer to POST /outputs, which carries no output index, so entries are matched to [outpoints] by position. Each
+     * entry must name its transaction (and its outpoint, when it gives one); the caller never asks for two outputs of one
+     * transaction in one batch, so a misordered answer cannot pass.
+     */
     fun outputs(outpoints: List<String>, json: String, runeIndex: Boolean): Map<String, IndexerOutput> {
         val node = readTree(json)
         if(node !is JsonArray || node.size != outpoints.size) {
             throw IllegalArgumentException("Inscriptions indexer answered ${(node as? JsonArray)?.size ?: 0} outputs for ${outpoints.size} asked")
         }
         val outputs = LinkedHashMap<String, IndexerOutput>()
-        outpoints.forEachIndexed { i, outpoint -> outputs[outpoint] = output(outpoint, node[i], runeIndex) }
+        outpoints.forEachIndexed { i, outpoint -> outputs[outpoint] = output(outpoint, node[i], runeIndex, true) }
         return outputs
     }
 
@@ -60,11 +66,15 @@ object OrdParse {
         )
     }
 
-    private fun output(outpoint: String, node: JsonElement, runeIndex: Boolean): IndexerOutput {
+    private fun output(outpoint: String, node: JsonElement, runeIndex: Boolean, inBatch: Boolean): IndexerOutput {
         if(node !is JsonObject) throw IllegalArgumentException("Unexpected output from inscriptions indexer")
-        val transaction = node["transaction"].text()
-        if(transaction != null && transaction != outpoint.substringBefore(':')) {
+        val transaction = node["transaction"]
+        if((inBatch || transaction != null) && transaction.text() != outpoint.substringBefore(':')) {
             throw IllegalArgumentException("Inscriptions indexer answered for another transaction")
+        }
+        val named = node["outpoint"]
+        if(named != null && named.text() != outpoint) {
+            throw IllegalArgumentException("Inscriptions indexer answered for another output")
         }
         var unlisted = false
 
@@ -97,11 +107,13 @@ object OrdParse {
             if(name == null || !RUNE_NAME.matches(name) || balance == null) unlisted = true else runes[name] = balance
         }
 
+        //Anything shown as carried stands, indexed and carrying, whatever else is missing or mistyped
         val carries = inscriptions.isNotEmpty() || runes.isNotEmpty() || unlisted
-        //An answer showing nothing vouches for the output only when nothing it needs is missing (the desktop's forServer, and more)
-        val vouchesEmpty = runeIndex && runesListed && !node["spent"].isTrue()
-        val indexed = node["indexed"].isTrue() && inscriptionsListed && (carries || vouchesEmpty)
-        return IndexerOutput(outpoint, indexed, inscriptions, runes, unlisted)
+        //An answer showing nothing vouches for the output only when nothing it needs is missing (the desktop's forServer,
+        //and more). ord's rune index speaks for Litecoin runes only: on Dogecoin, Pepecoin or Junkcoin it never sees their
+        //dunes, so a caller must keep its per-coin gate on what an empty answer clears.
+        val vouchesEmpty = node["indexed"].isTrue() && inscriptionsListed && runeIndex && runesListed && node["spent"].isFalse()
+        return IndexerOutput(outpoint, carries || vouchesEmpty, inscriptions, runes, unlisted)
     }
 
     private fun balance(node: JsonElement): RuneBalance? {
@@ -137,6 +149,9 @@ object OrdParse {
 
     /** Only the JSON literal true: not "true", not 1. */
     private fun JsonElement?.isTrue(): Boolean = this is JsonPrimitive && this !is JsonNull && !isString && content == "true"
+
+    /** Only the JSON literal false. */
+    private fun JsonElement?.isFalse(): Boolean = this is JsonPrimitive && this !is JsonNull && !isString && content == "false"
 
     private fun JsonElement?.long(): Long? =
         (this as? JsonPrimitive)?.takeIf { it !is JsonNull && !it.isString && LONG.matches(it.content) }?.content?.toLongOrNull()

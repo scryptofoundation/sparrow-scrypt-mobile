@@ -143,7 +143,7 @@ class OrdIndexerTest {
         val indexer = OrdIndexer(base, null).also { it.status() }
         requests.clear()
         assertFailsWith<RateLimitedException> { indexer.outputs(listOf(outpoint(1))) }
-        assertEquals(listOf("POST /outputs"), requests.toList())
+        assertEquals(listOf("GET /status", "POST /outputs"), requests.toList())
         requests.clear()
         assertFailsWith<RateLimitedException> { indexer.inscription(inscription) }
         assertEquals(listOf("GET /inscription/$inscription"), requests.toList())
@@ -152,7 +152,7 @@ class OrdIndexerTest {
         requests.clear()
         routes = { method, path, _ -> if(path == "/status") 200 to status else if(method == "POST") 405 to "" else 429 to "Too Many Requests" }
         assertFailsWith<RateLimitedException> { indexer.outputs(listOf(outpoint(1), outpoint(2))) }
-        assertEquals(listOf("POST /outputs", "GET /output/${outpoint(1)}"), requests.toList())
+        assertEquals(listOf("GET /status", "POST /outputs", "GET /output/${outpoint(1)}"), requests.toList())
         assertTrue(System.nanoTime() - started < 4_000_000_000L, "no Retry-After wait")
     }
 
@@ -198,6 +198,62 @@ class OrdIndexerTest {
         assertFailsWith<IllegalArgumentException> { indexer.outputs(listOf("abc:0")) }
         assertFailsWith<IllegalArgumentException> { indexer.outputs(listOf("AB".repeat(32) + ":0")) }
         assertFailsWith<IllegalArgumentException> { indexer.outputs(listOf(outpoint(1) + "/../x")) }
+        assertTrue(requests.isEmpty())
+    }
+
+    /** A stale rune_index:true must not keep vouching: the status is read again, once, for each outputs call. */
+    @Test fun statusIsReadAgainForEachOutputsCall(): Unit = runBlocking {
+        val asked = (1..150).map { outpoint(it) }
+        var runeIndex = true
+        routes = { method, path, body ->
+            when {
+                path == "/status" -> 200 to """{"chain":"mainnet","rune_index":$runeIndex}"""
+                method == "POST" -> 200 to Json.parseToJsonElement(body).jsonArray.joinToString(",", "[", "]") { clean(it.jsonPrimitive.content.take(64)) }
+                else -> 404 to ""
+            }
+        }
+        val indexer = OrdIndexer(base, null)
+        assertTrue(indexer.outputs(asked).values.all { it.indexed })
+        assertEquals(listOf("GET /status", "POST /outputs", "POST /outputs"), requests.toList())
+        runeIndex = false
+        requests.clear()
+        assertTrue(indexer.outputs(asked).values.none { it.indexed })
+        assertFalse(indexer.runesAware)
+        assertEquals(listOf("GET /status", "POST /outputs", "POST /outputs"), requests.toList())
+    }
+
+    /** ord 0.20's answers name the transaction but not the output, so two outputs of one transaction never share a request. */
+    @Test fun outputsOfOneTransactionGoInSeparateRequests(): Unit = runBlocking {
+        val txid = "ab".repeat(32)
+        val asked = listOf("$txid:0", outpoint(1), "$txid:1", outpoint(2), "$txid:2")
+        val batches = CopyOnWriteArrayList<List<String>>()
+        routes = { method, path, body ->
+            when {
+                path == "/status" -> 200 to status
+                method == "POST" -> {
+                    val batch = Json.parseToJsonElement(body).jsonArray.map { it.jsonPrimitive.content }
+                    batches += batch
+                    200 to batch.joinToString(",", "[", "]") { clean(it.take(64)) }
+                }
+                else -> 404 to ""
+            }
+        }
+        val outputs = OrdIndexer(base, null).outputs(asked)
+        assertEquals(asked.toSet(), outputs.keys)
+        assertEquals(listOf(listOf("$txid:0", outpoint(1), outpoint(2)), listOf("$txid:1"), listOf("$txid:2")), batches.toList())
+    }
+
+    /** Plain http through the proxy could be read or forged by an exit node: refused unless the server is an onion service. */
+    @Test fun plainHttpThroughTheProxyIsRefused() {
+        val proxy = com.sparrowwallet.mobile.electrum.SocksProxy("127.0.0.1", 9050)
+        val e = assertFailsWith<IndexerException> { OrdIndexer("http://ord.example", proxy) }
+        assertEquals("This inscriptions indexer uses plain http, which is not safe through a proxy or Tor. Use an https or .onion indexer.", e.message)
+        assertFailsWith<IndexerException> { OrdIndexer("http://ord.example.onion.evil.com", proxy) }
+        OrdIndexer("http://abcdefghijklmnop.onion", proxy).close()
+        OrdIndexer("http://ABCDEFGHIJKLMNOP.ONION:8080", proxy).close()
+        OrdIndexer("https://ordinalslite.com", proxy).close()
+        //an own server on the LAN without a proxy
+        OrdIndexer("http://192.168.1.20:8080", null).close()
         assertTrue(requests.isEmpty())
     }
 

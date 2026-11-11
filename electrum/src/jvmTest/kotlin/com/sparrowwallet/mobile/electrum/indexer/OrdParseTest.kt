@@ -120,7 +120,7 @@ class OrdParseTest {
 
     /** A server without a rune index reports no runes on every output: nothing shown is unknown (the desktop's forServer). */
     @Test fun noRuneIndexAndNothingShownIsNotIndexed() {
-        val empty = """{"indexed":true,"inscriptions":[],"runes":{},"value":546,"spent":false}"""
+        val empty = """{"indexed":true,"inscriptions":[],"runes":{},"value":546,"spent":false,"transaction":"${outpoint.take(64)}"}"""
         assertFalse(output(empty, runeIndex = false).indexed)
         assertTrue(output(empty, runeIndex = true).indexed)
         assertFalse(output(empty, runeIndex = true).carries)
@@ -143,7 +143,28 @@ class OrdParseTest {
             val o = output(json)
             assertTrue(o.unlisted, json)
             assertTrue(o.carries, json)
+            assertTrue(o.indexed, json)
         }
+    }
+
+    /** Anything the server shows as carried stands, indexed and carrying, whatever else is missing or mistyped. */
+    @Test fun aCarryingAnswerIsKept() {
+        for(json in listOf(
+            //ord with a rune index but no inscription index
+            """{"indexed":true,"inscriptions":null,"runes":{"AB":{"amount":5,"divisibility":0}},"spent":false}""",
+            """{"indexed":"true","inscriptions":["$inscription"],"runes":{}}""",
+            """{"indexed":false,"inscriptions":["$inscription"],"runes":{}}""",
+            """{"inscriptions":["$inscription"],"spent":true}""",
+            """{"indexed":1,"inscriptions":[],"runes":{"<x>":{"amount":5,"divisibility":0}}}"""
+        )) {
+            for(runeIndex in listOf(true, false)) {
+                val o = output(json, runeIndex)
+                assertTrue(o.indexed, json)
+                assertTrue(o.carries, json)
+            }
+        }
+        assertTrue(OrdParse.outputs(listOf(outpoint), """[{"transaction":"${outpoint.take(64)}","inscriptions":null,"runes":{"AB":{"amount":5,"divisibility":0}}}]""", true)
+            .getValue(outpoint).indexed)
     }
 
     @Test fun missingOrNullListsAreNotIndexed() {
@@ -157,8 +178,8 @@ class OrdParseTest {
             assertFalse(o.indexed, json)
             assertFalse(o.carries, json)
         }
-        //Without the inscriptions list an answer cannot clear a coin of inscriptions, whatever else it shows
-        assertFalse(output("""{"indexed":true,"inscriptions":null,"runes":{"AB":{"amount":1,"divisibility":0}}}""").indexed)
+        //Runes shown without the inscriptions list still carry: the answer stands
+        assertTrue(output("""{"indexed":true,"inscriptions":null,"runes":{"AB":{"amount":1,"divisibility":0}}}""").indexed)
         //A listed inscription stands even when the runes field is missing
         assertTrue(output("""{"indexed":true,"inscriptions":["$inscription"]}""").indexed)
     }
@@ -174,6 +195,21 @@ class OrdParseTest {
     @Test fun spentOutputIsUnknown() {
         assertFalse(output("""{"indexed":true,"inscriptions":[],"runes":{},"spent":true}""").indexed)
         assertTrue(output("""{"indexed":true,"inscriptions":[],"runes":{},"spent":false}""").indexed)
+    }
+
+    /** An empty answer is vouched for only with spent the literal false. */
+    @Test fun emptyAnswerNeedsSpentTheLiteralFalse() {
+        for(spent in listOf("", ",\"spent\":\"false\"", ",\"spent\":0", ",\"spent\":null", ",\"spent\":\"true\"", ",\"spent\":1")) {
+            assertFalse(output("""{"indexed":true,"inscriptions":[],"runes":{}$spent}""").indexed, spent)
+        }
+    }
+
+    /** kotlinx.serialization reads an unquoted token such as FALSE or TRUE as a literal; it never counts as a boolean here. */
+    @Test fun unquotedOddLiteralsAreNotBooleans() {
+        val odd = output("""{"indexed":true,"inscriptions":[],"runes":{},"spent":FALSE}""")
+        assertFalse(odd.indexed)
+        assertFalse(output("""{"indexed":TRUE,"inscriptions":[],"runes":{},"spent":false}""").indexed)
+        assertTrue(output("""{"indexed":TRUE,"inscriptions":["$inscription"],"runes":{},"spent":TRUE}""").carries)
     }
 
     @Test fun badRuneBalancesAreUnlisted() {
@@ -214,9 +250,25 @@ class OrdParseTest {
         val other = "00".repeat(32) + ":0"
         assertFailsWith<IllegalArgumentException> { OrdParse.outputs(listOf(other), json, true) }
         assertFailsWith<IllegalArgumentException> { OrdParse.outputs(listOf(outpoint), "[5]", true) }
+        //a batch entry must name its transaction
+        assertFailsWith<IllegalArgumentException> { OrdParse.outputs(listOf(outpoint), """[{"indexed":true,"inscriptions":[],"runes":{},"spent":false}]""", true) }
+        assertFailsWith<IllegalArgumentException> { OrdParse.outputs(listOf(outpoint), """[{"transaction":5,"indexed":true,"inscriptions":[],"runes":{}}]""", true) }
         assertFailsWith<IllegalArgumentException> { OrdParse.outputs(listOf(outpoint), "{}", true) }
         assertFailsWith<IllegalArgumentException> { output("[]") }
         assertFailsWith<IllegalArgumentException> { output("<html>") }
+    }
+
+    /** Two outputs of one transaction answered in the wrong order are refused when the entries name their outpoints. */
+    @Test fun misorderedBatchIsRefused() {
+        val txid = outpoint.take(64)
+        fun entry(vout: Int, carrying: Boolean) =
+            """{"outpoint":"$txid:$vout","transaction":"$txid","indexed":true,"inscriptions":[${if(carrying) "\"$inscription\"" else ""}],"runes":{},"spent":false}"""
+        val asked = listOf("$txid:0", "$txid:1")
+        assertFailsWith<IllegalArgumentException> { OrdParse.outputs(asked, "[${entry(1, false)},${entry(0, true)}]", true) }
+        val inOrder = OrdParse.outputs(asked, "[${entry(0, true)},${entry(1, false)}]", true)
+        assertTrue(inOrder.getValue("$txid:0").carries)
+        assertFalse(inOrder.getValue("$txid:1").carries)
+        assertFailsWith<IllegalArgumentException> { output(entry(1, false)) }
     }
 
     @Test fun statusMustNameAChain() {

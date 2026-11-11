@@ -6,6 +6,8 @@ import com.sparrowwallet.mobile.electrum.SocksProxy
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import java.io.IOException
+import java.net.URI
+import java.util.Locale
 
 /** An indexer that failed to answer, answered with an error, or answered something that cannot be read. */
 class IndexerException(message: String, cause: Throwable? = null) : IOException(message, cause)
@@ -18,10 +20,17 @@ class IndexerException(message: String, cause: Throwable? = null) : IOException(
  * throws [IndexerException], except a 404 for one output (unknown) or one inscription (null).
  */
 class OrdIndexer(baseUrl: String, proxy: SocksProxy?) : InscriptionIndexer {
+    init {
+        //Through a proxy or Tor, plain http could be read or forged by an exit node (the desktop's OrdClient.forApp)
+        if(proxy != null && baseUrl.trim().lowercase(Locale.ROOT).startsWith("http://") && !isOnion(baseUrl)) {
+            throw IndexerException("This inscriptions indexer uses plain http, which is not safe through a proxy or Tor. Use an https or .onion indexer.")
+        }
+    }
+
     private val http = HttpEndpoint(baseUrl, proxy, label = LABEL)
     @Volatile private var known: IndexerStatus? = null
 
-    /** False until [status] has said the server indexes runes. */
+    /** False until [status] has said the server indexes runes; [outputs] reads the status again on every call. */
     override val runesAware: Boolean get() = known?.runeIndex == true
 
     override suspend fun status(): IndexerStatus {
@@ -34,10 +43,10 @@ class OrdIndexer(baseUrl: String, proxy: SocksProxy?) : InscriptionIndexer {
         for(outpoint in outpoints) require(OrdParse.OUTPOINT.matches(outpoint)) { "Invalid outpoint ${outpoint.take(80)}" }
         val asked = outpoints.distinct()
         if(asked.isEmpty()) return emptyMap()
-        //An empty answer can be vouched for only by a server that indexes runes
-        val runeIndex = (known ?: status()).runeIndex
+        //An empty answer can be vouched for only by a server that indexes runes; read once per call, so a stale answer does not keep vouching
+        val runeIndex = status().runeIndex
         val outputs = LinkedHashMap<String, IndexerOutput>()
-        for(batch in asked.chunked(BATCH_SIZE)) {
+        for(batch in batches(asked)) {
             val r = http.post("/outputs", JsonArray(batch.map { JsonPrimitive(it) }).toString(), JSON, JSON)
             rateLimited(r)
             if(r.status == 404 || r.status == 405) {
@@ -49,6 +58,26 @@ class OrdIndexer(baseUrl: String, proxy: SocksProxy?) : InscriptionIndexer {
             outputs.putAll(read { OrdParse.outputs(batch, r.body, runeIndex) })
         }
         return outputs
+    }
+
+    /**
+     * Batches of at most [BATCH_SIZE], in asking order, with no two outputs of one transaction in the same batch: ord's
+     * answers name the transaction but not the output, so only then does the transaction check catch a misordered answer.
+     */
+    private fun batches(asked: List<String>): List<List<String>> {
+        val batches = ArrayList<List<String>>()
+        var pending = asked
+        while(pending.isNotEmpty()) {
+            val batch = ArrayList<String>()
+            val txids = HashSet<String>()
+            val later = ArrayList<String>()
+            for(outpoint in pending) {
+                if(batch.size < BATCH_SIZE && txids.add(outpoint.substringBefore(':'))) batch += outpoint else later += outpoint
+            }
+            batches += batch
+            pending = later
+        }
+        return batches
     }
 
     private suspend fun output(outpoint: String, runeIndex: Boolean): IndexerOutput {
@@ -90,6 +119,10 @@ class OrdIndexer(baseUrl: String, proxy: SocksProxy?) : InscriptionIndexer {
 
     companion object {
         const val LABEL = "Inscription indexer"
+
+        /** An onion service: Tor carries it end to end, so plain http to it is not exposed to an exit node. */
+        private fun isOnion(url: String): Boolean =
+            runCatching { URI(url.trim()).host?.lowercase(Locale.ROOT)?.endsWith(".onion") == true }.getOrDefault(false)
         private const val BATCH_SIZE = 100
         private const val JSON = "application/json"
     }

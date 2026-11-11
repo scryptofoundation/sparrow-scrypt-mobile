@@ -302,13 +302,13 @@ class HttpEndpoint(
 
     companion object {
         /**
-         * Debug builds set this to time each request; addresses and txids are blanked from the route
+         * Debug builds set this to time each request; addresses, txids, outpoints and inscription ids are blanked from the route
          * so the log names no wallet.
          */
         @Volatile var timingLog: ((String) -> Unit)? = null
 
         internal fun route(path: String): String =
-            path.replace(Regex("/(address|scripthash)/[^/]+"), "/$1/*").replace(Regex("/[0-9a-fA-F]{64}(?=/|$)"), "/*")
+            path.replace(Regex("/(address|scripthash)/[^/]+"), "/$1/*").replace(Regex("/[0-9a-fA-F]{64}(?:[:i][0-9]+)?(?=/|$)"), "/*")
 
         /** Closes sockets whose request outlived its deadline; one daemon thread for all endpoints. */
         private val DEADLINES = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "http-deadline").apply { isDaemon = true } }

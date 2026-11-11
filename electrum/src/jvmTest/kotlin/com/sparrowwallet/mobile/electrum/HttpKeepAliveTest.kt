@@ -229,5 +229,12 @@ class HttpKeepAliveTest {
         assertEquals("/address/*/txs/chain/*", HttpEndpoint.route("/address/xyz/txs/chain/$txid"))
         assertEquals("/tx/*/status", HttpEndpoint.route("/tx/$txid/status"))
         assertEquals("/scripthash/*/utxo", HttpEndpoint.route("/scripthash/${"cd".repeat(32)}/utxo"))
+        assertEquals("/tx/*", HttpEndpoint.route("/tx/$txid"))
+        assertEquals("/block/*/txs/25", HttpEndpoint.route("/block/$txid/txs/25"))
+        assertEquals("/block-height/7", HttpEndpoint.route("/block-height/7"))
+        //indexer routes carry an outpoint or an inscription id
+        assertEquals("/output/*", HttpEndpoint.route("/output/$txid:3"))
+        assertEquals("/inscription/*", HttpEndpoint.route("/inscription/${txid}i12"))
+        assertEquals("/find_meta/*", HttpEndpoint.route("/find_meta/${txid}i0"))
     }
 }
