@@ -48,7 +48,7 @@ class WalletDeletionTest {
         val wallets = wallets()
         val shown = groupByCoin(wallets).flatMap { it.second }
         for(w in wallets) {
-            assertTrue(w in shown || shown.any { linkedBack(it, w) }, "${w.name} is hidden")
+            assertTrue(w in shown || shown.any { companionOf(it, w, wallets) }, "${w.name} is hidden")
         }
         //and no vault is left without its meta
         for(n in names()) assertTrue(File(dir, "$n.meta").exists(), "$n has no meta")
@@ -123,6 +123,23 @@ class WalletDeletionTest {
         other.rewriteMeta(other.info("Main")!!.copy(links = WalletLinks()))
         assertEquals(emptyList(), other.choices("Main"))
         assertEquals(emptyList(), other.choices("Main Taproot"))
+    }
+
+    @Test
+    fun anOlderPrivatePairWrittenOnOneSideIsOfferedTheFamilyChoice() {
+        // Main names its Private wallet, which names nothing: shown together, so deleted together when chosen
+        val files = family(withTaproot = false)
+        files.rewriteMeta(files.info("Main Private")!!.copy(links = WalletLinks()))
+        assertEquals(listOf("Only Main", "Only Main Private", "Main and its linked wallets"), files.choices("Main").map { it.label })
+        assertTrue(deleteWallets(files, files.choices("Main").last()))
+        assertEquals(listOf("Other"), files.names())
+        files.noneHidden()
+        // deleting Main alone leaves its Private wallet listed on its own
+        val alone = family(withTaproot = false)
+        alone.rewriteMeta(alone.info("Main Private")!!.copy(links = WalletLinks()))
+        assertTrue(deleteWallets(alone, alone.choices("Main").first()))
+        assertEquals(listOf("Main Private", "Other"), alone.names())
+        assertEquals(listOf("Main Private", "Other"), groupByCoin(alone.wallets()).flatMap { it.second }.map { it.name }.sorted())
     }
 
     // ---- what each choice deletes ----

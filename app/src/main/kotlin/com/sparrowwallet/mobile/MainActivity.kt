@@ -118,6 +118,9 @@ internal sealed interface Screen {
 
         /** This Home with each member named in [updated] holding its new vault. */
         fun withData(updated: Map<String, VaultData>): Home = copy(family = family.withData(updated))
+
+        /** Names and layer only: the vaults hold the seeds, and the password is the session's. */
+        override fun toString(): String = "Home($family, layer=$layer)"
     }
     data class Send(val home: Home) : Screen
     data class Receive(val home: Home, val startIndex: Int) : Screen
@@ -135,6 +138,32 @@ internal sealed interface Screen {
 /** A wallet's pending PSBT is kept under its public side's name: a peg-in starts from the private side. */
 internal fun pendingPsbtKey(home: Screen.Home): String =
     if(home.data.scriptType == "MWEB") home.linkedName ?: home.name else home.name
+
+/** The wallets Send pays from, (public, private): both layers of an MWEB pair, else the shown wallet alone. */
+internal fun sendWallets(home: Screen.Home): Pair<VaultData?, VaultData?> =
+    (if(home.data.scriptType != "MWEB") home.data
+     else home.linkedData?.takeIf { it.scriptType != "MWEB" }) to
+    (if(home.data.scriptType == "MWEB") home.data
+     else home.linkedData?.takeIf { it.scriptType == "MWEB" })
+
+/** The wallet Sign PSBT signs with: the public side of an MWEB pair, else the shown wallet. */
+internal fun signingWallet(home: Screen.Home): VaultData =
+    if(home.data.scriptType != "MWEB") home.data
+    else home.linkedData?.takeIf { it.scriptType != "MWEB" } ?: home.data
+
+/** The wallets label sync sends, as (name, vault, password): the shown wallet, then its MWEB counterpart. */
+internal fun labelSyncWallets(home: Screen.Home): List<Triple<String, VaultData, String>> = buildList {
+    add(Triple(home.name, home.data, home.password))
+    val linkedName = home.linkedName
+    val linkedData = home.linkedData
+    if(linkedName != null && linkedData != null) {
+        add(Triple(linkedName, linkedData, home.password))
+    }
+}
+
+/** Home after a label sync: only the wallets it sent ([labelSyncWallets]) take the vaults that came back. */
+internal fun afterLabelSync(home: Screen.Home, updated: Map<String, VaultData>): Screen.Home =
+    home.withData(updated.filterKeys { it == home.name || it == home.linkedName })
 
 /** Where the system Back gesture goes: a wallet's screens return to its Home, the rest to the list. */
 internal fun backTarget(screen: Screen): Screen? = when(screen) {
@@ -273,7 +302,9 @@ private fun App(repo: WalletRepository) {
             is Screen.Unlock -> UnlockScreen(
                 name = s.name,
                 repo = repo,
-                onUnlocked = { data, password -> screen = homeFor(s.name, data, password) },
+                // the wallet and its family are unlocked off the main thread (each unlock is a slow key derivation)
+                unlockFamily = { password -> homeFor(s.name, repo.unlock(s.name, password), password) },
+                onUnlocked = { screen = it },
                 onDeleted = { screen = Screen.WalletList },
                 onBack = { screen = Screen.WalletList }
             )
@@ -356,7 +387,7 @@ private fun App(repo: WalletRepository) {
                 repo, s.home, s.pairing,
                 onDone = { updated ->
                     // label sync sends the shown wallet and its MWEB counterpart, so only they come back
-                    screen = s.home.withData(updated.filterKeys { it == s.home.name || it == s.home.linkedName })
+                    screen = afterLabelSync(s.home, updated)
                 },
                 onBack = { screen = s.home }
             )
@@ -924,10 +955,13 @@ private fun SaveWalletScreen(
 }
 
 @Composable
-private fun UnlockScreen(name: String, repo: WalletRepository, onUnlocked: (VaultData, String) -> Unit, onDeleted: () -> Unit, onBack: () -> Unit) {
+private fun UnlockScreen(name: String, repo: WalletRepository, unlockFamily: (String) -> Screen.Home,
+                         onUnlocked: (Screen.Home) -> Unit, onDeleted: () -> Unit, onBack: () -> Unit) {
     var password by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
+    var unlocking by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     ScreenColumn {
         Text("Unlock \"$name\"", style = MaterialTheme.typography.headlineSmall)
         repo.walletInfo(name)?.linkedWallet?.let {
@@ -942,14 +976,23 @@ private fun UnlockScreen(name: String, repo: WalletRepository, onUnlocked: (Vaul
         error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         Button(
             onClick = {
-                error = try { onUnlocked(repo.unlock(name, password), password); null }
-                        catch(t: Throwable) { "Wrong password" }
+                unlocking = true
+                error = null
+                val typed = password
+                scope.launch {
+                    val opened = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                        runCatching { unlockFamily(typed) }
+                    }
+                    unlocking = false
+                    opened.fold({ onUnlocked(it) }, { error = "Wrong password" })
+                }
             },
+            enabled = !unlocking,
             modifier = Modifier.fillMaxWidth()
-        ) { Text("Unlock") }
+        ) { Text(if(unlocking) "Unlocking…" else "Unlock") }
         BackButton(onClick = onBack)
         if(!confirmDelete) {
-            TextButton(onClick = { confirmDelete = true }) { Text("Delete this wallet from device…") }
+            TextButton(onClick = { confirmDelete = true }, enabled = !unlocking) { Text("Delete this wallet from device…") }
         } else {
             Text("This removes the wallet from this phone. Without the seed words it CANNOT be recovered.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
@@ -1719,8 +1762,7 @@ private fun PsbtSignScreen(
 private fun SignPsbtScreen(repo: WalletRepository, home: Screen.Home, onBack: () -> Unit) {
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val context = LocalContext.current
-    val walletData = if(home.data.scriptType != "MWEB") home.data
-                     else home.linkedData?.takeIf { it.scriptType != "MWEB" } ?: home.data
+    val walletData = signingWallet(home)
     var inputText by remember { mutableStateOf("") }
     var signed by remember { mutableStateOf<WalletRepository.SignedPsbt?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -1841,14 +1883,7 @@ private fun LabelSyncScreen(
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(pairing) {
         try {
-            val wallets = buildList {
-                add(Triple(home.name, home.data, home.password))
-                val linkedName = home.linkedName
-                val linkedData = home.linkedData
-                if(linkedName != null && linkedData != null) {
-                    add(Triple(linkedName, linkedData, home.password))
-                }
-            }
+            val wallets = labelSyncWallets(home)
             result = repo.linkSyncLabels(pairing, wallets)
         } catch(t: Throwable) {
             error = t.message ?: "Label sync failed"
@@ -2101,10 +2136,7 @@ private fun SendScreen(
     onBack: () -> Unit
 ) {
     // one wallet: both layers fund this screen; the paying layer is chosen automatically
-    val publicData = if(home.data.scriptType != "MWEB") home.data
-                     else home.linkedData?.takeIf { it.scriptType != "MWEB" }
-    val privateData = if(home.data.scriptType == "MWEB") home.data
-                      else home.linkedData?.takeIf { it.scriptType == "MWEB" }
+    val (publicData, privateData) = sendWallets(home)
     val scope = rememberCoroutineScope()
     val network = remember(home.data) { repo.network(home.data) }
     val sendCoin = remember(publicData) { publicData?.let { repo.coin(it) } ?: Coin.LITECOIN }

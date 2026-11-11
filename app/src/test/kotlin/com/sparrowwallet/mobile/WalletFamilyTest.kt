@@ -5,7 +5,9 @@ import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.storage.VaultData
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class WalletFamilyTest {
     private fun info(name: String, scriptType: String, links: WalletLinks = WalletLinks()) =
@@ -173,9 +175,138 @@ class WalletFamilyTest {
 
     @Test
     fun theTappedNameIsKeptAsGiven() {
-        // the name the unlock screen passed stays the shown wallet's name; the list is looked up by file name
-        val (opened, _) = open("Main", listOf(info("Main", "P2WPKH")), vaultsByName = mapOf("Main" to pub.data))
-        assertEquals("Main", opened.family.public.name)
+        // the name the caller passed stays the shown wallet's name; the list is looked up by file name ("Main!" is "Main_")
+        val wallets = listOf(
+            info("Main_", "P2WPKH", WalletLinks(taproot = "Main_ Taproot")),
+            info("Main_ Taproot", "P2TR", WalletLinks(parent = "Main_"))
+        )
+        val unlocked = mutableListOf<String>()
+        val opened = WalletFamily.open("Main!", pub.data, wallets) { unlocked += it; tap.data }
+        assertEquals(WalletFamily.Opened(WalletFamily(Member("Main!", pub.data), taproot = Member("Main_ Taproot", tap.data)),
+            Layer.PUBLIC), opened)
+        assertEquals(listOf("Main_ Taproot"), unlocked)
+    }
+
+    @Test
+    fun aTappedCompanionOfTheWrongKindOpensAloneAndUnlocksNothing() {
+        // its meta says Taproot, its vault says MWEB
+        val (opened, unlocked) = open("Main Taproot", vaultsByName = vaults + ("Main Taproot" to vault("MWEB")))
+        assertEquals(WalletFamily.Opened(WalletFamily(Member("Main Taproot", vault("MWEB"))), Layer.PUBLIC), opened)
+        assertEquals(emptyList(), unlocked)
+        // its meta is of the wrong kind for the slot its parent names it in
+        val wrongMeta = listOf(
+            info("Main", "P2WPKH", WalletLinks(taproot = "Main Taproot")),
+            info("Main Taproot", "MWEB", WalletLinks(parent = "Main"))
+        )
+        val (alone, none) = open("Main Taproot", wrongMeta)
+        assertEquals(WalletFamily.Opened(WalletFamily(tap), Layer.PUBLIC), alone)
+        assertEquals(emptyList(), none)
+    }
+
+    @Test
+    fun aTappedCompanionWhoseParentDoesNotNameItOpensAlone() {
+        val wallets = listOf(
+            info("Main", "P2WPKH", WalletLinks(mweb = "Main Private")),
+            info("Main Private", "MWEB", WalletLinks(parent = "Main")),
+            info("Main Taproot", "P2TR", WalletLinks(parent = "Main"))
+        )
+        val (opened, unlocked) = open("Main Taproot", wallets)
+        assertEquals(WalletFamily.Opened(WalletFamily(tap), Layer.PUBLIC), opened)
+        assertEquals(emptyList(), unlocked)
+    }
+
+    @Test
+    fun aCompanionThatWillNotBeShownIsNeverUnlocked() {
+        // a Private slot naming a wallet that is not MWEB, and a Taproot slot naming the same Taproot wallet
+        val wallets = listOf(
+            info("Main", "P2WPKH", WalletLinks(mweb = "Main Taproot", taproot = "Main Taproot")),
+            info("Main Taproot", "P2TR", WalletLinks(parent = "Main"))
+        )
+        val (opened, unlocked) = open("Main", wallets)
+        assertEquals(WalletFamily.Opened(WalletFamily(pub, taproot = tap), Layer.PUBLIC), opened)
+        assertEquals(listOf("Main Taproot"), unlocked)
+    }
+
+    @Test
+    fun anOldMetaPairOpensTogether() {
+        // both metas as the previous build wrote them: only the old linkedWallet field
+        fun decoded(name: String, json: String) = WalletMeta.decode(json).let {
+            WalletRepository.WalletInfo(name, it.network, it.scriptType, it.links, it.coin)
+        }
+        val wallets = listOf(
+            decoded("Main", """{"network":"mainnet","coin":"litecoin","scriptType":"P2WPKH","linkedWallet":"Main Private"}"""),
+            decoded("Main Private", """{"network":"mainnet","coin":"litecoin","scriptType":"MWEB","linkedWallet":"Main"}""")
+        )
+        assertEquals(WalletFamily.Opened(WalletFamily(pub, private = priv), Layer.PUBLIC), open("Main", wallets).first)
+        assertEquals(WalletFamily.Opened(WalletFamily(pub, private = priv), Layer.PRIVATE), open("Main Private", wallets).first)
+    }
+
+    @Test
+    fun anOlderPrivatePairWrittenOnOneSideOpensTogether() {
+        // a stop between the previous build's two link writes: Main names its Private wallet, which names nothing
+        val wallets = listOf(
+            info("Main", "P2WPKH", WalletLinks(mweb = "Main Private", taproot = "Main Taproot")),
+            info("Main Private", "MWEB"),
+            info("Main Taproot", "P2TR", WalletLinks(parent = "Main"))
+        )
+        val (opened, unlocked) = open("Main", wallets)
+        assertEquals(WalletFamily.Opened(WalletFamily(pub, priv, tap), Layer.PUBLIC), opened)
+        assertEquals(listOf("Main Private", "Main Taproot"), unlocked)
+    }
+
+    @Test
+    fun aPrivateWalletNamingAParentThatDoesNotNameItIsNotOpened() {
+        // the reverse: the Private wallet names Main, Main names nothing (Main was deleted and another saved in its name)
+        val wallets = listOf(info("Main", "P2WPKH"), info("Main Private", "MWEB", WalletLinks(parent = "Main")))
+        val (opened, unlocked) = open("Main", wallets)
+        assertEquals(WalletFamily.Opened(WalletFamily(pub), Layer.PUBLIC), opened)
+        assertEquals(emptyList(), unlocked)
+    }
+
+    @Test
+    fun aOneSidedTaprootLinkStaysOut() {
+        val wallets = listOf(info("Main", "P2WPKH", WalletLinks(taproot = "Main Taproot")), info("Main Taproot", "P2TR"))
+        val (opened, unlocked) = open("Main", wallets)
+        assertEquals(WalletFamily.Opened(WalletFamily(pub), Layer.PUBLIC), opened)
+        assertEquals(emptyList(), unlocked)
+    }
+
+    @Test
+    fun printingAHomeShowsNoSeedAndNoPassword() {
+        val home = Screen.Home(WalletFamily(pub, priv, tap), Layer.TAPROOT, "hunter2")
+        for(text in listOf(home.toString(), home.family.toString(), pub.toString(), Screen.Send(home).toString(),
+            WalletFamily.Opened(home.family, home.layer).toString())) {
+            assertFalse("abandon" in text, text)
+            assertFalse("hunter2" in text, text)
+        }
+        assertTrue("Main Taproot" in home.toString() && "TAPROOT" in home.toString(), home.toString())
+    }
+
+    @Test
+    fun theWalletsSendSignAndLabelSyncUseFollowTheLayer() {
+        val all = WalletFamily(pub, priv, tap)
+        val onPublic = Screen.Home(all, Layer.PUBLIC, "pw")
+        val onPrivate = Screen.Home(all, Layer.PRIVATE, "pw")
+        val onTaproot = Screen.Home(all, Layer.TAPROOT, "pw")
+        // Send: the public and private sides of the shown wallet
+        assertEquals(pub.data to priv.data, sendWallets(onPublic))
+        assertEquals(pub.data to priv.data, sendWallets(onPrivate))
+        assertEquals(tap.data to null, sendWallets(onTaproot))
+        assertEquals(pub.data to null, sendWallets(Screen.Home(WalletFamily(pub, taproot = tap), Layer.PUBLIC)))
+        assertEquals(null to priv.data, sendWallets(Screen.Home(priv.name, priv.data)))
+        // Sign PSBT: the public side, or the shown wallet when it has none
+        assertEquals(pub.data, signingWallet(onPublic))
+        assertEquals(pub.data, signingWallet(onPrivate))
+        assertEquals(tap.data, signingWallet(onTaproot))
+        assertEquals(priv.data, signingWallet(Screen.Home(priv.name, priv.data)))
+        // label sync: the shown wallet and its MWEB counterpart, and only they take the result
+        assertEquals(listOf("Main", "Main Private"), labelSyncWallets(onPublic).map { it.first })
+        assertEquals(listOf("Main Private", "Main"), labelSyncWallets(onPrivate).map { it.first })
+        assertEquals(listOf("Main Taproot"), labelSyncWallets(onTaproot).map { it.first })
+        val labelled = vault("P2TR", label = "x")
+        val updated = mapOf("Main" to labelled, "Main Taproot" to labelled)
+        assertEquals(onTaproot.withData(mapOf("Main Taproot" to labelled)), afterLabelSync(onTaproot, updated))
+        assertEquals(onPublic.withData(mapOf("Main" to labelled)), afterLabelSync(onPublic, updated))
     }
 
     @Test

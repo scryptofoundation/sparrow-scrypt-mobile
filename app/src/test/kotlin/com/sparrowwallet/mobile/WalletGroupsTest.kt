@@ -127,10 +127,16 @@ class WalletGroupsTest {
             val first = companionLinkWrites(parent, companion, kind).first()
             // only the first write reached disk
             val onDisk = listOf(first, companion)
-            assertEquals(listOf("c", "pub"), groupByCoin(onDisk).single().second.map { it.name }.sorted(), kind.name)
-            // and the section total counts the companion once, as its own row
             val totals = mapOf("pub" to 100L, "c" to 7L)
-            assertEquals(100L, walletBalance(first, onDisk, totals), kind.name)
+            if(kind == CompanionKind.MWEB) {
+                // the previous build's Private pair: kept together as that build kept it (see companionOf), counted once
+                assertEquals(listOf("pub"), groupByCoin(onDisk).single().second.map { it.name }, kind.name)
+                assertEquals(107L, walletBalance(first, onDisk, totals), kind.name)
+            } else {
+                assertEquals(listOf("c", "pub"), groupByCoin(onDisk).single().second.map { it.name }.sorted(), kind.name)
+                // and the section total counts the companion once, as its own row
+                assertEquals(100L, walletBalance(first, onDisk, totals), kind.name)
+            }
             assertEquals(107L, sectionTotal(onDisk, totals), kind.name)
         }
     }
@@ -170,6 +176,34 @@ class WalletGroupsTest {
         val parentOnly = listOf(w("pub", Coin.LITECOIN, "P2WPKH", links = WalletLinks(taproot = "tap")), w("tap", Coin.LITECOIN, "P2TR"))
         assertEquals(listOf("pub", "tap"), shown(parentOnly))
         assertEquals(100L, walletBalance(parentOnly[0], parentOnly, mapOf("pub" to 100L, "tap" to 7L)))
+    }
+
+    @Test
+    fun anOlderPrivatePairWrittenOnOneSideStaysTogether() {
+        // a stop between the previous build's two link writes: pub names priv, priv names nothing
+        val wallets = listOf(w("pub", Coin.LITECOIN, "P2WPKH", linked = "priv"), w("priv", Coin.LITECOIN, "MWEB"))
+        assertEquals(listOf("pub"), shown(wallets))
+        val totals = mapOf("pub" to 100L, "priv" to 50L)
+        assertEquals(150L, walletBalance(wallets[0], wallets, totals))
+        // counted once in the section: priv has no row of its own
+        val section = groupByCoin(wallets).single().second
+        assertEquals(150L, coinTotal(section, Network.MAINNET) { n -> section.firstOrNull { it.name == n }?.let { walletBalance(it, wallets, totals) } })
+    }
+
+    @Test
+    fun aPrivateWalletNamingAParentThatDoesNotNameItIsListed() {
+        // the reverse: priv names pub, pub names nothing (pub was deleted and another wallet saved in its name)
+        val wallets = listOf(w("pub", Coin.LITECOIN, "P2WPKH"), w("priv", Coin.LITECOIN, "MWEB", linked = "pub"))
+        assertEquals(listOf("priv", "pub"), shown(wallets))
+        assertEquals(100L, walletBalance(wallets[0], wallets, mapOf("pub" to 100L, "priv" to 50L)))
+    }
+
+    @Test
+    fun aPrivateWalletNamedByTwoWalletsOnOneSideIsListed() {
+        val wallets = listOf(w("a", Coin.LITECOIN, "P2WPKH", linked = "priv"), w("b", Coin.LITECOIN, "P2WPKH", linked = "priv"),
+            w("priv", Coin.LITECOIN, "MWEB"))
+        assertEquals(listOf("a", "b", "priv"), shown(wallets))
+        assertEquals(100L, walletBalance(wallets[0], wallets, mapOf("a" to 100L, "priv" to 50L)))
     }
 
     @Test

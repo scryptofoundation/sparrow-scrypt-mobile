@@ -9,8 +9,10 @@ enum class Layer(val label: String) {
     TAPROOT("Taproot")
 }
 
-/** One unlocked wallet of a family: its name on this phone and its vault. */
-data class Member(val name: String, val data: VaultData)
+/** One unlocked wallet of a family: its name on this phone and its vault. Printed as its name only: the vault holds the seed. */
+data class Member(val name: String, val data: VaultData) {
+    override fun toString(): String = "Member($name)"
+}
 
 /**
  * The wallets one password opens together on Home: the [public] wallet and, when linked both ways and unlocked with the
@@ -43,6 +45,9 @@ data class WalletFamily(val public: Member, val private: Member? = null, val tap
         return WalletFamily(public.updated(), private?.updated(), taproot?.updated())
     }
 
+    /** Names only: the members' vaults hold their seeds. */
+    override fun toString(): String = "WalletFamily(public=${public.name}, private=${private?.name}, taproot=${taproot?.name})"
+
     /** A family and the layer of the wallet that opened it. */
     data class Opened(val family: WalletFamily, val layer: Layer)
 
@@ -54,8 +59,9 @@ data class WalletFamily(val public: Member, val private: Member? = null, val tap
          * The family [tapped] (already unlocked as [tappedData]) belongs to, among [wallets] (the wallets on this phone),
          * shown on the tapped wallet's layer. A companion's parent leads to the public wallet. Each other member is
          * unlocked through [unlock] with the same password and is left out when it will not unlock; only a companion
-         * linked both ways ([linkedBack]) is ever unlocked, and its vault must be of its layer's kind (MWEB for Private,
-         * P2TR for Taproot). A companion whose parent will not unlock opens on its own.
+         * the list shows under the public wallet ([companionOf]) whose meta and vault are of its layer's kind (MWEB for
+         * Private, P2TR for Taproot) is ever unlocked and kept. A companion whose parent will not unlock, or whose parent
+         * does not name it back, opens on its own.
          */
         fun open(tapped: String, tappedData: VaultData, wallets: List<WalletRepository.WalletInfo>,
                  unlock: (String) -> VaultData?): Opened {
@@ -68,7 +74,7 @@ data class WalletFamily(val public: Member, val private: Member? = null, val tap
             // a tapped companion's layer, judged before its parent is unlocked: a vault of the wrong kind opens alone
             val tappedLayer = when {
                 parent == null -> Layer.PUBLIC
-                parent.links.mweb == self.name -> Layer.PRIVATE
+                parent.links.mweb == self.name && self.scriptType == MWEB -> Layer.PRIVATE
                 else -> Layer.TAPROOT
             }
             if(tappedLayer != Layer.PUBLIC && tappedData.scriptType != kindOf(tappedLayer)) return alone
@@ -76,9 +82,12 @@ data class WalletFamily(val public: Member, val private: Member? = null, val tap
             val rootMember = if(parent == null) Member(tapped, tappedData)
                              else Member(parent.name, tryUnlock(parent.name) ?: return alone)
 
+            // the link and the meta's kind are judged before the unlock, so nothing is unlocked that will not be shown
+            // (short of a vault whose kind differs from its meta's)
             fun companion(layer: Layer, name: String?): Member? {
                 if(layer == tappedLayer) return Member(tapped, tappedData)
-                val info = name?.let { byName[it] }?.takeIf { it.name != self.name && linkedBack(root, it) } ?: return null
+                val info = name?.let { byName[it] }
+                    ?.takeIf { it.name != self.name && it.scriptType == kindOf(layer) && companionOf(root, it, wallets) } ?: return null
                 val data = tryUnlock(info.name) ?: return null
                 return if(data.scriptType == kindOf(layer)) Member(info.name, data) else null
             }

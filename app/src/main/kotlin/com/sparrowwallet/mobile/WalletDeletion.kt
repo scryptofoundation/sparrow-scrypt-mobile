@@ -22,14 +22,14 @@ data class DeleteChoice(val label: String, val names: List<String>, val root: St
 
 /**
  * The family [tapped] belongs to among [wallets], by name with its layer: the public wallet, then its Private and Taproot
- * wallets, each linked both ways ([linkedBack]). Empty when the wallet has no linked wallets (a one-sided link counts as
- * none), so the confirmation stays as it is for a wallet on its own.
+ * wallets, each its companion as the list shows it ([companionOf]). Empty when the wallet has no linked wallets (a
+ * one-sided link counts as none, but for an older Private pair), so the confirmation stays as it is for a wallet on its own.
  */
 fun deleteFamily(tapped: WalletRepository.WalletInfo, wallets: List<WalletRepository.WalletInfo>): List<Pair<String, Layer>> {
     val byName = wallets.associateBy { it.name }
     val root = tapped.links.parent?.let { byName[it] }?.takeIf { linkedBack(it, tapped) } ?: tapped
     val companions = listOfNotNull(root.links.mweb?.let { it to Layer.PRIVATE }, root.links.taproot?.let { it to Layer.TAPROOT })
-        .filter { (name, _) -> byName[name]?.let { linkedBack(root, it) } == true }
+        .filter { (name, _) -> byName[name]?.let { companionOf(root, it, wallets) } == true }
     return if(companions.isEmpty()) emptyList() else listOf(root.name to Layer.PUBLIC) + companions
 }
 
