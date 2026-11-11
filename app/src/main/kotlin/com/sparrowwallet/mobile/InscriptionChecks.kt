@@ -329,8 +329,9 @@ internal class IndexerReaders(
      * asked only about coins not in [decided] (coins the stored results already hold) and not answered "unknown" for
      * less than [InscriptionChecker.ASKED_FRESH_MS] ago; it is asked in pieces (a coin at a time when it
      * [InscriptionIndexer.asksOneAtATime]), and a pass cut by its deadline keeps the CARRYING answers received before the
-     * cut (a hold is always safe): any other answer from that pass is dropped, and the coins not reached have none. A
-     * reader that can vouch for "nothing" is asked about every coin in one pass, and a pass cut short gives no answers. A
+     * cut, or before an error in a later piece (a hold is always safe): any other answer from that pass is dropped, and
+     * the coins not reached have none. A reader that can vouch for "nothing" is asked about every coin in one pass, and a
+     * pass cut short gives no answers. A
      * timeout or a 429 is remembered like a failed open, so the next pass does not stall on it again. An unasked coin has
      * no answer, exactly as an unknown one.
      */
@@ -369,10 +370,16 @@ internal class IndexerReaders(
                 //A 429 is remembered like a failed open
                 failedAt[key] = now()
                 drop(key, reader)
-                return none
+                if(!holdsOnly) return none
+                //Like the deadline: the carrying answers already in stand
+                outputs.entries.removeAll { !it.value.carries }
+                break
             } catch(e: Exception) {
                 drop(key, reader)
-                return none
+                if(!holdsOnly) return none
+                //An error in a later piece (a failed request, a reader closed by a settings change) is like the deadline
+                outputs.entries.removeAll { !it.value.carries }
+                break
             }
             if(answered == null) {
                 //Past the deadline: remembered like a failed open, and the reader is closed (which ends a blocked request)

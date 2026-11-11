@@ -37,7 +37,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * A wallet's inscription check run: [done] of [total] coins, whether the indexer the setting names could not answer
  * ([indexerUnreachable]: the run fell back to the built-in trace), and whether it is still [running].
  */
-data class CheckStatus(val done: Int, val total: Int, val indexerUnreachable: Boolean, val running: Boolean)
+data class CheckStatus(val done: Int, val total: Int, val indexerUnreachable: Boolean, val running: Boolean, val indexerPartial: Boolean = false)
 
 /**
  * Runs the built-in inscription check over a wallet's unspent coins and keeps the results, in [store] and in memory.
@@ -73,9 +73,11 @@ class InscriptionChecker(
      * A wallet's results, and whether they come from a readable file or a finished run (so an empty map counts as checked),
      * with the kept block hashes and the kept indexer marks of outpoints the last listing left out (not coins).
      */
-    private class Stored(val checks: Map<String, InscriptionCheck>, val checked: Boolean, val blocks: Map<Int, String> = emptyMap(),
-                         val marks: Map<String, KeptMark> = emptyMap(), val asked: Map<String, Long> = emptyMap(),
-                         val lost: Boolean = false, val lastUnreachable: Boolean? = null, val lastRunAt: Long? = null)
+    private data class Stored(val checks: Map<String, InscriptionCheck>, val checked: Boolean, val blocks: Map<Int, String> = emptyMap(),
+                              val marks: Map<String, KeptMark> = emptyMap(), val asked: Map<String, Long> = emptyMap(),
+                              val lost: Boolean = false, val lastUnreachable: Boolean? = null, val lastRunAt: Long? = null,
+                              val lostCoins: Set<String> = emptySet(), val askedFor: String? = null, val lastPartial: Boolean? = null,
+                              val unavailable: Boolean = false)
 
     /** Stored results by wallet file name, loaded once and replaced after each run. */
     private val memory = ConcurrentHashMap<String, Stored>()
@@ -105,12 +107,24 @@ class InscriptionChecker(
      * with no rows (see [InscriptionStore.loadOrSetAside]). The last run's reach, kept with the results, seeds [status]
      * after a restart, so the header does not say Up to date when that run could not reach its indexer.
      */
-    private fun entry(walletName: String): Stored = memory.computeIfAbsent(key(walletName)) { key ->
-        val file = store.loadOrSetAside(stored(walletName))
-        Stored(file?.checks ?: emptyMap(), file != null, file?.blocks ?: emptyMap(), file?.marks ?: emptyMap(), file?.asked ?: emptyMap(),
-            file?.lost ?: false, file?.lastUnreachable, file?.lastRunAt).also { s ->
-            s.lastUnreachable?.let { statusFlow(key).compareAndSet(null, CheckStatus(s.checks.size, s.checks.size, it, running = false)) }
+    private fun entry(walletName: String): Stored {
+        val key = key(walletName)
+        memory[key]?.let { return it }
+        val load = store.loadOrSetAside(stored(walletName))
+        if(load.unavailable) {
+            //Read error: nothing kept in memory, so the next read tries again. Meanwhile the wallet counts as checked with
+            //no rows (Send: every coin Unchecked, never the old local rule) and a check run is refused (see [check])
+            return Stored(emptyMap(), true, unavailable = true)
         }
+        val file = load.file
+        val loaded = Stored(file?.checks ?: emptyMap(), file != null, file?.blocks ?: emptyMap(), file?.marks ?: emptyMap(),
+            file?.asked ?: emptyMap(), file?.lost ?: false, file?.lastUnreachable, file?.lastRunAt, file?.lostCoins ?: emptySet(),
+            file?.askedFor, file?.lastPartial)
+        loaded.lastUnreachable?.let {
+            statusFlow(key).compareAndSet(null, CheckStatus(loaded.checks.size, loaded.checks.size, it, running = false,
+                indexerPartial = loaded.lastPartial == true))
+        }
+        return memory.putIfAbsent(key, loaded) ?: loaded
     }
 
     /** The wallet's results if already in memory, else null; never reads the file, so it is cheap on the main thread. */
@@ -342,7 +356,8 @@ class InscriptionChecker(
         progress: (Int, Int) -> Unit = { _, _ -> },
         indexer: InscriptionIndexer? = null,
         indexerSource: InscriptionCheck.Source? = null,
-        positions: Map<String, Pair<Int, Int>> = emptyMap()
+        positions: Map<String, Pair<Int, Int>> = emptyMap(),
+        indexerId: String? = null
     ): Map<String, InscriptionCheck> {
         if(!ChainRules.covers(coin)) {
             return emptyMap()
@@ -351,6 +366,10 @@ class InscriptionChecker(
             return results(walletName)
         }
         require(indexer == null || indexerSource != null) { "An indexer needs its source" }
+        if(entry(walletName).unavailable) {
+            //The stored results cannot be read just now: a run would write over them, so none is made (the worker retries)
+            throw java.io.IOException("The wallet's inscription results cannot be read just now")
+        }
         val key = key(walletName)
         //Read before any server call: a run claimed earlier keeps the epoch of its claim
         val epoch = claimedEpochs[key] ?: synchronized(saveLock) { epochs[key] ?: 0 }
@@ -378,7 +397,9 @@ class InscriptionChecker(
             //stored results leave undecided (see [toAsk]); the others have no answer, exactly as if it had said "unknown".
             val before = entry(walletName)
             val holdsOnly = indexer != null && !runesAwareIndexer(coin, indexer)
-            val ask = if(indexer == null) emptyList() else toAsk(coins.map { it.outpoint }, before, holdsOnly, deeper)
+            //"Unknown" times belong to the indexer that gave them: another one is asked as if never asked
+            val askedBefore = if(before.askedFor == indexerId) before.asked else emptyMap()
+            val ask = if(indexer == null) emptyList() else toAsk(coins.map { it.outpoint }, before, askedBefore, holdsOnly, deeper)
             val got = when {
                 indexer == null -> null
                 ask.isEmpty() -> emptyMap()
@@ -388,31 +409,40 @@ class InscriptionChecker(
             if(indexer != null && ask.isNotEmpty() && got == null) {
                 unreachable = true
             }
-            status.value = CheckStatus(0, coins.size, unreachable, running = true)
+            //Cut short with only some answers: not unreachable, but said (the coins not reached keep their own rows)
+            val partial = got != null && got.size < ask.size
+            status.value = CheckStatus(0, coins.size, unreachable, running = true, indexerPartial = partial)
             val overCap = outputs.orEmpty().filterValues { it.inscriptions.size > MAX_INDEXER_IDS }.keys
             val answers = outputs.orEmpty().mapValues { (_, output) -> capped(output).toAnswer() }
             //The source goes to the run only when some answer can be used (see [stamped] for the rows it was not used for)
             val answeredBy = if(outputs.orEmpty().values.any { it.indexed }) indexerSource else null
             val listed = utxos.associateBy { "${it.txHash}:${it.txPos}" }
+            //The coins a loss of the stored results leaves unresolved (see [lostCoinsAfter]): those still open, plus every
+            //coin listed while any is (all of them in the first run after the loss)
+            //(a row written with the lost reason before the set was kept counts as unresolved too)
+            val openBefore = before.lostCoins + before.checks.values.filter { it.reason == LOST_REASON }.map { it.outpoint }
+            val lostBefore = if(before.lost || openBefore.isNotEmpty()) openBefore + listed.keys else emptySet()
+            val runeLike = ChainRules.hasRuneLikeTokens(coin)
+            val lostApplies = { op: String -> op in lostBefore && !resolvesLost(op, outputs, deeper, indexerSource, runeLike) }
 
             val chain = "${coin.id}:${network.id}"
             val shown = flow(key)
             var marks: Map<String, KeptMark> = emptyMap()
             var unknownAt: Map<String, Long> = emptyMap()
+            var lostCoins: Set<String> = emptySet()
+            var finalState: Stored? = null
             val checks = locks.computeIfAbsent(chain) { Mutex() }.withLock {
                 val storedEntry = entry(walletName)
                 val stored = storedEntry.checks
                 val storedMarks = storedEntry.marks
-                //After lost results, a coin no indexer answered for is not written Clean while the setting names one
-                val lostRule = if(indexerSource != null) storedEntry.lost else null
                 val stamp = { check: InscriptionCheck ->
-                    stamped(check, stored[check.outpoint], storedMarks[check.outpoint], listed, positions, outputs, overCap, lostRule, deeper)
+                    stamped(check, stored[check.outpoint], storedMarks[check.outpoint], listed, positions, outputs, overCap, lostApplies)
                 }
                 //What the file holds: the stored rows, each replaced by the coin's new result once decided
                 val saved = LinkedHashMap(stored)
                 val report = { done: Int, total: Int ->
                     shown.value = done to total
-                    status.value = CheckStatus(done, total, unreachable, running = true)
+                    status.value = CheckStatus(done, total, unreachable, running = true, indexerPartial = partial)
                     progress(done, total)
                 }
                 try {
@@ -425,8 +455,7 @@ class InscriptionChecker(
                             val check = stamp(decided)
                             if(saved[outpoint] != check) {
                                 saved[outpoint] = check
-                                persist(walletName, key, epoch, Stored(HashMap(saved), true, keep, storedMarks, storedEntry.asked,
-                                    storedEntry.lost, storedEntry.lastUnreachable, storedEntry.lastRunAt))
+                                persist(walletName, key, epoch, storedEntry.copy(checks = HashMap(saved), checked = true, blocks = keep))
                             }
                         }, report
                     )
@@ -434,11 +463,17 @@ class InscriptionChecker(
                     //The final save drops spent coins, keeping the indexer marks of the ones that were only left out, when a
                     //holds-only indexer answered "unknown" for the listed coins, and whether this run could reach its indexer
                     marks = marksToKeep(stored, storedMarks, listed.keys, now())
-                    unknownAt = askedToKeep(storedEntry.asked, listed.keys, if(holdsOnly) got else null, now())
+                    unknownAt = askedToKeep(if(holdsOnly) askedBefore else storedEntry.asked, listed.keys, if(holdsOnly) got else null, now())
+                    val askedFor = if(holdsOnly) indexerId else storedEntry.askedFor
+                    lostCoins = lostCoinsAfter(lostBefore, checks, outputs, deeper, indexerSource, runeLike)
                     val inMemory = memory[key]
                     if(checks != saved || inMemory?.checked != true || inMemory.blocks != keep || inMemory.marks != marks ||
-                        inMemory.asked != unknownAt || inMemory.lost || inMemory.lastUnreachable != unreachable) {
-                        persist(walletName, key, epoch, Stored(checks, true, keep, marks, unknownAt, false, unreachable, now()))
+                        inMemory.asked != unknownAt || inMemory.askedFor != askedFor || inMemory.lost || inMemory.lostCoins != lostCoins ||
+                        inMemory.lastUnreachable != unreachable || (inMemory.lastPartial == true) != partial) {
+                        finalState = Stored(checks, true, keep, marks, unknownAt, false, unreachable, now(), lostCoins, askedFor, partial)
+                        persist(walletName, key, epoch, finalState!!)
+                    } else {
+                        finalState = inMemory
                     }
                     checks
                 } finally {
@@ -451,7 +486,7 @@ class InscriptionChecker(
             }
             val filled = fillNumbers(indexer, checks, timeUp)
             if(filled != checks) {
-                persist(walletName, key, epoch, Stored(filled, true, keep, marks, unknownAt, false, unreachable, now()))
+                persist(walletName, key, epoch, finalState!!.copy(checks = filled, lastRunAt = now()))
             }
             return filled
         } finally {
@@ -467,15 +502,37 @@ class InscriptionChecker(
      * when it is new, when that window has passed, or when it is checked deeper. An unasked coin has no answer, exactly as
      * an unknown one: nothing is ever made Clean by not asking.
      */
-    private fun toAsk(outpoints: List<String>, before: Stored, holdsOnly: Boolean, deeper: Set<String>): List<String> {
+    private fun toAsk(outpoints: List<String>, before: Stored, asked: Map<String, Long>, holdsOnly: Boolean, deeper: Set<String>): List<String> {
         if(!holdsOnly) return outpoints
         val freshFrom = now() - ASKED_FRESH_MS
         return outpoints.filter { op ->
             val row = before.checks[op]
             val decided = row?.verdict == Verdict.INSCRIBED || (row != null && markOf(row, 0) != null) || op in before.marks
-            op in deeper || (!decided && (before.asked[op]?.let { it < freshFrom } ?: true))
+            op in deeper || (!decided && (asked[op]?.let { it < freshFrom } ?: true))
         }
     }
+
+    /**
+     * Whether this run resolves the loss of the stored results for [op]: an indexer gave an indexed answer for it; or, on a
+     * chain without rune-like tokens (Bellscoin), where a trace is enough to free a coin under Send's rules, it was checked
+     * deeper or the setting is Built-in. On a chain with rune-like tokens a trace cannot see what the lost marks held, so
+     * only an indexer answer resolves it (Check deeper and Built-in do not).
+     */
+    private fun resolvesLost(op: String, outputs: Map<String, IndexerOutput>?, deeper: Set<String>, indexerSource: InscriptionCheck.Source?,
+                             runeLike: Boolean): Boolean =
+        outputs?.get(op)?.indexed == true || (!runeLike && (op in deeper || indexerSource == null))
+
+    /**
+     * The coins the loss still leaves unresolved after this run: of [lostBefore] (every coin listed in the first run after
+     * the loss, and every coin listed while any is unresolved), those still listed that this run neither resolved (see
+     * [resolvesLost]) nor found Inscribed. Empty once each is resolved: a coin first listed after that is an ordinary coin.
+     */
+    private fun lostCoinsAfter(lostBefore: Set<String>, checks: Map<String, InscriptionCheck>, outputs: Map<String, IndexerOutput>?,
+                               deeper: Set<String>, indexerSource: InscriptionCheck.Source?, runeLike: Boolean): Set<String> =
+        lostBefore.filterTo(LinkedHashSet()) { op ->
+            val row = checks[op]
+            row != null && row.verdict != Verdict.INSCRIBED && !resolvesLost(op, outputs, deeper, indexerSource, runeLike)
+        }
 
     /**
      * The indexer's answers for [outpoints], or null for none at all (any failure but cancellation, or an answer that
@@ -484,7 +541,8 @@ class InscriptionChecker(
      *
      * A runes-aware reader ([holdsOnly] false) is asked in one pass, and a pass cut short gives no answers at all. A reader
      * that can only add holds is asked in pieces (a coin at a time when it [InscriptionIndexer.asksOneAtATime]), and a
-     * pass cut short by the time limit keeps the CARRYING answers it received before the cut (a hold is always safe);
+     * pass cut short by the time limit or by an error keeps the CARRYING answers it received before the cut (a hold is
+     * always safe);
      * every other answer it received counts as unknown (an indexed "nothing" from a cut-short pass is dropped), and the
      * coins not reached have none. A cut with nothing received is no answers at all (the indexer is unreachable).
      */
@@ -495,22 +553,24 @@ class InscriptionChecker(
         val expired = { timeUp() || System.nanoTime() >= deadline }
         val received = LinkedHashMap<String, IndexerOutput>()
         val pieces = if(!holdsOnly) listOf(asked) else asked.chunked(if(indexer.asksOneAtATime) 1 else HOLDS_PIECE)
+        //What a pass cut short (the time limit, or an error: a failed request, a reader closed by a settings change, an
+        //answer for other outpoints) keeps from a holds-only reader: its carrying answers, the rest as unknown
+        val cutShort = { if(!holdsOnly || received.isEmpty()) null else received.mapValues { (op, output) -> if(output.carries) output else IndexerOutput.unknown(op) } }
         for(piece in pieces) {
             val answered = try {
                 stopWhenTimeUp(expired) { indexer.outputs(piece) }
             } catch(e: CancellationException) {
                 throw e
             } catch(e: Exception) {
-                return null
+                return cutShort()
             }
             if(answered == null) {
                 //Given up: closing the reader ends a request still blocked on its socket
                 indexer.close()
-                if(!holdsOnly || received.isEmpty()) return null
-                return received.mapValues { (op, output) -> if(output.carries) output else IndexerOutput.unknown(op) }
+                return cutShort()
             }
             if(piece.any { answered[it]?.outpoint != it }) {
-                return null
+                return cutShort()
             }
             for(op in piece) received[op] = answered.getValue(op)
         }
@@ -567,7 +627,7 @@ class InscriptionChecker(
      */
     private fun stamped(check: InscriptionCheck, before: InscriptionCheck?, kept: KeptMark?, listed: Map<String, Utxo>,
                         positions: Map<String, Pair<Int, Int>>, outputs: Map<String, IndexerOutput>?, overCap: Set<String>,
-                        lostRule: Boolean?, deeper: Set<String>): InscriptionCheck {
+                        lostApplies: (String) -> Boolean): InscriptionCheck {
         val outpoint = check.outpoint
         val position = positions[outpoint]
         val answer = outputs?.get(outpoint)?.takeIf { it.indexed }
@@ -594,11 +654,9 @@ class InscriptionChecker(
         if(answer == null && row.source in INDEXER_SOURCES && !unchanged) {
             row = row.copy(source = InscriptionCheck.Source.BUILT_IN)
         }
-        //The wallet's earlier results were lost (and with them any indexer mark): while the setting names an indexer
-        //([lostRule] not null), a coin it gave no indexed answer for is not written Clean, in the first run after the loss
-        //and after it (its row keeps the reason), until an indexer answers for it, it is checked deeper, or Built-in is set
-        val lost = lostRule != null && (lostRule || before?.reason == LOST_REASON)
-        if(lost && answer == null && outpoint !in deeper && row.verdict == Verdict.CLEAN) {
+        //The wallet's earlier results were lost (and with them any indexer mark): a coin the loss leaves unresolved (see
+        //[lostCoinsAfter]) is never written Clean, whatever produced its row, until the loss is resolved for it
+        if(lostApplies(outpoint) && row.verdict == Verdict.CLEAN) {
             row = row.copy(verdict = Verdict.UNCHECKED, source = InscriptionCheck.Source.BUILT_IN, found = emptyList(), reason = LOST_REASON,
                 open = emptyList(), mwebPegOut = null)
         }
@@ -709,7 +767,7 @@ class InscriptionChecker(
                 return
             }
             store.save(stored(walletName), StoredFile(state.checks, state.blocks, state.marks, state.asked, state.lost,
-                state.lastUnreachable, state.lastRunAt))
+                state.lastUnreachable, state.lastRunAt, state.lostCoins, state.askedFor, state.lastPartial))
             memory[key] = state
         }
     }
@@ -863,7 +921,8 @@ internal suspend fun checkWithIndexer(checker: InscriptionChecker, walletName: S
     val reader = picked.reader?.takeIf { readers.lend(it, generation) }
     try {
         return checker.check(walletName, coin, network, backend, utxos, deeper, timeUp, indexer = reader,
-            indexerSource = picked.source, positions = positions)
+            indexerSource = picked.source, positions = positions,
+            indexerId = setting.url(coin, network)?.let { "${coin.id}:${network.id}:$it" })
     } finally {
         reader?.let {
             readers.giveBack(it)

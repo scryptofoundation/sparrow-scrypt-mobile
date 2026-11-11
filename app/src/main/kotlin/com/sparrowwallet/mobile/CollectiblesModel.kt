@@ -93,7 +93,7 @@ object CollectiblesModel {
         )
         val withRunes = coin == Coin.LITECOIN && setting !is InscriptionSetting.BuiltIn
         val sums = if(withRunes) sumRunes(rows) else null
-        val unchecked = rows.mapNotNull { unchecked(it, deeperQueued, sums?.represented ?: emptySet()) }
+        val unchecked = rows.mapNotNull { unchecked(it, deeperQueued, sums?.represented ?: emptySet(), coin) }
         return CollectiblesView(
             header = if(airGapped) CHECKS_OFF else header(checks != null, status, setting),
             tiles = tiles,
@@ -172,13 +172,13 @@ object CollectiblesModel {
      * ([represented]: coins with a balance row). Reasons are compared with the tracer's constants before they are
      * made safe to show.
      */
-    private fun unchecked(row: InscriptionCheck, queued: Set<String>, represented: Set<String>): UncheckedRow? = when {
+    private fun unchecked(row: InscriptionCheck, queued: Set<String>, represented: Set<String>, coin: Coin): UncheckedRow? = when {
         //Send holds it by an indexer's mark, which a deeper trace cannot lift: it says so, with no Check deeper
         row.verdict == Verdict.UNCHECKED && row.runes -> UncheckedRow(row.outpoint, row.value, HELD, false)
         row.verdict == Verdict.UNCHECKED -> {
             val reason = row.reason ?: NO_REASON
             val asked = row.outpoint in queued
-            UncheckedRow(row.outpoint, row.value, shown(reason), canCheckDeeper(reason) && !asked, asked)
+            UncheckedRow(row.outpoint, row.value, shown(reason), canCheckDeeper(reason, coin) && !asked, asked)
         }
         row.verdict == Verdict.INSCRIBED && row.found.isEmpty() -> UncheckedRow(row.outpoint, row.value, shown(row.reason ?: UNNAMED), false)
         row.verdict == Verdict.INSCRIBED -> null
@@ -187,8 +187,13 @@ object CollectiblesModel {
         else -> null
     }
 
-    private fun canCheckDeeper(reason: String) = reason == InscriptionTracer.BUDGET_USED || reason == InscriptionTracer.FEES_NEED_DEEPER ||
-        reason == InscriptionChecker.LOST_REASON
+    /**
+     * A deeper trace can settle the budget and fee reasons; after lost results, only on a chain without rune-like tokens
+     * (Bellscoin), where a trace is enough: elsewhere only an indexer answer resolves the loss.
+     */
+    private fun canCheckDeeper(reason: String, coin: Coin) = reason == InscriptionTracer.BUDGET_USED ||
+        reason == InscriptionTracer.FEES_NEED_DEEPER ||
+        (reason == InscriptionChecker.LOST_REASON && !com.sparrowwallet.mobile.crypto.track.ChainRules.hasRuneLikeTokens(coin))
 
     private class RuneSums(val rows: List<RuneRow>, val represented: Set<String>, val skipped: Boolean)
 

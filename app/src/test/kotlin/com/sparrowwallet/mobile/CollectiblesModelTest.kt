@@ -691,9 +691,15 @@ class CollectiblesModelTest {
         assertEquals(500L, small.bytes())
     }
 
-    /** Final review I2: a coin whose earlier results were lost says so, and offers Check deeper (its reason names it). */
-    @Test fun aCoinWhoseResultsWereLostCanBeCheckedDeeper() {
-        val v = view(map(row(0, Verdict.UNCHECKED, reason = InscriptionChecker.LOST_REASON, block = null)))
-        assertTrue(v.unchecked.single().canCheckDeeper)
+    /**
+     * A coin whose earlier results were lost says so. Check deeper is offered only where a trace can resolve it (Bellscoin,
+     * no rune-like tokens); on Litecoin, Dogecoin, Pepecoin and Junkcoin only an indexer answer can.
+     */
+    @Test fun aCoinWhoseResultsWereLostCanBeCheckedDeeperOnlyWhereATraceIsEnough() {
+        val rows = map(row(0, Verdict.UNCHECKED, reason = InscriptionChecker.LOST_REASON, block = null))
+        assertTrue(view(rows, coin = Coin.BELLSCOIN).unchecked.single().canCheckDeeper)
+        for(coin in listOf(Coin.LITECOIN, Coin.DOGECOIN, Coin.PEPECOIN, Coin.JUNKCOIN)) {
+            assertFalse(view(rows, coin = coin).unchecked.single().canCheckDeeper, coin.toString())
+        }
     }
 }

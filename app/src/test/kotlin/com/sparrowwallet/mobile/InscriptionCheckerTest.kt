@@ -46,6 +46,8 @@ import kotlin.test.assertTrue
 private class CheckerCipher : StoreCipher {
     private val key = SecretKeySpec(ByteArray(32).also { SecureRandom().nextBytes(it) }, "AES")
     var failSeal = false
+    /** Thrown by [open] when set, as a read error (IO, a busy Keystore) would be. */
+    var failOpen: Exception? = null
 
     override fun seal(plain: ByteArray): ByteArray {
         if(failSeal) throw IllegalStateException("Keystore unavailable")
@@ -55,6 +57,7 @@ private class CheckerCipher : StoreCipher {
     }
 
     override fun open(blob: ByteArray): ByteArray {
+        failOpen?.let { throw it }
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, blob.copyOfRange(0, 12)))
         return c.doFinal(blob.copyOfRange(12, blob.size))
@@ -1834,7 +1837,7 @@ class InscriptionCheckerTest {
         assertEquals(CoinState.UNCHECKED, classifyCoins(listOf(op), checker.storedResults(wallet), true, true, false, { null }, { false }).state(op))
         File(dir, "My Wallet.bin").writeBytes(byteArrayOf(4, 5))
         checker(dir, cipher).storedResults(wallet)
-        assertTrue(File(dir, "My Wallet.bin.unreadable").readBytes().contentEquals(byteArrayOf(4, 5)), "one kept copy, the latest")
+        assertTrue(File(dir, "My Wallet.bin.unreadable").readBytes().contentEquals(byteArrayOf(1, 2, 3)), "one kept copy, the first")
         assertEquals(setOf("My Wallet.bin", "My Wallet.bin.unreadable"), dir.list()!!.toSet())
     }
 
@@ -1860,12 +1863,12 @@ class InscriptionCheckerTest {
         assertEquals(InscriptionChecker.LOST_REASON, second.reason, "still lost while the indexer is down")
         val deeper = checker(dir, cipher).check(wallet, Coin.LITECOIN, Network.MAINNET, chain, utxos, setOf(op), indexer = down,
             indexerSource = InscriptionCheck.Source.PUBLIC).getValue(op)
-        assertEquals(Verdict.CLEAN, deeper.verdict, "checked deeper: the trace stands")
+        assertEquals(InscriptionChecker.LOST_REASON, deeper.reason, "Litecoin, checked deeper: a trace cannot see runes")
 
         val answered = checker(lostDir(), cipher).withIndexer(chain, utxos, FakeIndexer { asked -> asked.associateWith { nothing(it) } }).getValue(op)
         assertEquals(Verdict.CLEAN, answered.verdict, "an indexer answer settles it")
         val builtIn = checker(lostDir(), cipher).withIndexer(chain, utxos, null, null).getValue(op)
-        assertEquals(Verdict.CLEAN, builtIn.verdict, "Built-in: the trace stands")
+        assertEquals(InscriptionChecker.LOST_REASON, builtIn.reason, "Litecoin on Built-in: a trace cannot see runes")
     }
 
     /** Final review M3: the last run's "indexer unreachable" survives a restart, so the header does not say Up to date. */
@@ -1885,5 +1888,200 @@ class InscriptionCheckerTest {
         val after = checker(dir, cipher)
         after.storedResults(wallet)
         assertFalse(after.status(wallet).value!!.indexerUnreachable)
+    }
+
+    /**
+     * Scoped check I1: the lost state survives a run cut short. Run 1 after the loss stops for time (a time-up row, not
+     * Clean); run 2, the indexer still down, must not write Clean either. A coin listed while the loss is unresolved joins
+     * it; an indexer answer resolves it; a coin first listed after that is an ordinary coin.
+     */
+    @Test fun lostResultsStayUnresolvedAcrossACutRun(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val a = oldCoin(chain, 100_000)
+        val op = "$a:0"
+        File(dir, "My Wallet.bin").writeBytes(byteArrayOf(9))
+        val down = FakeIndexer { throw IOException("down") }
+        val cut = checker(dir, cipher).check(wallet, Coin.LITECOIN, Network.MAINNET, chain, listOf(Utxo(a, 0, 100, 100_000)),
+            timeUp = { true }, indexer = down, indexerSource = InscriptionCheck.Source.PUBLIC).getValue(op)
+        assertEquals(Verdict.UNCHECKED, cut.verdict)
+        val z = oldCoin(chain, 60_000)
+        val both = listOf(Utxo(a, 0, 100, 100_000), Utxo(z, 0, 100, 60_000))
+        val second = checker(dir, cipher).withIndexer(chain, both, down)
+        assertEquals(InscriptionChecker.LOST_REASON, second.getValue(op).reason, second.toString())
+        assertEquals(InscriptionChecker.LOST_REASON, second.getValue("$z:0").reason, "listed while the loss is unresolved")
+        for(row in second.values) assertEquals(CoinState.UNCHECKED, sendState(row))
+        //an indexer answer resolves both
+        val answered = checker(dir, cipher).withIndexer(chain, both, FakeIndexer { asked -> asked.associateWith { nothing(it) } })
+        assertTrue(answered.values.all { it.verdict == Verdict.CLEAN }, answered.toString())
+        //resolved: a new coin is ordinary, and the old ones stay resolved, with the indexer down again
+        val y = oldCoin(chain, 70_000)
+        val later = checker(dir, cipher).withIndexer(chain, both + Utxo(y, 0, 100, 70_000), down)
+        assertTrue(later.values.all { it.verdict == Verdict.CLEAN }, later.toString())
+    }
+
+    /**
+     * Scoped check m4: after a loss, a coin on a chain with rune-like tokens (Litecoin here) keeps the lost reason until an
+     * indexer answers for it, on Built-in and after Check deeper too (a trace cannot see runes). On Bellscoin the trace is
+     * enough: an ordinary Built-in run or Check deeper resolves it.
+     */
+    @Test fun afterALossOnlyAnIndexerResolvesARuneChainCoin(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 100_000)
+        val op = "$a:0"
+        val utxos = listOf(Utxo(a, 0, 100, 100_000))
+        val cipher = CheckerCipher()
+        fun lostDir() = newDir().also { File(it, "My Wallet.bin").writeBytes(byteArrayOf(9)) }
+        suspend fun run(dir: File, coin: Coin, deeper: Set<String> = emptySet(), indexer: InscriptionIndexer? = null) =
+            checker(dir, cipher).check(wallet, coin, Network.MAINNET, chain, utxos, deeper, indexer = indexer,
+                indexerSource = indexer?.let { InscriptionCheck.Source.PUBLIC }).getValue(op)
+        val ltc = lostDir()
+        assertEquals(InscriptionChecker.LOST_REASON, run(ltc, Coin.LITECOIN).reason, "Built-in")
+        assertEquals(InscriptionChecker.LOST_REASON, run(ltc, Coin.LITECOIN, setOf(op)).reason, "Check deeper")
+        assertEquals(Verdict.CLEAN, run(ltc, Coin.LITECOIN, indexer = FakeIndexer { asked -> asked.associateWith { nothing(it) } }).verdict)
+
+        val bells = lostDir()
+        assertEquals(Verdict.CLEAN, run(bells, Coin.BELLSCOIN).verdict, "Built-in on Bellscoin")
+        val bellsPublic = lostDir()
+        val down = FakeIndexer { throw IOException("down") }
+        assertEquals(InscriptionChecker.LOST_REASON, run(bellsPublic, Coin.BELLSCOIN, indexer = down).reason)
+        assertEquals(Verdict.CLEAN, run(bellsPublic, Coin.BELLSCOIN, setOf(op), indexer = down).verdict, "Check deeper on Bellscoin")
+    }
+
+    /**
+     * Scoped check I2: a read error (an IO or Keystore error, not a failed authentication) leaves the file where it is:
+     * nothing is set aside or written, the check run is skipped, Send sees a checked wallet with no rows (every coin
+     * Unchecked, never the old local rule), and the next read tries again.
+     */
+    @Test fun aReadErrorLeavesTheFileInPlaceAndHoldsNothingClean(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val a = oldCoin(chain, 100_000)
+        val utxos = listOf(Utxo(a, 0, 100, 100_000))
+        val stored = checker(dir, cipher).withIndexer(chain, utxos, FakeIndexer { asked -> asked.associateWith { runesOn(it) } })
+        val file = File(dir, "My Wallet.bin")
+        val bytes = file.readBytes()
+        for(error in listOf(IOException("I/O error"), java.security.KeyStoreException("Keystore busy"), IllegalStateException("not ready"))) {
+            cipher.failOpen = error
+            val checker = checker(dir, cipher)
+            assertEquals(emptyMap(), checker.storedResults(wallet), "$error")
+            assertTrue(bytes.contentEquals(file.readBytes()), "$error")
+            assertFalse(File(dir, "My Wallet.bin.unreadable").exists())
+            chain.rawCalls = 0
+            assertFailsWith<IOException> { checker.withIndexer(chain, utxos, null, null) }
+            assertEquals(0, chain.rawCalls, "the check run is skipped")
+            assertTrue(bytes.contentEquals(file.readBytes()))
+            val op = "$a:0"
+            assertEquals(CoinState.UNCHECKED, classifyCoins(listOf(op), checker.sendSnapshot(wallet).rows, true, true, false, { null }, { false }).state(op))
+            cipher.failOpen = null
+            assertEquals(stored, checker.storedResults(wallet), "the next read tries again")
+        }
+    }
+
+    /** Scoped check I2: a second unreadable file never overwrites the first set-aside copy (the newer one is dropped). */
+    @Test fun aSecondLossKeepsTheFirstAsideCopy(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        File(dir, "My Wallet.bin").writeBytes(ByteArray(40) { 1 })
+        checker(dir, cipher).storedResults(wallet)
+        File(dir, "My Wallet.bin").writeBytes(ByteArray(40) { 2 })
+        assertEquals(emptyMap(), checker(dir, cipher).storedResults(wallet))
+        assertTrue(File(dir, "My Wallet.bin.unreadable").readBytes().contentEquals(ByteArray(40) { 1 }), "the first copy stays")
+        assertEquals(setOf("My Wallet.bin", "My Wallet.bin.unreadable"), dir.list()!!.toSet())
+    }
+
+    /**
+     * Scoped check I2: when the replacement cannot be written (the Keystore key exists but cannot seal), nothing is moved:
+     * the unreadable file stays and the wallet reads as checked with no rows; the next read with a working key sets it
+     * aside properly.
+     */
+    @Test fun aFailingReplacementSaveLeavesAReadableState(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val garbage = ByteArray(40) { 3 }
+        File(dir, "My Wallet.bin").writeBytes(garbage)
+        cipher.failSeal = true
+        val checker = checker(dir, cipher)
+        assertEquals(emptyMap(), checker.storedResults(wallet))
+        assertTrue(File(dir, "My Wallet.bin").readBytes().contentEquals(garbage), "never neither file")
+        assertFalse(File(dir, "My Wallet.bin.unreadable").exists())
+        cipher.failSeal = false
+        assertEquals(emptyMap(), checker(dir, cipher).storedResults(wallet))
+        assertTrue(File(dir, "My Wallet.bin.unreadable").readBytes().contentEquals(garbage))
+        assertEquals(emptyMap(), InscriptionStore(dir, cipher).loadOrNull(wallet))
+    }
+
+    /** Scoped check m1: the "unknown" times belong to the indexer that gave them: another indexer is asked at once. */
+    @Test fun askedTimesDoNotCarryToAnotherIndexer(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val coins = (1..3).map { oldCoin(chain, 10_000L + it) }
+        val utxos = coins.map { Utxo(it, 0, 100, 10_000) }
+        val nintondo = FakeIndexer { asked -> asked.associateWith { IndexerOutput.unknown(it) } }.apply { runesAware = false; asksOneAtATime = true }
+        suspend fun run(id: String): Int {
+            val before = nintondo.asked.size
+            checker(dir, cipher).check(wallet, Coin.DOGECOIN, Network.MAINNET, chain, utxos, indexer = nintondo,
+                indexerSource = InscriptionCheck.Source.YOUR_OWN, indexerId = id)
+            return nintondo.asked.drop(before).flatten().size
+        }
+        assertEquals(3, run("dogecoin:mainnet:https://a.example"))
+        assertEquals(0, run("dogecoin:mainnet:https://a.example"))
+        assertEquals(3, run("dogecoin:mainnet:https://b.example"), "another indexer")
+        assertEquals(0, run("dogecoin:mainnet:https://b.example"))
+    }
+
+    /**
+     * Scoped check m2: an error in a later piece (a failed request, a reader closed by a settings change) is treated like
+     * the deadline: the carrying answers already in stand, the rest have none, never a "nothing".
+     */
+    @Test fun anErrorMidPassKeepsTheHoldsAlreadyIn(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val b = oldCoin(chain, 60_000)
+        val c = oldCoin(chain, 70_000)
+        val utxos = listOf(Utxo(a, 0, 100, 50_000), Utxo(b, 0, 100, 60_000), Utxo(c, 0, 100, 70_000))
+        val failing = FakeIndexer { asked ->
+            asked.associateWith { op -> if(op.startsWith(a)) IndexerOutput(op, true, emptyList(), emptyMap(), true) else throw IndexerException("closed") }
+        }.apply { runesAware = false; asksOneAtATime = true }
+        val checker = checker(newDir(), CheckerCipher())
+        val rows = checker.check(wallet, Coin.DOGECOIN, Network.MAINNET, chain, utxos, indexer = failing, indexerSource = InscriptionCheck.Source.PUBLIC)
+        assertTrue(rows.getValue("$a:0").runes)
+        assertFalse(rows.getValue("$b:0").runes)
+        assertFalse(checker.status(wallet).value!!.indexerUnreachable)
+    }
+
+    /**
+     * Scoped check m3: a pass cut short with only some answers says so (partial, not unreachable), and the coins it never
+     * reached keep their own rows, exactly as a run with no indexer writes them.
+     */
+    @Test fun aPartialPassIsReportedAndUnaskedCoinsKeepTheirOwnRows(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val b = oldCoin(chain, 60_000)
+        val c = oldCoin(chain, 70_000)
+        val utxos = listOf(Utxo(a, 0, 100, 50_000), Utxo(b, 0, 100, 60_000), Utxo(c, 0, 100, 70_000))
+        val slow = FakeIndexer { asked ->
+            asked.associateWith { op -> if(op.startsWith(a)) IndexerOutput(op, true, emptyList(), emptyMap(), true) else kotlinx.coroutines.awaitCancellation() }
+        }.apply { runesAware = false; asksOneAtATime = true }
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val checker = InscriptionChecker(InscriptionStore(dir, cipher), indexerDeadlineMs = 400)
+        val rows = kotlinx.coroutines.withTimeout(10_000) {
+            checker.check(wallet, Coin.DOGECOIN, Network.MAINNET, chain, utxos, indexer = slow, indexerSource = InscriptionCheck.Source.PUBLIC)
+        }
+        val status = checker.status(wallet).value!!
+        assertTrue(status.indexerPartial)
+        assertFalse(status.indexerUnreachable)
+        val plain = checker(newDir(), CheckerCipher()).check(wallet, Coin.DOGECOIN, Network.MAINNET, chain, utxos)
+        for(op in listOf("$b:0", "$c:0")) {
+            assertEquals(plain.getValue(op).verdict, rows.getValue(op).verdict, op)
+            assertEquals(plain.getValue(op).reason, rows.getValue(op).reason, op)
+        }
+        val restarted = checker(dir, cipher)
+        restarted.storedResults(wallet)
+        assertTrue(restarted.status(wallet).value!!.indexerPartial, "kept across a restart")
     }
 }

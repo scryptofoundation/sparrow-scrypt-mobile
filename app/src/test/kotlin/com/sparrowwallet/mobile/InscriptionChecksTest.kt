@@ -999,4 +999,18 @@ class InscriptionChecksTest {
         assertEquals(CoinState.HELD, state(true))
         assertEquals(1, reader.asked, "answered unknown a minute ago: not asked")
     }
+
+    /** Scoped check m2: an error in a later piece keeps the carrying answers already in; the rest have none. */
+    @Test
+    fun sendKeepsHoldsWhenAPieceFails(): Unit = runBlocking {
+        val (a, b, c) = (1..3).map { "%064x:0".format(it) }
+        val reader = SendIndexer(runesAware = false) { list ->
+            list.associateWith { op -> if(op == a) IndexerOutput(op, true, emptyList(), emptyMap(), true) else throw IndexerException("closed") }
+        }.apply { asksOneAtATime = true }
+        val readers = IndexerReaders { _, _, _, _ -> reader }
+        val answers = readers.answers(InscriptionSetting.Public, Coin.BELLSCOIN, Network.MAINNET, null, listOf(a, b, c).map { utxo(it) }, false)
+        assertEquals(true, answers.of(a))
+        assertNull(answers.of(b))
+        assertNull(answers.of(c))
+    }
 }
