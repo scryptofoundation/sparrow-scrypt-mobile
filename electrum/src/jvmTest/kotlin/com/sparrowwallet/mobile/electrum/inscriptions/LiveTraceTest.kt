@@ -85,10 +85,22 @@ class LiveTraceTest {
             "$withFee of ${nonCoinbase.size} non-coinbase carry fee")
     }
 
+    /** LIVE_TRACE_BUDGET caps each trace's lookups (to time a fixed number of them); Check deeper's budget otherwise. */
+    private val budget = System.getenv("LIVE_TRACE_BUDGET")?.toIntOrNull() ?: InscriptionTracer.DEEPER_BUDGET
+    private val budgetSet = budget != InscriptionTracer.DEEPER_BUDGET
+
     private suspend fun trace(coin: Coin, backend: ChainBackend, txid: String, vout: Int): TraceResult {
         val tracer = InscriptionTracer(coin, Network.MAINNET, BackendChainSource(backend), KnownResults.NONE, TxCache())
-        return tracer.trace(txid, vout, emptyList(), InscriptionTracer.DEEPER_BUDGET, true)
+        val started = System.nanoTime()
+        val result = tracer.trace(txid, vout, emptyList(), budget, true)
+        val seconds = (System.nanoTime() - started) / 1e9
+        println("LIVETRACE timing ${coin.name} $txid:$vout budget=$budget lookups=${result.lookups} " +
+            "seconds=${"%.1f".format(seconds)} perLookup=${if(result.lookups > 0) "%.2f".format(seconds / result.lookups) else "-"}")
+        return result
     }
+
+    /** With a budget set for timing, a trace stopped by it is a timing sample, not a failed check. */
+    private fun stoppedByBudget(r: TraceResult) = budgetSet && r.reason == InscriptionTracer.BUDGET_USED
 
     private fun report(label: String, outpoint: String, expected: List<String>, r: TraceResult) =
         println("LIVETRACE $label $outpoint expected=$expected -> ${r.verdict} found=${r.found.map { it.inscriptionId }} lookups=${r.lookups} reason=${r.reason}")
@@ -148,13 +160,15 @@ class LiveTraceTest {
             if(result.reason?.startsWith(InscriptionTracer.SERVER_ERROR_PREFIX) == true && result.reason!!.contains("429")) {
                 throw Skip("429 while tracing: ${result.reason}")
             }
-            assertEquals(Verdict.INSCRIBED, result.verdict)
-            assertTrue(result.found.any { it.inscriptionId in found.third }, "found ${result.found.map { it.inscriptionId }} vs indexer ${found.third}")
+            if(!stoppedByBudget(result)) {
+                assertEquals(Verdict.INSCRIBED, result.verdict)
+                assertTrue(result.found.any { it.inscriptionId in found.third }, "found ${result.found.map { it.inscriptionId }} vs indexer ${found.third}")
+            }
 
             clean?.let {
                 val neg = trace(coin, backend, it.first, it.second)
                 reportNegative("$label indexer-clean", "${it.first}:${it.second}", neg)
-                assertNotEquals(Verdict.INSCRIBED, neg.verdict)
+                if(!stoppedByBudget(neg)) assertNotEquals(Verdict.INSCRIBED, neg.verdict)
             } ?: println("LIVETRACE $label no indexer-clean output seen in the same transaction")
         } finally {
             backend.close()
@@ -250,13 +264,15 @@ class LiveTraceTest {
                 val result = trace(Coin.LITECOIN, client, found.first, found.second)
                 report("litecoin inscribed", "${found.first}:${found.second}", found.third, result)
                 if(result.reason?.contains("429") == true) throw Skip("429 while tracing: ${result.reason}")
-                assertEquals(Verdict.INSCRIBED, result.verdict)
-                assertTrue(result.found.any { it.inscriptionId in found.third }, "found ${result.found.map { it.inscriptionId }} vs indexer ${found.third}")
+                if(!stoppedByBudget(result)) {
+                    assertEquals(Verdict.INSCRIBED, result.verdict)
+                    assertTrue(result.found.any { it.inscriptionId in found.third }, "found ${result.found.map { it.inscriptionId }} vs indexer ${found.third}")
+                }
 
                 clean?.let {
                     val neg = trace(Coin.LITECOIN, client, it.first, it.second)
                     reportNegative("litecoin indexer-clean", "${it.first}:${it.second}", neg)
-                    assertNotEquals(Verdict.INSCRIBED, neg.verdict)
+                    if(!stoppedByBudget(neg)) assertNotEquals(Verdict.INSCRIBED, neg.verdict)
                 } ?: println("LIVETRACE litecoin no indexer-clean sibling output among the newest inscription transactions")
             } finally {
                 client.close()
