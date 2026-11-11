@@ -1085,7 +1085,7 @@ private fun HomeScreen(
     val noticeHost = remember(data) {
         if(repo.inscriptionNoticeDue(repo.coin(data), network)) InscriptionNotice.host(repo.coin(data), network) else null
     }
-    var showNotice by remember(data) { mutableStateOf(noticeHost != null) }
+    var showNotice by androidx.compose.runtime.saveable.rememberSaveable(name) { mutableStateOf(noticeHost != null) }
     if(showNotice && noticeHost != null) {
         AlertDialog(
             onDismissRequest = { showNotice = false },
@@ -2499,7 +2499,9 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
     var proxyHost by remember { mutableStateOf(saved?.proxyHost ?: "127.0.0.1") }
     var proxyPort by remember { mutableStateOf(saved?.proxyPort?.toString() ?: "9050") }
     val publicIndexer = remember { InscriptionSetting.Public.url(coin, network) }
-    val savedChecks = remember { repo.inscriptionSetting(coin, network) }
+    var savedChecks by remember { mutableStateOf(repo.inscriptionSetting(coin, network)) }
+    // the proxy the saved setting was last checked through: an unchanged Your own is not asked again
+    var savedProxy by remember { mutableStateOf(saved?.takeIf { it.useProxy }?.let { com.sparrowwallet.mobile.electrum.SocksProxy(it.proxyHost, it.proxyPort) }) }
     // Public / Your own / Built-in; Public only where the coin has a public indexer
     var checks by remember { mutableStateOf(InscriptionChoice.of(savedChecks)) }
     var checksUrl by remember { mutableStateOf((savedChecks as? InscriptionSetting.YourOwn)?.customUrl ?: "") }
@@ -2579,30 +2581,36 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
                     val s = current() ?: run { status = "Fix the server fields first"; return@Button }
                     val checksSetting = when(checks) {
                         InscriptionChoice.PUBLIC -> InscriptionSetting.Public
-                        InscriptionChoice.YOUR_OWN -> yourOwnSetting(checksUrl)
-                            ?: run { status = "The indexer URL must start with http:// or https://"; return@Button }
+                        InscriptionChoice.YOUR_OWN -> when(val u = checkYourOwnUrl(checksUrl)) {
+                            is YourOwnUrl.Ok -> InscriptionSetting.YourOwn(u.url)
+                            is YourOwnUrl.Refused -> { status = u.reason; return@Button }
+                        }
                         InscriptionChoice.BUILT_IN -> InscriptionSetting.BuiltIn
                     }
-                    fun save() {
-                        repo.saveServerSettings(coin, network, s)
-                        repo.saveInscriptionSetting(coin, network, checksSetting)
-                        status = "Saved for ${coin.displayName} ${network.displayName}"
-                    }
-                    if(checksSetting !is InscriptionSetting.YourOwn) {
-                        save(); return@Button
-                    }
-                    // Your own is opened first (its chain and kind checked) through the proxy being saved; nothing is
-                    // saved when it is refused
+                    // the inscription setting is written only when it changed; a new or changed Your own (or proxy) is
+                    // opened first (its chain and kind checked) through the proxy being saved, and nothing is saved when
+                    // it is refused
                     val proxy = s.takeIf { it.useProxy }?.let { com.sparrowwallet.mobile.electrum.SocksProxy(it.proxyHost, it.proxyPort) }
-                    busy = true; status = "Checking the indexer…"
+                    val shown = savedChecks
+                    val shownProxy = savedProxy
+                    busy = true; status = "Saving…"
                     scope.launch {
                         try {
                             val refused = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                checkYourOwnIndexer(checksSetting.url(coin, network), NetworkPolicy.blocked) { url ->
+                                saveInscriptionChoice(shown, shownProxy, checksSetting, proxy, NetworkPolicy.blocked, { url ->
                                     com.sparrowwallet.mobile.electrum.indexer.Indexers.open(url, coin, network, proxy)
+                                }) { changed ->
+                                    repo.saveServerSettings(coin, network, s)
+                                    changed?.let { repo.saveInscriptionSetting(coin, network, it) }
                                 }
                             }
-                            if(refused != null) status = refused else save()
+                            if(refused != null) {
+                                status = refused
+                            } else {
+                                savedChecks = repo.inscriptionSetting(coin, network)
+                                savedProxy = proxy
+                                status = "Saved for ${coin.displayName} ${network.displayName}"
+                            }
                         } finally {
                             busy = false
                         }

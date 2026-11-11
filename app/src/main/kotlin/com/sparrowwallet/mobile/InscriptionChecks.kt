@@ -3,8 +3,9 @@ package com.sparrowwallet.mobile
 import android.content.SharedPreferences
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
+import com.sparrowwallet.mobile.crypto.NetworkPolicy
+import com.sparrowwallet.mobile.electrum.SocksProxy
 import com.sparrowwallet.mobile.crypto.track.Verdict
-import com.sparrowwallet.mobile.electrum.InscriptionIndex
 import com.sparrowwallet.mobile.electrum.WalletScanner
 import com.sparrowwallet.mobile.electrum.indexer.Indexers
 import com.sparrowwallet.mobile.electrum.indexer.InscriptionIndexer
@@ -43,22 +44,24 @@ sealed interface InscriptionSetting {
     companion object {
         const val PUBLIC = "public"
         const val BUILT_IN = "builtin"
+        /** What the old app's Save wrote whether or not the user chose it: counts as nothing saved. */
+        private const val OLD_OFF = "off"
         private const val CUSTOM_PREFIX = "custom:"
 
-        fun isHttpUrl(url: String): Boolean = url.startsWith("http://") || url.startsWith("https://")
+        /** Whether [stored] counts as a saved choice: absent and the old "off" do not. */
+        fun isSaved(stored: String?): Boolean = stored != null && stored != OLD_OFF
 
         /**
-         * A saved value, for a coin and network that has a public indexer ([hasPublic]) or not. "off" (the old default
-         * when saved) and anything unreadable read as Built-in; a saved "public" where no public indexer exists does too.
-         * With nothing saved, [defaultChoice] (the notice's answer, null until answered) decides: "public" gives Public
-         * where one exists, anything else Built-in, so no indexer is asked before the notice is answered.
+         * A saved value, for a coin and network that has a public indexer ([hasPublic]) or not. Anything unreadable
+         * (a Your own URL that [checkYourOwnUrl] refuses included) reads as Built-in; a saved "public" where no public
+         * indexer exists does too. With nothing saved (absent, or the old "off"), [defaultChoice] (the notice's answer,
+         * null until answered) decides: "public" gives Public where one exists, anything else Built-in, so no indexer
+         * is asked before the notice is answered.
          */
         fun parse(stored: String?, hasPublic: Boolean, defaultChoice: String?): InscriptionSetting = when {
-            stored == null -> if(defaultChoice == PUBLIC && hasPublic) Public else BuiltIn
+            !isSaved(stored) -> if(defaultChoice == PUBLIC && hasPublic) Public else BuiltIn
             stored == PUBLIC -> if(hasPublic) Public else BuiltIn
-            stored.startsWith(CUSTOM_PREFIX) -> stored.removePrefix(CUSTOM_PREFIX).let { url ->
-                if(isHttpUrl(url)) YourOwn(url) else BuiltIn
-            }
+            stored!!.startsWith(CUSTOM_PREFIX) -> yourOwnSetting(stored.removePrefix(CUSTOM_PREFIX)) ?: BuiltIn
             else -> BuiltIn
         }
     }
@@ -90,11 +93,12 @@ internal class InscriptionPrefs(private val prefs: SharedPreferences) {
     }
 
     /**
-     * Whether Home shows the one-time notice for this coin and network: not [airGapped], nothing saved for it, a public
-     * indexer exists for it, and the notice has not been answered (for any coin).
+     * Whether Home shows the one-time notice for this coin and network: not [airGapped] (the app-wide mode unless
+     * given), nothing saved for it (a stored old "off" counts as nothing), a public indexer exists for it, and the
+     * notice has not been answered (for any coin).
      */
-    fun noticeDue(coin: Coin, network: Network, airGapped: Boolean): Boolean =
-        !airGapped && stored(coin, network) == null && hasPublic(coin, network) && defaultChoice() == null
+    fun noticeDue(coin: Coin, network: Network, airGapped: Boolean = NetworkPolicy.blocked): Boolean =
+        !airGapped && !InscriptionSetting.isSaved(stored(coin, network)) && hasPublic(coin, network) && defaultChoice() == null
 
     companion object {
         const val DEFAULT_KEY = "inscriptions.default"
@@ -112,7 +116,8 @@ object InscriptionNotice {
     fun body(host: String): String =
         "Sparrow can ask a public indexer ($host) which of this wallet's coins carry inscriptions or runes. That tells " +
             "the indexer which coins are yours. It goes through your Tor proxy when one is set. You can check on-chain " +
-            "only instead: that is slower and cannot see runes."
+            "only instead: that is slower and cannot see runes. Your answer applies to every coin. You can change it " +
+            "for each coin under Server."
 
     /** The public indexer's host for the coin and network, or null when it has none. */
     fun host(coin: Coin, network: Network): String? = Indexers.publicUrl(coin, network)?.let(::indexerHost)
@@ -146,9 +151,61 @@ fun inscriptionChoiceLabel(choice: InscriptionChoice, publicUrl: String?): Strin
     InscriptionChoice.BUILT_IN -> "Built-in"
 }
 
-/** The Your own setting for a typed URL, or null when it is not an http or https URL. */
+/** A typed or stored Your own URL: [Ok] with the URL to keep, or [Refused] with the reason. */
+sealed interface YourOwnUrl {
+    data class Ok(val url: String) : YourOwnUrl
+    data class Refused(val reason: String) : YourOwnUrl
+}
+
+/**
+ * Checks a Your own URL: surrounding whitespace trimmed, http or https in any case (kept lowercased), parsed by
+ * [URI] with a host and no user name or password.
+ */
+fun checkYourOwnUrl(raw: String): YourOwnUrl {
+    val url = raw.trim()
+    val uri = try {
+        URI(url)
+    } catch(e: java.net.URISyntaxException) {
+        return if(url.lowercase().startsWith("http://") || url.lowercase().startsWith("https://")) YourOwnUrl.Refused(NOT_A_URL)
+        else YourOwnUrl.Refused(NOT_HTTP)
+    }
+    val scheme = uri.scheme?.lowercase()
+    if(scheme != "http" && scheme != "https") return YourOwnUrl.Refused(NOT_HTTP)
+    if(uri.rawUserInfo != null) return YourOwnUrl.Refused("The indexer URL cannot hold a user name or password")
+    if(uri.host.isNullOrEmpty()) return YourOwnUrl.Refused(NOT_A_URL)
+    return YourOwnUrl.Ok(scheme + url.substring(uri.scheme.length))
+}
+
+private const val NOT_HTTP = "The indexer URL must start with http:// or https://"
+private const val NOT_A_URL = "Not a valid indexer URL"
+
+/** The Your own setting for a typed URL, or null when [checkYourOwnUrl] refuses it. */
 fun yourOwnSetting(url: String): InscriptionSetting.YourOwn? =
-    url.trim().takeIf { InscriptionSetting.isHttpUrl(it) }?.let { InscriptionSetting.YourOwn(it) }
+    (checkYourOwnUrl(url) as? YourOwnUrl.Ok)?.let { InscriptionSetting.YourOwn(it.url) }
+
+/**
+ * The Server screen's Save for the inscription choice. [shown] is the setting the screen opened with (the effective
+ * one) and [shownProxy] the proxy saved then; [chosen] and [proxy] are what is being saved.
+ * - Unchanged (and, for Your own, through the same proxy): nothing is contacted and nothing is written for it, so a
+ *   coin with nothing saved keeps following the notice's answer. [save] gets null.
+ * - Public or Built-in: [save] gets it.
+ * - A new or changed Your own URL, or a changed proxy: [checkYourOwnIndexer] first; a refusal is returned and [save]
+ *   is not called (the server fields are not saved either).
+ * [save] saves the server fields, and the inscription setting when it is not null. Returns the refusal or null.
+ */
+suspend fun saveInscriptionChoice(shown: InscriptionSetting, shownProxy: SocksProxy?, chosen: InscriptionSetting,
+                                  proxy: SocksProxy?, airGapped: Boolean, open: suspend (String) -> InscriptionIndexer,
+                                  save: (InscriptionSetting?) -> Unit): String? {
+    if(chosen == shown && (chosen !is InscriptionSetting.YourOwn || proxy == shownProxy)) {
+        save(null)
+        return null
+    }
+    if(chosen is InscriptionSetting.YourOwn) {
+        checkYourOwnIndexer(chosen.customUrl.trimEnd('/'), airGapped, open)?.let { return it }
+    }
+    save(chosen)
+    return null
+}
 
 /**
  * Save's check of a Your own indexer: opens it with [open] (in the app, [Indexers.open], which checks its chain and kind)
@@ -187,7 +244,7 @@ inline fun indexerCarries(serverAnswer: Boolean?, tokensIndexed: Boolean = true,
  * Until a dunes-aware parse exists, no other coin has one.
  */
 fun runesAwareIndexer(coin: Coin, url: String?): Boolean =
-    url != null && !InscriptionIndex.isNintondo(url) && coin == Coin.LITECOIN
+    url != null && !Indexers.isNintondo(url) && coin == Coin.LITECOIN
 
 /** What Send may do with a ready coin: spend it freely, hold it back, or use it last with a warning. */
 enum class CoinState { CLEAN, HELD, UNCHECKED }

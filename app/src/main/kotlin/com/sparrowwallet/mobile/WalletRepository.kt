@@ -704,7 +704,7 @@ class WalletRepository(context: Context) {
 
     /** Whether Home shows the one-time notice for this coin and network (see [InscriptionPrefs.noticeDue]). */
     fun inscriptionNoticeDue(coin: Coin, network: Network): Boolean =
-        inscriptionPrefs.noticeDue(coin, network, NetworkPolicy.blocked)
+        inscriptionPrefs.noticeDue(coin, network)
 
     /** What the coin's indexer says about a coin: carries, clean, or null (checks off, not indexed, unreachable). */
     suspend fun indexerAnswer(coin: Coin, network: Network, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean? {
@@ -712,7 +712,8 @@ class WalletRepository(context: Context) {
         val key = "$url|${utxo.txHash}:${utxo.txPos}"
         indexerAnswers[key]?.let { return it }
         val proxy = serverSettings(coin, network)?.takeIf { it.useProxy }?.let { SocksProxy(it.proxyHost, it.proxyPort) }
-        val index = indexers.getOrPut(url) { InscriptionIndex(url, proxy) }
+        //a URL the reader cannot take is no answer, never a crash in Send
+        val index = runCatching { indexers.getOrPut(url) { InscriptionIndex(url, proxy) } }.getOrNull() ?: return null
         val answer = runCatching { index.carries(utxo.txHash, utxo.txPos) }.getOrNull()
         if(answer != null && utxo.height > 0) indexerAnswers[key] = answer
         return answer
@@ -732,7 +733,7 @@ class WalletRepository(context: Context) {
         val covered = ChainRules.covers(coin)
         val results = if(covered) loadInscriptionChecks(data) else null
         val url = inscriptionSetting(coin, network).url(coin, network)
-        val tokensIndexed = url == null || !InscriptionIndex.isNintondo(url)
+        val tokensIndexed = url == null || !com.sparrowwallet.mobile.electrum.indexer.Indexers.isNintondo(url)
         val runesIndexed = runesAwareIndexer(coin, url)
         val ready = scan.utxos.filter { spendable(data, tip, it) }.associateBy { outpoint(it) }
         return com.sparrowwallet.mobile.classifyCoins(ready.keys.toList(), results, covered, ChainRules.hasRuneLikeTokens(coin),

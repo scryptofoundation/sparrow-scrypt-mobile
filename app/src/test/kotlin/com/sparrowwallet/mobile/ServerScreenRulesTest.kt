@@ -2,6 +2,7 @@ package com.sparrowwallet.mobile
 
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
+import com.sparrowwallet.mobile.electrum.SocksProxy
 import com.sparrowwallet.mobile.electrum.indexer.IndexerException
 import com.sparrowwallet.mobile.electrum.indexer.IndexerInscription
 import com.sparrowwallet.mobile.electrum.indexer.IndexerOutput
@@ -12,6 +13,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -68,6 +70,56 @@ class ServerScreenRulesTest {
         assertEquals(InscriptionSetting.YourOwn("https://ord.example"), yourOwnSetting("https://ord.example"))
         assertNull(yourOwnSetting("ftp://x"))
         assertNull(yourOwnSetting(""))
+        assertEquals(InscriptionSetting.YourOwn("http://Host:8085"), yourOwnSetting("HTTP://Host:8085"), "the scheme in any case, stored lowercased")
+        assertEquals(InscriptionSetting.YourOwn("https://ord.example"), yourOwnSetting("\n Https://ord.example\t"))
+        assertEquals(YourOwnUrl.Refused("The indexer URL cannot hold a user name or password"), checkYourOwnUrl("http://user:pass@host:8085"))
+        assertEquals(YourOwnUrl.Refused("The indexer URL must start with http:// or https://"), checkYourOwnUrl("ftp://x"))
+        assertEquals(YourOwnUrl.Refused("Not a valid indexer URL"), checkYourOwnUrl("http://a b"))
+        assertEquals(YourOwnUrl.Refused("Not a valid indexer URL"), checkYourOwnUrl("http://"))
+        assertEquals(YourOwnUrl.Refused("Not a valid indexer URL"), checkYourOwnUrl("http:///path"))
+        assertEquals(YourOwnUrl.Ok("http://10.0.0.2:8085"), checkYourOwnUrl(" http://10.0.0.2:8085 "))
+    }
+
+    /** A malformed URL never reaches the Send path's Nintondo test as a crash. */
+    @Test
+    fun runesAwareCheckToleratesAMalformedUrl() {
+        assertFalse(runesAwareIndexer(Coin.LITECOIN, null))
+        runesAwareIndexer(Coin.LITECOIN, "http://a b")
+    }
+
+    @Test
+    fun yourOwnIsOpenedOnlyWhenTheUrlOrProxyChanges() = runBlocking {
+        val saved = InscriptionSetting.YourOwn("http://10.0.0.2:8085")
+        val tor = SocksProxy("127.0.0.1", 9050)
+        var opened = 0
+        val writes = mutableListOf<InscriptionSetting?>()
+        val open: suspend (String) -> InscriptionIndexer = { opened++; FakeIndexer() }
+        assertNull(saveInscriptionChoice(saved, tor, saved, tor, airGapped = false, open = open) { writes += it })
+        assertEquals(0, opened, "the same URL through the same proxy is not asked again")
+        assertEquals(listOf<InscriptionSetting?>(null), writes)
+        val changed = InscriptionSetting.YourOwn("http://10.0.0.3:8085")
+        assertNull(saveInscriptionChoice(saved, tor, changed, tor, airGapped = false, open = open) { writes += it })
+        assertEquals(1, opened)
+        assertNull(saveInscriptionChoice(saved, tor, saved, null, airGapped = false, open = open) { writes += it })
+        assertEquals(2, opened, "a changed proxy checks again")
+        assertEquals(listOf<InscriptionSetting?>(null, changed, saved), writes)
+        //Public and Built-in contact nothing
+        assertNull(saveInscriptionChoice(saved, tor, InscriptionSetting.BuiltIn, tor, airGapped = false, open = open) { writes += it })
+        assertEquals(2, opened)
+        assertEquals(InscriptionSetting.BuiltIn, writes.last())
+    }
+
+    @Test
+    fun refusedYourOwnSavesNothing() = runBlocking {
+        var saves = 0
+        val refused = saveInscriptionChoice(InscriptionSetting.BuiltIn, null, InscriptionSetting.YourOwn("http://x.example"), null,
+            airGapped = false, open = { throw IndexerException(Indexers.UNSUPPORTED) }) { saves++ }
+        assertEquals(Indexers.UNSUPPORTED, refused)
+        assertEquals(0, saves)
+        val gapped = saveInscriptionChoice(InscriptionSetting.BuiltIn, null, InscriptionSetting.YourOwn("http://x.example"), null,
+            airGapped = true, open = { error("not asked") }) { saves++ }
+        assertEquals("Off in air-gapped mode", gapped)
+        assertEquals(0, saves)
     }
 
     private class FakeIndexer : InscriptionIndexer {
