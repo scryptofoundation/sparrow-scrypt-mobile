@@ -95,8 +95,8 @@ class WalletRepository(context: Context) {
 
     /** Wallets whose metadata names a coin this build does not know are left out (and left on disk). */
     fun listWallets(): List<WalletInfo> =
-        walletsDir.listFiles { f -> f.name.endsWith(".vault") }.orEmpty().sortedBy { it.name }.mapNotNull { f ->
-            val name = f.name.removeSuffix(".vault")
+        walletsDir.listFiles { f -> walletVaultName(f.name) != null }.orEmpty().sortedBy { it.name }.mapNotNull { f ->
+            val name = walletVaultName(f.name)!!
             runCatching { WalletMeta.decode(metaFile(name).readText()) }.fold(
                 { WalletInfo(name, it.network, it.scriptType, it.links, it.coin) },
                 { if(it is UnknownCoinException) null else WalletInfo(name, Network.MAINNET) }
@@ -108,10 +108,8 @@ class WalletRepository(context: Context) {
     /** Records the public↔private pairing in both wallets' metadata. */
     fun linkWallets(publicName: String, mwebName: String) = linkCompanion(publicName, mwebName, CompanionKind.MWEB)
 
-    /** Records a same-seed Taproot companion under its parent, keeping the parent's MWEB link. */
-    fun linkTaproot(parentName: String, taprootName: String) = linkCompanion(parentName, taprootName, CompanionKind.TAPROOT)
-
     private fun linkCompanion(parentName: String, companionName: String, kind: CompanionKind) {
+        if(safeName(parentName) == safeName(companionName)) return
         val parent = walletInfo(parentName) ?: return
         val companion = walletInfo(companionName) ?: return
         for(w in companionLinkWrites(parent, companion, kind)) writeMeta(w.name, w.network, w.scriptType, w.links, w.coin)

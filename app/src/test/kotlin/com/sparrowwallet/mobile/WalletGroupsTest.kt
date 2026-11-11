@@ -4,7 +4,9 @@ import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class WalletGroupsTest {
     /** [linked] is the previous build's single link, read as the old meta field is read. */
@@ -126,6 +128,117 @@ class WalletGroupsTest {
             // only the first write reached disk
             val onDisk = listOf(first, companion)
             assertEquals(listOf("c", "pub"), groupByCoin(onDisk).single().second.map { it.name }.sorted(), kind.name)
+            // and the section total counts the companion once, as its own row
+            val totals = mapOf("pub" to 100L, "c" to 7L)
+            assertEquals(100L, walletBalance(first, onDisk, totals), kind.name)
+            assertEquals(107L, sectionTotal(onDisk, totals), kind.name)
         }
+    }
+
+    /** The wallet list's section total: each listed card's balance, as the list adds it. */
+    private fun sectionTotal(wallets: List<WalletRepository.WalletInfo>, totals: Map<String, Long>): Long? {
+        val shown = groupByCoin(wallets).single().second
+        return coinTotal(shown, Network.MAINNET) { name -> shown.firstOrNull { it.name == name }?.let { walletBalance(it, wallets, totals) } }
+    }
+
+    private fun shown(wallets: List<WalletRepository.WalletInfo>) = groupByCoin(wallets).flatMap { it.second }.map { it.name }.sorted()
+
+    @Test
+    fun aWalletNamingItselfAsParentIsListed() {
+        val self = w("a", Coin.LITECOIN, "P2TR", links = WalletLinks(taproot = "a", parent = "a"))
+        assertEquals(listOf("a"), shown(listOf(self)))
+        assertEquals(5L, walletBalance(self, listOf(self), mapOf("a" to 5L)))
+    }
+
+    @Test
+    fun twoWalletsNamingEachOtherAreListed() {
+        val wallets = listOf(
+            w("a", Coin.LITECOIN, "MWEB", links = WalletLinks(mweb = "b", parent = "b")),
+            w("b", Coin.LITECOIN, "MWEB", links = WalletLinks(mweb = "a", parent = "a"))
+        )
+        assertEquals(listOf("a", "b"), shown(wallets))
+        assertEquals(1L, walletBalance(wallets[0], wallets, mapOf("a" to 1L, "b" to 2L)))
+    }
+
+    @Test
+    fun aOneSidedLinkHidesNothing() {
+        // the companion names the parent, the parent does not name it
+        val companionOnly = listOf(w("pub", Coin.LITECOIN, "P2WPKH"), w("tap", Coin.LITECOIN, "P2TR", links = WalletLinks(parent = "pub")))
+        assertEquals(listOf("pub", "tap"), shown(companionOnly))
+        assertEquals(100L, walletBalance(companionOnly[0], companionOnly, mapOf("pub" to 100L, "tap" to 7L)))
+        // the parent names the companion, the companion does not name it
+        val parentOnly = listOf(w("pub", Coin.LITECOIN, "P2WPKH", links = WalletLinks(taproot = "tap")), w("tap", Coin.LITECOIN, "P2TR"))
+        assertEquals(listOf("pub", "tap"), shown(parentOnly))
+        assertEquals(100L, walletBalance(parentOnly[0], parentOnly, mapOf("pub" to 100L, "tap" to 7L)))
+    }
+
+    @Test
+    fun anOldPrivateWalletOfARelinkedParentIsListed() {
+        val wallets = listOf(
+            w("pub", Coin.LITECOIN, "P2WPKH", links = WalletLinks(mweb = "priv2")),
+            w("priv", Coin.LITECOIN, "MWEB", linked = "pub"),
+            w("priv2", Coin.LITECOIN, "MWEB", links = WalletLinks(parent = "pub"))
+        )
+        assertEquals(listOf("priv", "pub"), shown(wallets))
+        assertEquals(102L, walletBalance(wallets[0], wallets, mapOf("pub" to 100L, "priv" to 1L, "priv2" to 2L)))
+    }
+
+    @Test
+    fun aDowngradeThatDroppedTheTaprootLinkHidesNothing() {
+        // an older build rewrote the parent's meta with its MWEB link only; the Taproot wallet still names it
+        val wallets = listOf(
+            w("pub", Coin.LITECOIN, "P2WPKH", linked = "priv"),
+            w("priv", Coin.LITECOIN, "MWEB", linked = "pub"),
+            w("tap", Coin.LITECOIN, "P2TR", links = WalletLinks(parent = "pub"))
+        )
+        assertEquals(listOf("pub", "tap"), shown(wallets))
+        assertEquals(150L, walletBalance(wallets[0], wallets, mapOf("pub" to 100L, "priv" to 50L, "tap" to 7L)))
+    }
+
+    @Test
+    fun aParentThatIsItselfACompanionHidesNothing() {
+        val wallets = listOf(
+            w("top", Coin.LITECOIN, "P2WPKH", links = WalletLinks(taproot = "mid")),
+            w("mid", Coin.LITECOIN, "P2WPKH", links = WalletLinks(parent = "top", taproot = "low")),
+            w("low", Coin.LITECOIN, "P2TR", links = WalletLinks(parent = "mid"))
+        )
+        assertEquals(listOf("low", "top"), shown(wallets))
+    }
+
+    @Test
+    fun aCompanionClaimedByTwoParentsCountsOnce() {
+        val wallets = listOf(
+            w("a", Coin.LITECOIN, "P2WPKH", links = WalletLinks(taproot = "tap")),
+            w("b", Coin.LITECOIN, "P2WPKH", links = WalletLinks(taproot = "tap")),
+            w("tap", Coin.LITECOIN, "P2TR", links = WalletLinks(parent = "a"))
+        )
+        val totals = mapOf("a" to 1L, "b" to 2L, "tap" to 7L)
+        assertEquals(8L, walletBalance(wallets[0], wallets, totals))
+        assertEquals(2L, walletBalance(wallets[1], wallets, totals))
+        assertEquals(listOf("a", "b"), shown(wallets))
+        assertEquals(10L, sectionTotal(wallets, totals))
+    }
+
+    @Test
+    fun linkedBackNeedsBothSides() {
+        assertTrue(linkedBack(family[0], family[1]))
+        assertTrue(linkedBack(family[0], family[2]))
+        assertFalse(linkedBack(family[1], family[0]))
+        assertFalse(linkedBack(family[0], family[3]))
+        val self = w("a", Coin.LITECOIN, "P2TR", links = WalletLinks(taproot = "a", parent = "a"))
+        assertFalse(linkedBack(self, self))
+    }
+
+    @Test
+    fun aWalletIsNeverLinkedToItself() {
+        val a = w("a", Coin.LITECOIN, "P2WPKH")
+        for(kind in CompanionKind.entries) assertEquals(emptyList(), companionLinkWrites(a, a, kind))
+    }
+
+    @Test
+    fun aTaprootCompanionHasNoMwebCounterpart() {
+        assertNull(family[2].linkedWallet)
+        assertEquals("pub", family[1].linkedWallet)
+        assertEquals("priv", family[0].linkedWallet)
     }
 }

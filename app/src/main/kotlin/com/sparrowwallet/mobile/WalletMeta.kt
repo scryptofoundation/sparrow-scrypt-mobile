@@ -24,13 +24,15 @@ fun walletFileName(name: String): String =
         .joinToString("").take(WALLET_NAME_MAX)
 
 /**
- * Replaces [file] with [bytes] in one step: they are written and synced to a temporary file beside it (its name ends in
- * .tmp, so the wallet list never reads it), which is then moved over [file]. A crash leaves the old file or the new
- * one, never a torn one. On failure the temporary file is removed and the error is thrown.
+ * Replaces [file] with [bytes] in one step: they are written and synced to `<name>.tmp` beside it (the wallet list
+ * reads only `.vault` files, see [walletVaultName]), which is then moved over [file]. A crash leaves the old file or the
+ * new one, never a torn one; a `.tmp` a crash left behind is removed by the next write of the same file, so they never
+ * pile up. On failure the temporary file is removed and the error is thrown.
  */
 internal fun writeAtomically(file: File, bytes: ByteArray,
                              write: (File, ByteArray) -> Unit = { f, b -> FileOutputStream(f).use { it.write(b); it.fd.sync() } }) {
-    val tmp = File.createTempFile(file.name + ".", ".tmp", file.absoluteFile.parentFile)
+    val tmp = File(file.absoluteFile.parentFile, file.name + ".tmp")
+    tmp.delete()
     try {
         write(tmp, bytes)
         Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)

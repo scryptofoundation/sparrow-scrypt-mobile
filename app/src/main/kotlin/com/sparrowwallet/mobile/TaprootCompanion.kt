@@ -54,20 +54,36 @@ object TaprootCompanion {
     /** The seed kinds drongo derives a Taproot child from (Keystore.fromSeed takes any) that this phone stores. */
     private val SEED_TYPES = setOf("BIP39", "ELECTRUM")
 
-    /** Whether the wallet is offered "Add Taproot wallet": [problem] has nothing to say and it has no Taproot link yet. */
-    fun offered(info: WalletRepository.WalletInfo, hasSeed: Boolean, seedType: String?): Boolean =
-        walletProblem(info) == null && info.links.taproot == null && seedProblem(hasSeed, seedType) == null
+    /**
+     * Whether the wallet is offered "Add Taproot wallet": the wallet and its seed allow one and it has no Taproot link
+     * running both ways among [wallets] (the wallets on this phone). A one-sided link counts as none, so the button
+     * shows and [add] finishes the link.
+     */
+    fun offered(info: WalletRepository.WalletInfo, hasSeed: Boolean, seedType: String?,
+                wallets: List<WalletRepository.WalletInfo>): Boolean =
+        walletProblem(info) == null && mutualTaproot(info, wallets) == null && seedProblem(hasSeed, seedType) == null
+
+    /** The wallet's Taproot companion when the link runs both ways, else null. */
+    private fun mutualTaproot(info: WalletRepository.WalletInfo, wallets: List<WalletRepository.WalletInfo>): String? =
+        info.links.taproot?.takeIf { t -> wallets.any { it.name == t && linkedBack(info, it) } }
+
+    /** Whether [other] and [info] are joined by a link only one of them writes: [add] finishes it rather than refusing the name. */
+    private fun halfLinked(info: WalletRepository.WalletInfo, other: WalletRepository.WalletInfo): Boolean =
+        !linkedBack(info, other) && (info.links.taproot == other.name || other.links.parent == info.name)
 
     /** "<name> Taproot", the parent's part cut so the whole is a wallet file name of at most [WALLET_NAME_MAX] characters. */
     fun name(parentName: String): String =
         walletFileName(parentName.take(WALLET_NAME_MAX - SUFFIX.length).trimEnd() + SUFFIX)
 
-    /** Why the wallet cannot have its Taproot wallet added now, or null. [existingNames] are the wallets on this phone. */
-    fun problem(info: WalletRepository.WalletInfo, existingNames: Set<String>, hasSeed: Boolean, seedType: String?): String? =
+    /**
+     * Why the wallet cannot have its Taproot wallet added now, or null. [wallets] are the wallets on this phone; a
+     * wallet holding the name that is half-linked with this one is not a refusal, as [add] finishes that link.
+     */
+    fun problem(info: WalletRepository.WalletInfo, wallets: List<WalletRepository.WalletInfo>, hasSeed: Boolean, seedType: String?): String? =
         walletProblem(info)
-            ?: info.links.taproot?.takeIf { it in existingNames }?.let { nameTaken(it) }
+            ?: mutualTaproot(info, wallets)?.let { nameTaken(it) }
             ?: seedProblem(hasSeed, seedType)
-            ?: name(info.name).takeIf { it in existingNames }?.let { nameTaken(it) }
+            ?: name(info.name).takeIf { n -> wallets.any { it.name == n && !halfLinked(info, it) } }?.let { nameTaken(it) }
 
     private fun walletProblem(info: WalletRepository.WalletInfo): String? = when {
         (info.coin != Coin.LITECOIN && info.coin != Coin.BELLSCOIN) || !ChainParams.of(info.coin, info.network).taprootWallets -> NOT_AVAILABLE
@@ -100,8 +116,8 @@ object TaprootCompanion {
         val byName = wallets.associateBy { it.name }
         val parent = byName[walletFileName(parentName)] ?: return NO_WALLET
         walletProblem(parent)?.let { return it }
-        //Linked both ways already: refused. A link the companion does not return (a stop between the two writes) is finished
-        parent.links.taproot?.let { linked -> if(byName[linked]?.links?.parent == parent.name) return nameTaken(linked) }
+        //Linked both ways already: refused. A one-sided link (a stop between the two writes) is finished below
+        mutualTaproot(parent, wallets)?.let { return nameTaken(it) }
         val name = name(parent.name)
         val seed = try {
             files.open(parent.name, password)
@@ -110,7 +126,7 @@ object TaprootCompanion {
         }
         seedProblem(seed.mnemonic.isNotBlank(), seed.seedType)?.let { return it }
         val companion = vaultData(seed)
-        byName[name]?.let { existing -> return adopt(files, parent, existing, companion, password, byName.keys) }
+        byName[name]?.let { existing -> return adopt(files, parent, existing, companion, password, byName) }
         val saved = try {
             files.save(name, companion, password)
         } catch(e: Exception) {
@@ -126,10 +142,12 @@ object TaprootCompanion {
 
     /** Links [existing] as [parent]'s Taproot wallet when it is the same seed's, else refuses its name. */
     private fun adopt(files: CompanionFiles, parent: WalletRepository.WalletInfo, existing: WalletRepository.WalletInfo,
-                      companion: VaultData, password: String, names: Set<String>): String? {
+                      companion: VaultData, password: String, byName: Map<String, WalletRepository.WalletInfo>): String? {
         val taken = nameTaken(existing.name)
         if(existing.name == parent.name || existing.links.companions.isNotEmpty()) return taken
-        if(existing.links.parent.let { it != null && it != parent.name && it in names }) return taken
+        //another wallet's companion, linked both ways
+        val otherParent = existing.links.parent?.takeIf { it != parent.name }?.let { byName[it] }
+        if(otherParent != null && linkedBack(otherParent, existing)) return taken
         //judged by its vault, not its meta (a stop between a vault and its meta reads as mainnet Litecoin)
         val data = try {
             files.open(existing.name, password)
@@ -153,7 +171,9 @@ object TaprootCompanion {
         try {
             for(w in companionLinkWrites(parent, companion, CompanionKind.TAPROOT)) files.rewriteMeta(w)
             val now = files.wallets().associateBy { it.name }
-            check(now[parent.name]?.links?.taproot == companion.name && now[companion.name]?.links?.parent == parent.name)
+            val p = now[parent.name]
+            val c = now[companion.name]
+            check(p != null && c != null && p.links.taproot == companion.name && linkedBack(p, c))
             return null
         } catch(e: Exception) {
             runCatching { files.rewriteMeta(companion) }
@@ -169,11 +189,11 @@ object TaprootCompanion {
  * on its own takes it out of its parent's links.
  */
 object CompanionDeletion {
-    /** The companions deleted along with [name]: those it names that are on this phone and name it back as their parent. */
+    /** The companions deleted along with [name]: those it names that are on this phone with the link running both ways ([linkedBack]). */
     fun deletedWith(name: String, wallets: List<WalletRepository.WalletInfo>): List<String> {
         val byName = wallets.associateBy { it.name }
         val self = byName[name] ?: return emptyList()
-        return self.links.companions.distinct().filter { byName[it]?.links?.parent == name }
+        return self.links.companions.distinct().filter { c -> byName[c]?.let { linkedBack(self, it) } == true }
     }
 
     /** The delete confirmation's extra line, or null when nothing else is deleted. */

@@ -127,39 +127,43 @@ class TaprootCompanionTest {
 
     @Test
     fun offeredOnlyWhereTaprootWalletsExist() {
-        assertTrue(TaprootCompanion.offered(info(), true, "BIP39"))
-        assertTrue(TaprootCompanion.offered(info(network = Network.TESTNET), true, "BIP39"))
-        assertTrue(TaprootCompanion.offered(info(coin = Coin.BELLSCOIN), true, "BIP39"))
-        assertFalse(TaprootCompanion.offered(info(coin = Coin.BELLSCOIN, network = Network.TESTNET), true, "BIP39"))
-        assertFalse(TaprootCompanion.offered(info(coin = Coin.DOGECOIN, scriptType = "P2PKH"), true, "BIP39"))
+        assertTrue(TaprootCompanion.offered(info(), true, "BIP39", emptyList()))
+        assertTrue(TaprootCompanion.offered(info(network = Network.TESTNET), true, "BIP39", emptyList()))
+        assertTrue(TaprootCompanion.offered(info(coin = Coin.BELLSCOIN), true, "BIP39", emptyList()))
+        assertFalse(TaprootCompanion.offered(info(coin = Coin.BELLSCOIN, network = Network.TESTNET), true, "BIP39", emptyList()))
+        assertFalse(TaprootCompanion.offered(info(coin = Coin.DOGECOIN, scriptType = "P2PKH"), true, "BIP39", emptyList()))
         assertEquals(TaprootCompanion.NOT_AVAILABLE,
-            TaprootCompanion.problem(info(coin = Coin.BELLSCOIN, network = Network.TESTNET), emptySet(), true, "BIP39"))
+            TaprootCompanion.problem(info(coin = Coin.BELLSCOIN, network = Network.TESTNET), emptyList(), true, "BIP39"))
         assertEquals(TaprootCompanion.NOT_AVAILABLE,
-            TaprootCompanion.problem(info(coin = Coin.DOGECOIN, scriptType = "P2PKH"), emptySet(), true, "BIP39"))
+            TaprootCompanion.problem(info(coin = Coin.DOGECOIN, scriptType = "P2PKH"), emptyList(), true, "BIP39"))
         assertEquals("Taproot wallets are not available for this coin.", TaprootCompanion.NOT_AVAILABLE)
-        assertNull(TaprootCompanion.problem(info(), setOf("Main"), true, "BIP39"))
+        assertNull(TaprootCompanion.problem(info(), listOf(info()), true, "BIP39"))
     }
 
     @Test
     fun notOfferedToATaprootMwebOrCompanionWallet() {
-        assertFalse(TaprootCompanion.offered(info(scriptType = "P2TR"), true, "BIP39"))
-        assertFalse(TaprootCompanion.offered(info(scriptType = "MWEB"), true, "BIP39"))
-        assertFalse(TaprootCompanion.offered(info(links = WalletLinks(parent = "Other")), true, "BIP39"))
-        assertFalse(TaprootCompanion.offered(info(links = WalletLinks(taproot = "Main Taproot")), true, "BIP39"))
+        assertFalse(TaprootCompanion.offered(info(scriptType = "P2TR"), true, "BIP39", emptyList()))
+        assertFalse(TaprootCompanion.offered(info(scriptType = "MWEB"), true, "BIP39", emptyList()))
+        assertFalse(TaprootCompanion.offered(info(links = WalletLinks(parent = "Other")), true, "BIP39", emptyList()))
+        //a Taproot link that runs both ways
+        val linked = info(links = WalletLinks(taproot = "Main Taproot"))
+        val tap = info("Main Taproot", scriptType = "P2TR", links = WalletLinks(parent = "Main"))
+        assertFalse(TaprootCompanion.offered(linked, true, "BIP39", listOf(linked, tap)))
+        assertEquals(TaprootCompanion.nameTaken("Main Taproot"), TaprootCompanion.problem(linked, listOf(linked, tap), true, "BIP39"))
         //an MWEB companion of its own does not stop it
-        assertTrue(TaprootCompanion.offered(info(links = WalletLinks(mweb = "Main Private")), true, "BIP39"))
-        assertEquals(TaprootCompanion.NOT_THIS_WALLET, TaprootCompanion.problem(info(scriptType = "P2TR"), emptySet(), true, "BIP39"))
-        assertEquals(TaprootCompanion.NOT_THIS_WALLET, TaprootCompanion.problem(info(scriptType = "MWEB"), emptySet(), true, "BIP39"))
+        assertTrue(TaprootCompanion.offered(info(links = WalletLinks(mweb = "Main Private")), true, "BIP39", emptyList()))
+        assertEquals(TaprootCompanion.NOT_THIS_WALLET, TaprootCompanion.problem(info(scriptType = "P2TR"), emptyList(), true, "BIP39"))
+        assertEquals(TaprootCompanion.NOT_THIS_WALLET, TaprootCompanion.problem(info(scriptType = "MWEB"), emptyList(), true, "BIP39"))
     }
 
     @Test
     fun notOfferedWithoutASeed() {
-        assertFalse(TaprootCompanion.offered(info(), false, null))
-        assertEquals("This wallet has no seed on this phone.", TaprootCompanion.problem(info(), emptySet(), false, null))
+        assertFalse(TaprootCompanion.offered(info(), false, null, emptyList()))
+        assertEquals("This wallet has no seed on this phone.", TaprootCompanion.problem(info(), emptyList(), false, null))
         //drongo derives the Taproot child from an Electrum seed too (Keystore.fromSeed takes either kind)
-        assertTrue(TaprootCompanion.offered(info(), true, "ELECTRUM"))
-        assertFalse(TaprootCompanion.offered(info(), true, "SLIP39"))
-        assertEquals(TaprootCompanion.SEED_KIND, TaprootCompanion.problem(info(), emptySet(), true, "SLIP39"))
+        assertTrue(TaprootCompanion.offered(info(), true, "ELECTRUM", emptyList()))
+        assertFalse(TaprootCompanion.offered(info(), true, "SLIP39", emptyList()))
+        assertEquals(TaprootCompanion.SEED_KIND, TaprootCompanion.problem(info(), emptyList(), true, "SLIP39"))
     }
 
     @Test
@@ -176,7 +180,8 @@ class TaprootCompanionTest {
         val b = "y".repeat(32) + "-other"
         assertEquals(TaprootCompanion.name(a), TaprootCompanion.name(b))
         assertEquals(TaprootCompanion.nameTaken(TaprootCompanion.name(b)),
-            TaprootCompanion.problem(info(b), setOf(a, b, TaprootCompanion.name(a)), true, "BIP39"))
+            TaprootCompanion.problem(info(b), listOf(info(a, links = WalletLinks(taproot = TaprootCompanion.name(a))), info(b),
+                info(TaprootCompanion.name(a), scriptType = "P2TR", links = WalletLinks(parent = a))), true, "BIP39"))
         assertEquals("A wallet named Main Taproot already exists.", TaprootCompanion.nameTaken("Main Taproot"))
     }
 
@@ -304,6 +309,25 @@ class TaprootCompanionTest {
         files.rewriteMeta(files.info("Main")!!.copy(links = WalletLinks(taproot = "Main Taproot")))
         assertNull(TaprootCompanion.add(files, "Main", "pw"))
         assertEquals(WalletLinks(parent = "Main"), files.info("Main Taproot")!!.links)
+    }
+
+    @Test
+    fun aHalfLinkedWalletIsOfferedAgainAndFinished() {
+        //either write of the two reached disk alone: the parent names the companion, or the companion names the parent
+        for(parentWrote in listOf(true, false)) {
+            val files = DirFiles()
+            files.add("Main", seed(), "pw")
+            files.add("Main Taproot", TaprootCompanion.vaultData(seed()), "pw")
+            if(parentWrote) files.rewriteMeta(files.info("Main")!!.copy(links = WalletLinks(taproot = "Main Taproot")))
+            else files.rewriteMeta(files.info("Main Taproot")!!.copy(links = WalletLinks(parent = "Main")))
+            assertTrue(TaprootCompanion.offered(files.info("Main")!!, true, "BIP39", files.wallets()), "parent wrote: $parentWrote")
+            assertNull(TaprootCompanion.problem(files.info("Main")!!, files.wallets(), true, "BIP39"), "parent wrote: $parentWrote")
+            assertNull(TaprootCompanion.add(files, "Main", "pw"))
+            assertEquals(WalletLinks(taproot = "Main Taproot"), files.info("Main")!!.links)
+            assertEquals(WalletLinks(parent = "Main"), files.info("Main Taproot")!!.links)
+            assertFalse(TaprootCompanion.offered(files.info("Main")!!, true, "BIP39", files.wallets()))
+            assertEquals(listOf("Main", "Main Taproot"), files.wallets().map { it.name })
+        }
     }
 
     @Test
@@ -443,7 +467,7 @@ class TaprootCompanionTest {
         assertNull(files.inscriptions.loadOrNull("Main Taproot"))
         assertEquals(listOf("Main Taproot"), files.forgotten)
         //and it can be added again
-        assertTrue(TaprootCompanion.offered(files.info("Main")!!, true, "BIP39"))
+        assertTrue(TaprootCompanion.offered(files.info("Main")!!, true, "BIP39", files.wallets()))
         CompanionDeletion.delete(files, "Main Private")
         assertEquals(WalletLinks(), files.info("Main")!!.links)
         assertNull(files.info("Main")!!.linkedWallet)
@@ -502,5 +526,21 @@ class TaprootCompanionTest {
         writeAtomically(file, "new".encodeToByteArray())
         assertEquals("new", file.readText())
         assertEquals(listOf("Main.meta"), dir.list()!!.toList())
+    }
+
+    @Test
+    fun aLeftoverTemporaryFileIsReplacedAndNeverListed() {
+        val dir = java.nio.file.Files.createTempDirectory("vaults").toFile()
+        val vault = File(dir, "Main.vault")
+        //a crash inside an earlier write left its temporary file
+        File(dir, "Main.vault.tmp").writeText("torn")
+        writeAtomically(vault, "sealed".encodeToByteArray())
+        assertEquals("sealed", vault.readText())
+        assertEquals(listOf("Main.vault"), dir.list()!!.toList())
+        //and the wallet list reads only vaults
+        assertEquals("Main", walletVaultName("Main.vault"))
+        assertNull(walletVaultName("Main.vault.tmp"))
+        assertNull(walletVaultName("Main.meta.tmp"))
+        assertNull(walletVaultName("Main.meta"))
     }
 }
