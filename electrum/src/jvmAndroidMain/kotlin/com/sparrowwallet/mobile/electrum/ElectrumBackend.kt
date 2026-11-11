@@ -80,9 +80,11 @@ class ElectrumBackend(
     /**
      * The bytes and the place from one verbose transaction.get. The verbose answer's top-level hex is used only when it
      * passes the txid hash check [rawTransaction] applies; without hex, or when it is not valid or hashes to another
-     * transaction, the bytes come from the (checked) raw call. The placement is [transactionAt]'s, on this same answer.
+     * transaction, the bytes come from the (checked) raw call. The placement is [transactionAt]'s, on this same answer, with the tip read before it.
      */
     override suspend fun placedTransaction(txid: String): PlacedTx {
+        //The tip first, as [transactionAt] reads it, so a block landing between the two reads costs no retry
+        placingTip ?: client.tipHeight().also { placingTip = it }
         val json = client.getTransactionVerbose(txid)
         val hex = json["hex"]?.let { it as? JsonPrimitive }?.takeIf { it.isString }?.content
         val raw = hex?.let { try { verifiedRawTransaction(txid, it) } catch(e: IOException) { null } } ?: rawTransaction(txid)

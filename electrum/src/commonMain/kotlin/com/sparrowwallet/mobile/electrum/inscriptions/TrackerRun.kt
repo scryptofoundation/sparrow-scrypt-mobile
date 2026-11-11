@@ -290,11 +290,15 @@ object TrackerRun {
             if(indexed != null) {
                 for(id in indexed.inscriptions) {
                     state.stop?.let { return held(utxo, indexerSource, it, blockHash, trace) }
-                    if(state.exhausted(deep)) {
-                        return held(utxo, indexerSource, InscriptionTracer.BUDGET_USED, blockHash, trace)
-                    }
-                    if(!deep) {
-                        state.used++
+                    //A reveal the cache holds costs nothing and is never refused for budget
+                    val cachedReveal = RevealCheck.txidOf(id)?.let { cache.get(it) } != null
+                    if(!cachedReveal) {
+                        if(state.exhausted(deep)) {
+                            return held(utxo, indexerSource, InscriptionTracer.BUDGET_USED, blockHash, trace)
+                        }
+                        if(!deep) {
+                            state.used++
+                        }
                     }
                     reveals[id] = server { RevealCheck.reveal(id, source, cache) }
                 }

@@ -220,18 +220,85 @@ class ElectrumBackendBlocksTest {
     private val rawId = com.sparrowwallet.mobile.crypto.RawTx.parse(rawHex.hexToBytes()).txid
     private val otherHex = "0200000001" + "22".repeat(32) + "00000000" + "00" + "fdffffff" + "01" + "e803000000000000" + "0151" + "00000000"
 
-    /** A chain whose verbose answer for [rawId] carries [hex] (when not null); non-verbose calls answer [rawAnswer]. */
-    private fun placedChain(methods: MutableList<String>, hex: String?, rawAnswer: String = rawHex): (String, String) -> Pair<String?, String> = { m, p ->
+    /**
+     * A chain whose verbose answer for [id] carries [hex] (when not null) as a string, or [hexJson] as given; non-verbose
+     * calls answer [rawAnswer]. [all] records every method called, in order.
+     */
+    private fun placedChain(
+        methods: MutableList<String>, hex: String?, rawAnswer: String = rawHex, id: String = rawId,
+        hexJson: String? = hex?.let { "\"$it\"" }, all: MutableList<String>? = null
+    ): (String, String) -> Pair<String?, String> = { m, p ->
+        all?.add(m)
         when(m) {
             "blockchain.headers.subscribe" -> "{\"height\":110,\"hex\":\"00\"}" to ""
             "blockchain.block.header" -> "\"${headerAt(p.trim('[', ']').toInt())}\"" to ""
             else -> {
                 val verbose = p.contains("true")
                 methods += if(verbose) "verbose" else "raw"
-                if(verbose) ("{\"txid\":\"$rawId\",\"confirmations\":11,\"blockhash\":\"${hashAt(100)}\",\"blocktime\":1761000000" +
-                    (if(hex != null) ",\"hex\":\"$hex\"" else "") + ",\"vin\":[],\"vout\":[]}") to ""
+                if(verbose) ("{\"txid\":\"$id\",\"confirmations\":11,\"blockhash\":\"${hashAt(100)}\",\"blocktime\":1761000000" +
+                    (if(hexJson != null) ",\"hex\":$hexJson" else "") + ",\"vin\":[],\"vout\":[]}") to ""
                 else "\"$rawAnswer\"" to ""
             }
+        }
+    }
+
+    /** The tip is read before the verbose answer, as before the one-call read, so a block landing between does not cost a retry. */
+    @Test fun placedTransactionReadsTheTipBeforeTheVerboseAnswer() {
+        val all = ArrayList<String>()
+        withBackend(placedChain(ArrayList(), rawHex, all = all)) { b ->
+            b.placedTransaction(rawId)
+            assertEquals("blockchain.headers.subscribe", all.first())
+            assertEquals(1, all.count { it == "blockchain.headers.subscribe" })
+        }
+    }
+
+    /** A segwit transaction: the txid is over the serialization without the witness, which stays in the returned bytes. */
+    @Test fun placedTransactionKeepsTheWitnessOfASegwitHex() {
+        val head = "02000000"
+        val body = "01" + "11".repeat(32) + "00000000" + "00" + "fdffffff" + "01" + "e803000000000000" + "0151"
+        val witness = "02" + "01aa" + "02bbcc"
+        val segwitHex = head + "0001" + body + witness + "00000000"
+        val segwitId = sha256d((head + body + "00000000").hexToBytes()).reversedArray().toHex()
+        val methods = ArrayList<String>()
+        withBackend(placedChain(methods, segwitHex, id = segwitId)) { b ->
+            val placed = b.placedTransaction(segwitId)
+            assertEquals(listOf("verbose"), methods, "the segwit hex passes the txid check, so no raw call")
+            assertEquals(segwitHex, placed.raw.toHex())
+            assertEquals(TxAt(100, hashAt(100), 1761000000L), placed.at)
+        }
+    }
+
+    /** A hex that is not a string, or not valid hex, is not used: the raw call answers. */
+    @Test fun placedTransactionFallsBackOnANonStringOrMalformedHex() {
+        for(hexJson in listOf("123", "{\"a\":1}", "[\"00\"]", "null", "\"zz\"", "\"abc\"", "\"\"")) {
+            val methods = ArrayList<String>()
+            withBackend(placedChain(methods, null, hexJson = hexJson)) { b ->
+                val placed = b.placedTransaction(rawId)
+                assertEquals(listOf("verbose", "raw"), methods, "hex $hexJson")
+                assertEquals(rawHex, placed.raw.toHex())
+            }
+        }
+    }
+
+    /** A first pass that does not place and a later one that does: the later pass reads the verbose answer again. */
+    @Test fun aLaterPassReadsTheVerboseAnswerAgain() {
+        var tips = 0
+        var verboseCalls = 0
+        withBackend({ m, p ->
+            when(m) {
+                "blockchain.headers.subscribe" -> "{\"height\":${if(tips++ == 0) 110 else 112},\"hex\":\"00\"}" to ""
+                "blockchain.block.header" -> "\"${headerAt(p.trim('[', ']').toInt())}\"" to ""
+                else -> if(p.contains("true")) {
+                    //the first answer places at 100 under tip 110 but its block is 101; the second counts the block the new tip has
+                    val confirmations = if(verboseCalls++ == 0) 11 else 12
+                    ("{\"txid\":\"$rawId\",\"confirmations\":$confirmations,\"blockhash\":\"${hashAt(101)}\",\"blocktime\":1761000000," +
+                        "\"hex\":\"$rawHex\",\"vin\":[],\"vout\":[]}") to ""
+                } else "\"$rawHex\"" to ""
+            }
+        }) { b ->
+            assertEquals(TxAt(101, hashAt(101), 1761000000L), b.placedTransaction(rawId).at)
+            assertEquals(2, verboseCalls, "the second pass read the verbose answer again")
+            assertTrue(pauses.isEmpty(), "the tip moved, so no wait")
         }
     }
 
@@ -269,9 +336,13 @@ class ElectrumBackendBlocksTest {
     }
 
     @Test fun placedTransactionKeepsTheBlockHashCheck() {
-        val inner = placedChain(ArrayList(), rawHex)
+        val methods = ArrayList<String>()
+        val inner = placedChain(methods, rawHex)
         withBackend({ m, p -> if(m == "blockchain.block.header") "\"${headerAt(99)}\"" to "" else inner(m, p) }) { b ->
-            assertFailsWith<IOException> { b.placedTransaction(rawId) }
+            val failure = assertFailsWith<IOException> { b.placedTransaction(rawId) }
+            assertEquals("The height of $rawId does not match its block hash", failure.message)
+            assertEquals(List(1 + ElectrumBackend.MAX_PLACING_RETRIES) { "verbose" }, methods, "the first answer and one per retry, and no raw call")
+            assertEquals(ElectrumBackend.MAX_PLACING_RETRIES, pauses.size, "the tip does not move, so each retry waits (injected, no sleep)")
         }
     }
 

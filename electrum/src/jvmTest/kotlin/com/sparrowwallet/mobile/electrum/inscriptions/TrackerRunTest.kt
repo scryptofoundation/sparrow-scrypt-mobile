@@ -753,6 +753,58 @@ class TrackerRunTest {
         assertEquals(1, chain.calls)
     }
 
+    /** A cached reveal is free: with the run budget used up by the trace, it is still read and never refused for budget. */
+    @Test fun aCachedRevealIsNotRefusedForBudget() {
+        val tx = cleanCoin(1)
+        val parent = chain.add(spend(hash(8), 10_000), 2_000_000)
+        val creator = chain.add(reveal(parent.txid, "Z", 9_000), 2_450_000)
+        val id = creator.txid + "i0"
+        val outpoint = tx.txid + ":0"
+        val answer = IndexerAnswer(true, listOf(id), runes = false, unlisted = false)
+        val cache = TxCache()
+        cache.put(chain.txs.getValue(creator.txid))
+        val check = runBlocking {
+            TrackerRun.run(Coin.LITECOIN, Network.MAINNET, cache, chain, listOf(coin(tx)), emptyMap(), mapOf(outpoint to answer),
+                InscriptionCheck.Source.PUBLIC, emptySet(), 2, { false }, { _, _ -> }) { done, _ -> progress.add(done) }
+        }.getValue(outpoint)
+        assertEquals(Verdict.INSCRIBED, check.verdict)
+        assertEquals(2, chain.calls, "only the trace's two lookups")
+    }
+
+    /** A reveal that is not cached counts one lookup: with a budget of 3, the trace's 2 and the reveal's 1 leave nothing for the next coin. */
+    @Test fun anUncachedRevealCountsOneLookup() {
+        val first = cleanCoin(1)
+        val second = cleanCoin(2)
+        val parent = chain.add(spend(hash(8), 10_000), 2_000_000)
+        val creator = chain.add(reveal(parent.txid, "Z", 9_000), 2_450_000)
+        val answer = IndexerAnswer(true, listOf(creator.txid + "i0"), runes = false, unlisted = false)
+        val result = run(listOf(coin(first), coin(second)), answers = mapOf(first.txid + ":0" to answer),
+            indexerSource = InscriptionCheck.Source.PUBLIC, runBudget = 3)
+        assertEquals(Verdict.INSCRIBED, result.getValue(first.txid + ":0").verdict)
+        val two = result.getValue(second.txid + ":0")
+        assertEquals(Verdict.UNCHECKED, two.verdict)
+        assertEquals(budgetUsed, two.reason)
+        assertEquals(3, chain.calls)
+    }
+
+    /** A source that answers another transaction than the one asked for is an error, never "no inscription found". */
+    @Test fun aRevealFromTheWrongTransactionIsAnError() {
+        val parent = chain.add(spend(hash(8), 10_000), 2_000_000)
+        val other = chain.add(reveal(parent.txid, "Z", 9_000), 2_450_000)
+        val asked = hash(777)
+        val source = object : com.sparrowwallet.mobile.crypto.track.ChainSource {
+            override suspend fun transaction(txid: String) = chain.txs.getValue(other.txid)
+            override suspend fun blockFees(height: Int, blockHash: String) = null
+            override suspend fun txidAt(height: Int, position: Int): String? = null
+        }
+        val cache = TxCache()
+        assertFailsWith<IllegalStateException> { runBlocking { RevealCheck.reveal(asked + "i0", source, cache) } }
+        assertNull(cache.get(asked))
+        assertNull(cache.get(other.txid), "the wrong transaction is not kept either")
+        //the right one still reveals
+        assertEquals(other.txid, runBlocking { RevealCheck.reveal(other.txid + "i0", source, cache) }!!.tx.txid)
+    }
+
     @Test fun aRevealCheckThatFailsStopsTheRun() {
         val first = cleanCoin(1)
         val second = cleanCoin(2)
@@ -814,7 +866,9 @@ class TrackerRunTest {
     @Test fun aBudgetExitAfterAFindStartsTheTraceOverNextRun() {
         val r = revealedCoin()
         val outpoint = r.tx.txid + ":0"
-        val answer = IndexerAnswer(true, listOf(r.yId), runes = false, unlisted = false)
+        //Y was read by the trace, so its reveal check is free; a second id the trace did not read is what the budget refuses
+        val elsewhere = chain.add(reveal(hash(302), "W", 4_000), 2_550_000)
+        val answer = IndexerAnswer(true, listOf(r.yId, elsewhere.txid + "i0"), runes = false, unlisted = false)
         val first = run(listOf(coin(r.tx, height = 2_600_001)), answers = mapOf(outpoint to answer), indexerSource = InscriptionCheck.Source.PUBLIC, runBudget = 100)
             .getValue(outpoint)
         assertEquals(budgetUsed, first.reason)
