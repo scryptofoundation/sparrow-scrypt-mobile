@@ -36,7 +36,9 @@ class HttpEndpoint(
     private val proxy: SocksProxy? = null,
     private val timeoutMs: Int = 30_000,
     /** The whole request, however slowly the server trickles its answer. */
-    private val deadlineMs: Long = timeoutMs * 2L
+    private val deadlineMs: Long = timeoutMs * 2L,
+    /** What air-gapped mode names when it refuses a request ("Esplora", "Inscription indexer"). */
+    private val label: String = "Esplora"
 ) {
     /** [headers] are keyed by lowercase name; [bytes] is the body as sent, [body] as text. */
     class Response(val status: Int, val bytes: ByteArray, val headers: Map<String, String> = emptyMap()) {
@@ -60,7 +62,9 @@ class HttpEndpoint(
     /** [accept] is sent as the Accept header (ord answers JSON only when asked for it). */
     suspend fun get(path: String, accept: String = "*/*"): Response = request("GET", path, null, accept)
 
-    suspend fun post(path: String, body: String): Response = request("POST", path, body)
+    /** [contentType] is sent as the body's Content-Type (ord's /outputs reads a JSON array only as application/json). */
+    suspend fun post(path: String, body: String, contentType: String = "text/plain", accept: String = "*/*"): Response =
+        request("POST", path, body, accept, contentType)
 
     private class Conn(val raw: Socket, val socket: Socket, val input: InputStream, val release: () -> Unit) {
         fun close() {
@@ -86,16 +90,16 @@ class HttpEndpoint(
         if(conn === c) conn = null
     }
 
-    private suspend fun request(method: String, path: String, body: String?, accept: String = "*/*"): Response = lock.withLock {
+    private suspend fun request(method: String, path: String, body: String?, accept: String = "*/*", contentType: String = "text/plain"): Response = lock.withLock {
         withContext(Dispatchers.IO) {
-            NetworkPolicy.check("Esplora")
+            NetworkPolicy.check(label)
             //a broadcast goes on a fresh connection: a kept one may have died while idle, and a POST is never retried
             if(method != "GET") close()
             try {
-                exchange(method, path, body, accept)
+                exchange(method, path, body, accept, contentType)
             } catch(e: StaleConnection) {
-                NetworkPolicy.check("Esplora")
-                exchange(method, path, body, accept)
+                NetworkPolicy.check(label)
+                exchange(method, path, body, accept, contentType)
             }
         }
     }
@@ -128,7 +132,7 @@ class HttpEndpoint(
         }
     }
 
-    private fun exchange(method: String, path: String, body: String?, accept: String): Response {
+    private fun exchange(method: String, path: String, body: String?, accept: String, contentType: String): Response {
         val started = System.nanoTime()
         val kept = conn
         val raw = kept?.raw ?: if(proxy != null) Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress(proxy.host, proxy.port))) else Socket()
@@ -151,7 +155,7 @@ class HttpEndpoint(
                 append("Accept: $accept\r\n")
                 append("Connection: keep-alive\r\n")
                 if(payload != null) {
-                    append("Content-Type: text/plain\r\n")
+                    append("Content-Type: $contentType\r\n")
                     append("Content-Length: ${payload.size}\r\n")
                 }
                 append("\r\n")
@@ -167,7 +171,7 @@ class HttpEndpoint(
             return response
         } catch(e: IOException) {
             c?.let { drop(it) } ?: runCatching { raw.close() }
-            if(NetworkPolicy.blocked) throw AirGappedException("Esplora")
+            if(NetworkPolicy.blocked) throw AirGappedException(label)
             if(expired.get()) throw IOException("Request took too long", e)
             //a dead kept socket ends or resets at once; a slow server times out and must not get the GET twice
             if(kept != null && !answered && e !is java.net.SocketTimeoutException) throw StaleConnection(e)
