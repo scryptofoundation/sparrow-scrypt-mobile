@@ -85,7 +85,10 @@ class MainActivity : ComponentActivity() {
 
 internal sealed interface Screen {
     data object WalletList : Screen
-    data class Create(val mnemonic: String) : Screen
+    data class Create(val mnemonic: String) : Screen {
+        /** Without the new seed words. */
+        override fun toString(): String = "Create"
+    }
     data object Restore : Screen
     data object RestoreFromApp : Screen
     data class ImportSparrow(val payload: SparrowLink.ReceivedPayload) : Screen

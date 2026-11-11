@@ -39,7 +39,10 @@ data class SyncCredentials(
      * run: so a check that was skipped or cut off still runs next time, after the baseline has moved on.
      */
     val inscriptionCheckDue: Boolean = false
-)
+) {
+    /** The wallet's name, kind, coin and network only: no xpub, scan key or history. */
+    override fun toString(): String = "SyncCredentials(name=$name, scriptType=$scriptType, coin=$coin, network=$network)"
+}
 
 /** Decides what a background run reports for one wallet, given its stored baseline. */
 object SyncBaseline {

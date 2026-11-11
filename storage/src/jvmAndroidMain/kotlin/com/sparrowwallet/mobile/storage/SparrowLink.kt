@@ -39,7 +39,10 @@ object SparrowLink {
 
     class LinkException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
-    data class Pairing(val mode: String, val hosts: List<String>, val port: Int, val key: ByteArray)
+    data class Pairing(val mode: String, val hosts: List<String>, val port: Int, val key: ByteArray) {
+        /** Without the session key. */
+        override fun toString(): String = "Pairing(mode=$mode, hosts=$hosts, port=$port)"
+    }
 
     fun parseQr(text: String): Pairing {
         if(!text.startsWith(QR_PREFIX)) throw LinkException("Not a Sparrow Link QR code")

@@ -641,7 +641,10 @@ class WalletRepository(context: Context) {
     fun accountXpub(data: VaultData): String = walletAccountXpub(data)
 
     /** MWEB keys/address, derived exactly like desktop drongo's Keystore (m/1000', scan 0', spend 1'). */
-    data class MwebInfo(val firstAddress: String, val scanSecretHex: String, val spendPubKeyHex: String)
+    data class MwebInfo(val firstAddress: String, val scanSecretHex: String, val spendPubKeyHex: String) {
+        /** The address only: the scan secret reads every coin of the wallet. */
+        override fun toString(): String = "MwebInfo(firstAddress=$firstAddress)"
+    }
 
     // dedicated MWEB wallets use their own account path; other script types pair with
     // the same-seed m/1000' MWEB account, matching desktop's child-wallet convention

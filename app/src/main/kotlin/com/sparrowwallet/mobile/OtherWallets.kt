@@ -38,7 +38,10 @@ object OtherWallets {
     }
 
     /** A vault to seal under [name]; a second one in a list is the first's linked MWEB wallet. */
-    data class RestoreVault(val name: String, val data: VaultData)
+    data class RestoreVault(val name: String, val data: VaultData) {
+        /** The name and the vault's printed form ([VaultData.toString] holds no secret). */
+        override fun toString(): String = "RestoreVault(name=$name, data=$data)"
+    }
 
     private const val CHANGE_NOTE = "Change from sends on this phone goes to a change address, which that app does not show."
 

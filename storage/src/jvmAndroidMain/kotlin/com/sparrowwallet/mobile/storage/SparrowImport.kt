@@ -63,7 +63,11 @@ object SparrowImport {
         val txLabels: Map<String, String> = emptyMap(),
         /** The wallet's coin; files from before desktop wrote it are Litecoin. */
         val coin: Coin = Coin.LITECOIN
-    )
+    ) {
+        /** The wallet's kind, coin, network and path only: no seed words, history or labels. */
+        override fun toString(): String =
+            "ImportedWallet(scriptType=$scriptType, coin=$coin, network=$network, derivationPath=$derivationPath)"
+    }
 
     private const val HEADER_LENGTH = 28
     private const val MAGIC = "SPRW1"

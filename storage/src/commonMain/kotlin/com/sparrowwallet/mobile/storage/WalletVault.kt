@@ -41,7 +41,11 @@ data class VaultData(
     val txLabels: Map<String, String> = emptyMap(),
     /** Coin id ("litecoin", "dogecoin", ...); vaults sealed before this field are Litecoin. */
     val coin: String = "litecoin"
-)
+) {
+    /** The wallet's kind, coin, network and path only: no seed words, passphrase, history or labels. */
+    override fun toString(): String =
+        "VaultData(scriptType=$scriptType, coin=$coin, network=$network, derivationPath=$derivationPath)"
+}
 
 class VaultException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
