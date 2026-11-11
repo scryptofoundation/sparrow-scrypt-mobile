@@ -56,6 +56,11 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             val scanned = HashSet<String>() // public wallets whose history scan succeeded this pass
 
             for(creds in store.loadAll()) {
+                // a wallet deleted since its credentials were cached: they go, and nothing is scanned for it
+                if(!repo.walletVaultExists(creds.name)) {
+                    store.delete(creds.name)
+                    continue
+                }
                 try {
                     val network = Network.fromId(creds.network)
                     if(creds.scriptType == "MWEB") {
@@ -70,17 +75,20 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         if(!snap.initialScanComplete) continue // not caught up — next period retries
                         val unspent = snap.utxos.filter { !it.spent }
                         val fresh = SyncBaseline.newlyReceivedPrivate(creds, unspent.map { it.outputId to it.value })
-                        if(fresh > 0) received += "${formatAmount(Coin.LITECOIN, fresh)} → ${creds.name} (private)"
-                        store.save(creds.copy(baselined = true, knownOutputIds = unspent.map { it.outputId }))
+                        //deleted during the scan: its credentials are removed, not written back, and nothing is announced
+                        val kept = repo.keepSyncCredentials(creds.copy(baselined = true, knownOutputIds = unspent.map { it.outputId }))
+                        if(kept && fresh > 0) received += "${formatAmount(Coin.LITECOIN, fresh)} → ${creds.name} (private)"
                     } else {
                         if(creds.xpub == null) continue
                         val snap = repo.scanXpub(creds)
                         val fresh = SyncBaseline.newlyReceived(creds, snap.history.map { it.txid to it.delta })
-                        if(fresh > 0) received += "${formatAmount(Coin.fromId(creds.coin), fresh)} → ${creds.name}"
                         //read before the baseline below moves on: a transaction it lacks makes the inscription check due
                         val due = SyncBaseline.inscriptionCheckDue(creds, snap.history.map { it.txid })
-                        store.save(creds.copy(baselined = true, knownTxids = snap.history.map { it.txid }, inscriptionCheckDue = due))
-                        scanned += creds.name
+                        //deleted during the scan: its credentials are removed, not written back, and nothing is announced
+                        if(repo.keepSyncCredentials(creds.copy(baselined = true, knownTxids = snap.history.map { it.txid }, inscriptionCheckDue = due))) {
+                            if(fresh > 0) received += "${formatAmount(Coin.fromId(creds.coin), fresh)} → ${creds.name}"
+                            scanned += creds.name
+                        }
                     }
                 } catch(t: Throwable) {
                     // per-wallet best effort — a dead server or offline scanner retries next period
@@ -103,7 +111,7 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 //deleted since the pass began (its credentials go with it): nothing to check or write back
                 if(store.load(creds.name) == null) return@inscriptionPass
                 if(repo.checkInscriptionsFromXpub(creds, timeUp) != null) {
-                    store.load(creds.name)?.takeIf { it.inscriptionCheckDue }?.let { store.save(it.copy(inscriptionCheckDue = false)) }
+                    store.load(creds.name)?.takeIf { it.inscriptionCheckDue }?.let { repo.keepSyncCredentials(it.copy(inscriptionCheckDue = false)) }
                 }
             }
             return true

@@ -40,6 +40,26 @@ fun walletBalance(info: WalletRepository.WalletInfo, wallets: List<WalletReposit
     return if(own == null && linked.isEmpty()) null else (own ?: 0) + linked.sum()
 }
 
+/** What a Home's balance header shows: the [total] under [eyebrow], its Public and Private split, its Taproot part, pending. */
+data class HomeTotal(val eyebrow: String, val total: Long?, val publicPart: Long?, val privatePart: Long?,
+                     val taprootPart: Long?, val pending: Long?)
+
+/**
+ * The Public layer's Home total, the family total the wallet list's card shows ([walletBalance]): the public wallet's
+ * [publicTotal] plus its Private wallet's [privateTotal] and its Taproot wallet's [taprootTotal], each once known, with
+ * their pending amounts. The bar stays Public and Private (what Send pays from); the Taproot wallet is its own part. Without
+ * a Taproot figure it is exactly what Home showed before Taproot wallets. Nothing until the public wallet's own is known.
+ */
+fun publicHomeTotal(publicTotal: Long?, publicPending: Long?, privateTotal: Long?, privatePending: Long?,
+                    taprootTotal: Long?, taprootPending: Long?): HomeTotal = HomeTotal(
+    eyebrow = if(privateTotal != null || taprootTotal != null) "Total balance" else "Balance",
+    total = publicTotal?.let { it + (privateTotal ?: 0) + (taprootTotal ?: 0) },
+    publicPart = if(privateTotal != null) publicTotal else null,
+    privatePart = privateTotal,
+    taprootPart = taprootTotal,
+    pending = publicPending?.let { it + (privatePending ?: 0) + (taprootPending ?: 0) }
+)
+
 /**
  * Whether [companion] is [parent]'s companion with the link running both ways: two different wallets, the parent not
  * itself a companion, the parent naming it among its companions in the slot of its kind (MWEB in `mweb`, P2TR in
@@ -83,9 +103,19 @@ fun companionsOf(info: WalletRepository.WalletInfo, wallets: List<WalletReposito
     return listOfNotNull(slot(Layer.PRIVATE, info.links.mweb, "MWEB"), slot(Layer.TAPROOT, info.links.taproot, "P2TR"))
 }
 
-/** The tags beside [info]'s row on the wallet list for the companions it has: "Private", then "Taproot". */
+/**
+ * A wallet card's tag for [layer]: "PUBLIC", "PRIVATE · MWEB" (the Private tag's words before Taproot wallets, unchanged)
+ * and "TAPROOT" in the same style. The layer switch keeps its own words ([Layer.label]).
+ */
+fun layerTagText(layer: Layer): String = when(layer) {
+    Layer.PUBLIC -> "PUBLIC"
+    Layer.PRIVATE -> "PRIVATE · MWEB"
+    Layer.TAPROOT -> "TAPROOT"
+}
+
+/** The tags beside [info]'s row on the wallet list for the companions it has ([companionsOf]), Private then Taproot. */
 fun companionTags(info: WalletRepository.WalletInfo, wallets: List<WalletRepository.WalletInfo>): List<String> =
-    companionsOf(info, wallets).map { it.first.label }
+    companionsOf(info, wallets).map { layerTagText(it.first) }
 
 /** The wallet [companion] is hidden under on the list ([companionOf]), or null when it has its own row. */
 fun companionParent(companion: WalletRepository.WalletInfo, wallets: List<WalletRepository.WalletInfo>): WalletRepository.WalletInfo? =
@@ -93,13 +123,12 @@ fun companionParent(companion: WalletRepository.WalletInfo, wallets: List<Wallet
 
 /**
  * The unlock screen's line under the title for [info]: "Also opens: NAMES." for a wallet with companions ([companionsOf],
- * Private then Taproot); otherwise the line it had before Taproot wallets, naming the linked MWEB wallet if it has one.
+ * Private then Taproot), which are the wallets Home opens with it; no line otherwise, a link Home will not open included.
  */
 fun unlockHint(info: WalletRepository.WalletInfo?, wallets: List<WalletRepository.WalletInfo>): String? {
     if(info == null) return null
     val names = companionsOf(info, wallets).map { it.second }
-    if(names.isNotEmpty()) return "Also opens: ${names.joinToString(", ")}."
-    return info.linkedWallet?.let { "Also unlocks the linked wallet \"$it\"." }
+    return if(names.isEmpty()) null else "Also opens: ${names.joinToString(", ")}."
 }
 
 /**

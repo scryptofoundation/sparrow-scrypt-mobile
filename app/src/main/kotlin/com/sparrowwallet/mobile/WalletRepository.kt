@@ -41,6 +41,7 @@ import com.sparrowwallet.mobile.storage.SparrowExport
 import com.sparrowwallet.mobile.storage.SparrowImport
 import com.sparrowwallet.mobile.storage.SparrowLink
 import com.sparrowwallet.mobile.storage.VaultData
+import com.sparrowwallet.mobile.storage.VaultException
 import com.sparrowwallet.mobile.storage.WalletVault
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -64,7 +65,7 @@ class WalletRepository(context: Context) {
         // migrate the single-wallet layout from v0.3
         val legacy = File(context.filesDir, "wallet.vault")
         if(legacy.exists() && listWallets().isEmpty()) {
-            legacy.copyTo(vaultFile("My Wallet"), overwrite = true)
+            writeAtomically(vaultFile("My Wallet"), legacy.readBytes())
             writeMeta("My Wallet", Network.MAINNET)
             legacy.delete()
         }
@@ -84,7 +85,10 @@ class WalletRepository(context: Context) {
 
     private fun safeName(name: String): String = walletFileName(name)
 
-    private fun vaultFile(name: String) = File(walletsDir, "${safeName(name)}.vault")
+    private fun vaultFile(name: String) = vaultFileOf(walletsDir, name)
+
+    /** Whether the wallet [name] (as typed, or as the list names it) still has its vault on this phone. */
+    fun walletVaultExists(name: String): Boolean = vaultFile(name).exists()
     private fun metaFile(name: String) = File(walletsDir, "${safeName(name)}.meta")
 
     private fun writeMeta(name: String, network: Network, scriptType: String = "P2WPKH", links: WalletLinks = WalletLinks(),
@@ -124,7 +128,7 @@ class WalletRepository(context: Context) {
      * Deletes the wallets [choice] names (see [deleteWallets]); true when all of them went. On false (a write or a file
      * delete failed, or a link changed since the choice was offered) what is left stays listed.
      */
-    fun deleteWallets(choice: DeleteChoice): Boolean = deleteWallets(companionFiles, choice)
+    fun deleteWallets(choice: DeleteChoice): Boolean = synchronized(walletFilesLock) { deleteWallets(companionFiles, choice) }
 
     /** The delete confirmation's choices for a wallet (see [deleteChoices]); none for a wallet without linked wallets. */
     fun deleteChoices(name: String): List<DeleteChoice> =
@@ -146,7 +150,7 @@ class WalletRepository(context: Context) {
      * One wallet and everything kept for it; its vault goes after its caches, so a stop midway leaves it listed, and
      * before its meta (see [deleteWalletFiles], which throws when a file will not go).
      */
-    private fun deleteOneWallet(name: String) {
+    private fun deleteOneWallet(name: String) = synchronized(walletFilesLock) {
         //forget first: it stops a running check from writing the file back after it is deleted
         inscriptionChecker.forget(name)
         deleteWalletCaches(safeName(name), inscriptionStore, SyncStore.cacheFile(appContext.filesDir, name))
@@ -309,14 +313,28 @@ class WalletRepository(context: Context) {
      * wallet being opened to use) lets its syncs record the wallet list's in-memory balance;
      * a password check (Reveal, export, leaving air-gapped mode, adding a Taproot wallet) does not keep the vault and
      * writes nothing, not even the background sync's credentials (those are cached by the session unlock).
+     * A session unlock registers the wallet and saves its credentials only if its vault is still there once the slow key
+     * derivations are done, under the lock a delete takes; a wallet deleted meanwhile throws, as a failed unlock does.
      */
-    fun unlock(name: String, password: String, session: Boolean = true): VaultData =
-        WalletVault.open(vaultFile(name).readBytes(), password).also {
-            if(session) {
-                sessionNames[it] = safeName(name)
-                runCatching { cacheSyncCredentials(name, it) }
-            }
+    fun unlock(name: String, password: String, session: Boolean = true): VaultData {
+        val vault = vaultFile(name)
+        val data = WalletVault.open(vault.readBytes(), password)
+        if(!session) return data
+        val creds = runCatching { syncCredentialsFor(name, data) }.getOrNull()
+        val kept = whileVaultExists(vault) {
+            sessionNames[data] = safeName(name)
+            creds?.let { runCatching { syncStore.save(it) } }
         }
+        if(!kept) throw VaultException(WalletGoneException().message!!)
+        return data
+    }
+
+    /**
+     * Saves [creds] after a background scan only while the wallet's vault is still on this phone, under the lock a delete
+     * takes; otherwise removes them. True when they were saved.
+     */
+    fun keepSyncCredentials(creds: SyncCredentials): Boolean =
+        whileVaultExists(vaultFile(creds.name), gone = { syncStore.delete(creds.name) }) { syncStore.save(creds) }
 
     /**
      * Seals the vaults of a restore from another wallet app and links a second one (Cake's MWEB
@@ -492,12 +510,12 @@ class WalletRepository(context: Context) {
         }
 
     /**
-     * Caches view-only sync credentials (xpub / MWEB scan key — never seeds or spend
-     * keys) under the Android Keystore, so background refresh can check for new funds
-     * without the wallet password. Only while background refresh is enabled.
+     * The view-only sync credentials (xpub / MWEB scan key, never seeds or spend
+     * keys) a session unlock caches under the Android Keystore, so background refresh can check for new funds
+     * without the wallet password. Null while background refresh is off.
      */
-    private fun cacheSyncCredentials(name: String, data: VaultData) {
-        if(syncStore.intervalMinutes <= 0) return
+    private fun syncCredentialsFor(name: String, data: VaultData): SyncCredentials? {
+        if(syncStore.intervalMinutes <= 0) return null
         val prior = syncStore.load(name)
         val creds = if(data.scriptType == "MWEB") SyncCredentials(
             name = name, network = data.network, scriptType = "MWEB",
@@ -512,7 +530,7 @@ class WalletRepository(context: Context) {
             knownTxids = prior?.knownTxids ?: emptyList(),
             inscriptionCheckDue = prior?.inscriptionCheckDue ?: false
         )
-        syncStore.save(creds)
+        return creds
     }
 
     /** Balance/history check from a cached xpub alone — the background-sync read path. */
@@ -541,7 +559,7 @@ class WalletRepository(context: Context) {
         if(clean.isEmpty()) labels.remove(txid) else labels[txid] = clean
         val history = data.mwebHistory.map { if(it.txid == txid) it.copy(label = clean) else it }
         val updated = data.copy(txLabels = labels, mwebHistory = history)
-        vaultFile(name).writeBytes(WalletVault.seal(updated, password))
+        rewriteVault(vaultFile(name), WalletVault.seal(updated, password))
         sessionNames.remove(data)?.let { sessionNames[updated] = it }
         return updated
     }
@@ -553,7 +571,7 @@ class WalletRepository(context: Context) {
         for((txid, label) in labels) if(label.isNotBlank()) merged[txid] = label.trim()
         val history = data.mwebHistory.map { e -> labels[e.txid]?.let { e.copy(label = it.trim()) } ?: e }
         val updated = data.copy(txLabels = merged, mwebHistory = history)
-        vaultFile(name).writeBytes(WalletVault.seal(updated, password))
+        rewriteVault(vaultFile(name), WalletVault.seal(updated, password))
         sessionNames.remove(data)?.let { sessionNames[updated] = it }
         return updated
     }

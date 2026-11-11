@@ -119,32 +119,19 @@ internal fun WalletTags(modifier: Modifier = Modifier, content: @Composable () -
 
 /** Small layer tag for wallet cards: PUBLIC (blue) or PRIVATE · MWEB (copper). */
 @Composable
-internal fun LayerTag(privateLayer: Boolean) {
-    val dark = isSystemInDarkTheme()
-    val color = if(privateLayer) (if(dark) LtcPalette.copperDark else LtcPalette.copperLight)
-                else (if(dark) LtcPalette.blueDark else LtcPalette.blueLight)
-    Text(
-        if(privateLayer) "PRIVATE · MWEB" else "PUBLIC",
-        fontFamily = MonoFont, fontSize = 8.5.sp, letterSpacing = 0.8.sp,
-        color = color,
-        modifier = Modifier
-            .clip(RoundedCornerShape(5.dp))
-            .background(color.copy(alpha = 0.14f))
-            .padding(horizontal = 7.dp, vertical = 2.dp)
-    )
-}
+internal fun LayerTag(privateLayer: Boolean) = LayerTag(if(privateLayer) Layer.PRIVATE else Layer.PUBLIC)
 
 /**
- * A wallet card's tag for one of its companions, [label] as given ("Private", "Taproot", see [companionTags]): Private in
- * the private layer's copper, Taproot in the public blue (its Home is drawn in the public colors).
+ * A wallet card's tag for [layer], in [layerTagText]'s words: the Private layer in copper, the Public and Taproot layers in
+ * the public blue (a Taproot wallet's Home is drawn in the public colors).
  */
 @Composable
-internal fun CompanionTag(label: String) {
+internal fun LayerTag(layer: Layer) {
     val dark = isSystemInDarkTheme()
-    val color = if(label == Layer.PRIVATE.label) (if(dark) LtcPalette.copperDark else LtcPalette.copperLight)
+    val color = if(layer == Layer.PRIVATE) (if(dark) LtcPalette.copperDark else LtcPalette.copperLight)
                 else (if(dark) LtcPalette.blueDark else LtcPalette.blueLight)
     Text(
-        label,
+        layerTagText(layer),
         fontFamily = MonoFont, fontSize = 8.5.sp, letterSpacing = 0.8.sp,
         color = color,
         modifier = Modifier
@@ -272,6 +259,8 @@ internal fun BalanceHeader(
     usdNow: Double?,
     publicPart: Long? = null,
     privatePart: Long? = null,
+    /** The Taproot wallet's part of [total], on its own line (the bar stays Public and Private). */
+    taprootPart: Long? = null,
     pending: Long? = null,
     fiatNote: String? = null,
     coin: Coin = Coin.LITECOIN
@@ -329,6 +318,12 @@ internal fun BalanceHeader(
                 legend(blue, "Public", publicPart, alignEnd = false)
                 legend(copper, "Private", privatePart, alignEnd = true)
             }
+        }
+        if(total != null && taprootPart != null) {
+            Text(listOfNotNull("Includes Taproot ${formatUnits(taprootPart)}", usdNow?.let { formatUsd(taprootPart, it) })
+                    .joinToString(" · "),
+                fontFamily = MonoFont, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 5.dp))
         }
         pending?.takeIf { it != 0L }?.let {
             Text("${formatAmount(coin, it)} pending", fontFamily = MonoFont, fontSize = 10.sp,

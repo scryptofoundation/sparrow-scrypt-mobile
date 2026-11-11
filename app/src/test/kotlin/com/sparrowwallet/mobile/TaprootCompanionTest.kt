@@ -333,6 +333,32 @@ class TaprootCompanionTest {
     }
 
     @Test
+    fun theSameSeedsTaprootWalletUnderAnotherNameIsRefused() {
+        val files = DirFiles()
+        files.add("Main", seed(), "pw")
+        files.add("Old tr", TaprootCompanion.vaultData(seed()), "pw")
+        val before = files.snapshot()
+        assertEquals("This seed's Taproot wallet is already on this phone as Old tr.", TaprootCompanion.add(files, "Main", "pw"))
+        val after = files.snapshot()
+        assertEquals(before.keys, after.keys)
+        for(k in before.keys) assertContentEquals(before[k], after[k], k)
+    }
+
+    @Test
+    fun anotherTaprootWalletIsNoReasonToRefuse() {
+        val files = DirFiles()
+        files.add("Main", seed(), "pw")
+        // another seed's Taproot wallet, the same seed's on testnet, and the same seed's under another password (it cannot
+        // be opened to compare, so it goes unnoticed)
+        files.add("Other tr", TaprootCompanion.vaultData(seed(mnemonic = "legal winner thank year wave sausage worth useful legal winner thank yellow")), "pw")
+        files.add("Test tr", TaprootCompanion.vaultData(seed(network = Network.TESTNET)), "pw")
+        files.add("Locked tr", TaprootCompanion.vaultData(seed()), "another")
+        assertNull(TaprootCompanion.add(files, "Main", "pw"))
+        assertEquals("Main Taproot", files.info("Main")!!.links.taproot)
+        assertFalse("Test tr" in files.opened)
+    }
+
+    @Test
     fun refusalsAreGivenBeforeThePasswordIsTried() {
         val files = DirFiles()
         files.add("Doge", seed(Coin.DOGECOIN, scriptType = ScriptType.P2PKH), "pw")

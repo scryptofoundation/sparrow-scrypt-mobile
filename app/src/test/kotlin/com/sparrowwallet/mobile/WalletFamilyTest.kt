@@ -49,7 +49,7 @@ class WalletFamilyTest {
         assertEquals(emptyList(), WalletFamily(pub, private = priv).alsoSync(Layer.PUBLIC))
         assertEquals(emptyList(), WalletFamily(pub).alsoSync(Layer.PUBLIC))
         // Private: the linked public wallet, as today; Taproot: nothing
-        assertEquals(listOf(pub), all.alsoSync(Layer.PRIVATE))
+        assertEquals(emptyList(), all.alsoSync(Layer.PRIVATE))
         assertEquals(emptyList(), all.alsoSync(Layer.TAPROOT))
         assertEquals(emptyList(), WalletFamily(pub, taproot = tap).alsoSync(Layer.TAPROOT))
         // never a wallet outside the family, never the shown one
@@ -369,5 +369,37 @@ class WalletFamilyTest {
         assertEquals(emptyList(), joinedAlsoSync(WalletFamily(pub, priv), WalletFamily(pub, priv), Layer.PUBLIC, false))
         // the Private layer's Home also syncs only the public wallet, which was there
         assertEquals(emptyList(), joinedAlsoSync(WalletFamily(pub, priv), all, Layer.PRIVATE, false))
+    }
+
+    @Test
+    fun aFamilyNamesItsMembersInLayerOrder() {
+        assertEquals(listOf("Main", "Main Private", "Main Taproot"), WalletFamily(pub, priv, tap).names)
+        assertEquals(listOf("Main", "Main Taproot"), WalletFamily(pub, taproot = tap).names)
+        assertEquals(listOf("Main"), WalletFamily(pub).names)
+    }
+
+    @Test
+    fun aPairKeepsItsLinkedPairHeader() {
+        val pair = WalletFamily(pub, priv).layers
+        assertEquals("LINKED PAIR", linkedLabel(pair, Layer.PUBLIC))
+        // the Private layer's header names its layer, as before
+        assertNull(linkedLabel(pair, Layer.PRIVATE))
+    }
+
+    @Test
+    fun aFamilyWithItsTaprootWalletIsLinkedWallets() {
+        val all = WalletFamily(pub, priv, tap).layers
+        assertEquals("LINKED WALLETS", linkedLabel(all, Layer.PUBLIC))
+        assertEquals("LINKED WALLETS", linkedLabel(all, Layer.PRIVATE))
+        assertNull(linkedLabel(all, Layer.TAPROOT))
+        val publicAndTaproot = WalletFamily(pub, taproot = tap).layers
+        assertEquals("LINKED WALLETS", linkedLabel(publicAndTaproot, Layer.PUBLIC))
+        assertNull(linkedLabel(publicAndTaproot, Layer.TAPROOT))
+    }
+
+    @Test
+    fun aWalletOnItsOwnHasNoLinkHeader() {
+        assertNull(linkedLabel(WalletFamily(pub).layers, Layer.PUBLIC))
+        assertNull(linkedLabel(WalletFamily(Member("Lone", vault("MWEB"))).layers, Layer.PUBLIC))
     }
 }

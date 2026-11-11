@@ -12,6 +12,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -38,6 +39,47 @@ internal fun writeAtomically(file: File, bytes: ByteArray,
         Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
     } finally {
         tmp.delete()
+    }
+}
+
+/**
+ * One lock over the wallet files for the whole process, shared by the activity's repository and the background worker's.
+ * A delete holds it, and so does every write that must not outlive a delete: a session registration, saved sync
+ * credentials, a vault re-seal. Nothing slow (a key derivation, a network call) runs under it.
+ */
+internal val walletFilesLock = Any()
+
+/** The vault of the wallet [name] (as typed, or as the list names it) in [walletsDir]. */
+internal fun vaultFileOf(walletsDir: File, name: String): File = File(walletsDir, "${walletFileName(name)}.vault")
+
+/**
+ * Runs [keep] under [walletFilesLock] while [vault] exists and returns true; otherwise runs [gone] (removing what was
+ * kept for the wallet) and returns false. For what slow work (an unlock's key derivation, a background scan) keeps for a
+ * wallet that a delete may have removed meanwhile: a deleted wallet is never written back.
+ */
+internal fun whileVaultExists(vault: File, gone: () -> Unit = {}, keep: () -> Unit): Boolean =
+    synchronized(walletFilesLock) {
+        if(vault.exists()) {
+            keep()
+            true
+        } else {
+            gone()
+            false
+        }
+    }
+
+/** A write for a wallet that is no longer on this phone. */
+class WalletGoneException : IOException("This wallet is no longer on this phone.")
+
+/**
+ * Re-seals an existing wallet's [vault] with [bytes] in one step ([writeAtomically]), under [walletFilesLock]: a crash
+ * leaves the old vault or the new one, and a wallet deleted meanwhile throws [WalletGoneException] rather than being
+ * written back as a vault without its meta.
+ */
+internal fun rewriteVault(vault: File, bytes: ByteArray, write: ((File, ByteArray) -> Unit)? = null) {
+    synchronized(walletFilesLock) {
+        if(!vault.exists()) throw WalletGoneException()
+        if(write == null) writeAtomically(vault, bytes) else writeAtomically(vault, bytes, write)
     }
 }
 

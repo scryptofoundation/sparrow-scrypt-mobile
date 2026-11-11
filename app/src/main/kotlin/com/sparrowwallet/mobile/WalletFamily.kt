@@ -23,6 +23,9 @@ data class WalletFamily(val public: Member, val private: Member? = null, val tap
     /** PUBLIC, then PRIVATE and TAPROOT when present. */
     val layers: List<Layer> get() = Layer.entries.filter { member(it) != null }
 
+    /** The members' names, in the layers' order. */
+    val names: List<String> get() = layers.mapNotNull { member(it)?.name }
+
     fun member(layer: Layer): Member? = when(layer) {
         Layer.PUBLIC -> public
         Layer.PRIVATE -> private
@@ -41,13 +44,12 @@ data class WalletFamily(val public: Member, val private: Member? = null, val tap
 
     /**
      * The members a sync of the Home on [layer] also syncs, besides the shown wallet: the Taproot wallet for the Public
-     * layer (its Private wallet keeps its own handling, as the MWEB counterpart), the public wallet for the Private
-     * layer (as before), nothing for the Taproot layer. Only members of this family.
+     * layer (its Private wallet keeps its own handling, as the MWEB counterpart); nothing for the other layers (the
+     * Private layer's Home syncs its public wallet itself, as its MWEB counterpart). Only members of this family.
      */
     fun alsoSync(layer: Layer): List<Member> = when(layer) {
         Layer.PUBLIC -> listOfNotNull(taproot)
-        Layer.PRIVATE -> listOfNotNull(private?.let { public })
-        Layer.TAPROOT -> emptyList()
+        Layer.PRIVATE, Layer.TAPROOT -> emptyList()
     }
 
     /** The family with each member named in [updated] holding its new vault (labels saved, labels synced). */
@@ -122,6 +124,19 @@ data class WalletFamily(val public: Member, val private: Member? = null, val tap
 fun joinedAlsoSync(before: WalletFamily, after: WalletFamily, layer: Layer, airGapped: Boolean): List<Member> =
     if(airGapped) emptyList()
     else after.alsoSync(layer).filter { m -> Layer.entries.none { before.member(it)?.name == m.name } }
+
+/**
+ * The words after the network in the Home header of the wallet shown on [layer] of a family with [layers]: "LINKED PAIR"
+ * on the Public layer when its only companion is the Private wallet (as before Taproot wallets); "LINKED WALLETS" on the
+ * Public and Private layers when the family has its Taproot wallet; none on the Taproot layer, for a wallet on its own,
+ * or on the Private layer of a pair (its header names its layer, as before).
+ */
+fun linkedLabel(layers: List<Layer>, layer: Layer): String? = when {
+    layer == Layer.TAPROOT || layer !in layers -> null
+    Layer.TAPROOT in layers && layers.size > 1 -> "LINKED WALLETS"
+    layer == Layer.PUBLIC && Layer.PRIVATE in layers -> "LINKED PAIR"
+    else -> null
+}
 
 /** The layer switch's segments: one per layer in the order Public, Private, Taproot; none when there is only one layer. */
 fun switchLayers(layers: List<Layer>): List<Layer> =

@@ -53,6 +53,9 @@ object TaprootCompanion {
 
     fun nameTaken(name: String): String = "A wallet named $name already exists."
 
+    /** The refusal when the parent's seed's Taproot account is already on the phone under another name. */
+    fun alreadyHere(name: String): String = "This seed's Taproot wallet is already on this phone as $name."
+
     /** The seed kinds drongo derives a Taproot child from (Keystore.fromSeed takes any) that this phone stores. */
     private val SEED_TYPES = setOf("BIP39", "ELECTRUM")
 
@@ -78,7 +81,7 @@ object TaprootCompanion {
      * counting only when it runs both ways among [wallets]. A wallet already holding the companion's name is left to
      * [add], which links it when it is the same seed's Taproot wallet.
      */
-    fun problem(info: WalletRepository.WalletInfo, wallets: List<WalletRepository.WalletInfo>, hasSeed: Boolean, seedType: String?): String? =
+    internal fun problem(info: WalletRepository.WalletInfo, wallets: List<WalletRepository.WalletInfo>, hasSeed: Boolean, seedType: String?): String? =
         walletProblem(info)
             ?: mutualTaproot(info, wallets)?.let { nameTaken(it) }
             ?: seedProblem(hasSeed, seedType)
@@ -130,6 +133,8 @@ object TaprootCompanion {
         walletProblem(judged)?.let { return it }
         seedProblem(seed.mnemonic.isNotBlank(), seed.seedType)?.let { return it }
         val companion = vaultData(seed)
+        //before anything is written: two wallets holding one account would share one session entry
+        sameAccount(files, wallets, setOf(parent.name, name), companion, password)?.let { return alreadyHere(it) }
         byName[name]?.let { existing -> return adopt(files, judged, existing, companion, password, byName) }
         val saved = try {
             files.save(name, companion, password)
@@ -142,6 +147,25 @@ object TaprootCompanion {
         val created = WalletRepository.WalletInfo(name, Network.fromId(companion.network), companion.scriptType,
             WalletLinks(), Coin.fromId(companion.coin))
         return link(files, judged, created, removeOnFailure = true)
+    }
+
+    /**
+     * A listed wallet, other than those in [skip], that already holds [companion]'s account: a Taproot wallet of its coin
+     * and network (by its meta) whose vault opens with [password] and holds the same account xpub. One sealed under another
+     * password cannot be opened to compare, so it is not found.
+     */
+    private fun sameAccount(files: CompanionFiles, wallets: List<WalletRepository.WalletInfo>, skip: Set<String>,
+                            companion: VaultData, password: String): String? {
+        val candidates = wallets.filter {
+            it.name !in skip && it.scriptType == ScriptType.P2TR.name && it.coin.id == companion.coin && it.network.id == companion.network
+        }
+        if(candidates.isEmpty()) return null
+        val xpub = walletAccountXpub(companion)
+        return candidates.firstOrNull { w ->
+            val data = runCatching { files.open(w.name, password) }.getOrNull() ?: return@firstOrNull false
+            data.scriptType == companion.scriptType && data.coin == companion.coin && data.network == companion.network &&
+                walletAccountXpub(data) == xpub
+        }?.name
     }
 
     /** Links [existing] as [parent]'s Taproot wallet when it is the same seed's, else refuses its name. */

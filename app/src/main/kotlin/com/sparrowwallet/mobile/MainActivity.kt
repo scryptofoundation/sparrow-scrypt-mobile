@@ -212,6 +212,8 @@ private fun App(repo: WalletRepository) {
     // password so switching between layers needs no re-entry
     fun homeFor(name: String, data: VaultData, password: String): Screen.Home {
         val opened = WalletFamily.open(name, data, repo.listWallets()) { runCatching { repo.unlock(it, password) }.getOrNull() }
+        // a member deleted while the family was opened is not shown: what its Home keeps would write a deleted wallet back
+        if(opened.family.names.any { !repo.walletVaultExists(it) }) throw WalletGoneException()
         return Screen.Home(opened.family, opened.layer, password)
     }
 
@@ -392,9 +394,14 @@ private fun App(repo: WalletRepository) {
             is Screen.TxDetail -> TxDetailScreen(
                 s.tx, repo.coin(s.home.data), repo.network(s.home.data),
                 onSaveLabel = if(s.home.password.isNotEmpty()) { label: String ->
-                    val newData = repo.updateLabel(s.home.name, s.home.data, s.home.password, s.tx.txid, label)
+                    // a wallet no longer on this phone is not written back: back to the list
+                    val newData = try {
+                        repo.updateLabel(s.home.name, s.home.data, s.home.password, s.tx.txid, label)
+                    } catch(e: WalletGoneException) {
+                        null
+                    }
                     val cleaned = label.trim().ifEmpty { null }
-                    screen = Screen.TxDetail(
+                    screen = if(newData == null) Screen.WalletList else Screen.TxDetail(
                         s.home.withData(mapOf(s.home.name to newData)),
                         s.tx.copy(label = cleaned, kind = kindFor(s.tx.delta, cleaned))
                     )
@@ -495,7 +502,7 @@ private fun WalletListScreen(
                 )
                 for(w in coinWallets) {
                     // the companions Home opens with it, as Home judges them
-                    val tags = remember(wallets, w) { companionTags(w, wallets) }
+                    val tags = remember(wallets, w) { companionsOf(w, wallets).map { it.first } }
                     OutlinedButton(onClick = { onOpen(w.name) }, modifier = Modifier.fillMaxWidth()) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically) {
@@ -503,7 +510,7 @@ private fun WalletListScreen(
                                 Text(w.name)
                                 WalletTags(modifier = Modifier.padding(top = 5.dp)) {
                                     if(coin.mweb) LayerTag(privateLayer = w.scriptType == "MWEB")
-                                    for(tag in tags) CompanionTag(tag)
+                                    for(tag in tags) LayerTag(tag)
                                 }
                             }
                             NetworkBadge(w.network)
@@ -1016,7 +1023,7 @@ private fun UnlockScreen(name: String, repo: WalletRepository, unlockFamily: (St
                         runCatching { unlockFamily(typed) }
                     }
                     unlocking = false
-                    opened.fold({ onUnlocked(it) }, { error = "Wrong password" })
+                    opened.fold({ onUnlocked(it) }, { error = if(repo.walletVaultExists(name)) "Wrong password" else WalletGoneException().message })
                 }
             },
             enabled = !unlocking,
@@ -1032,12 +1039,14 @@ private fun UnlockScreen(name: String, repo: WalletRepository, unlockFamily: (St
             val choices = remember(name) { repo.deleteChoices(name) }
             var chosen by remember(name) { mutableStateOf<DeleteChoice?>(null) }
             var deleteError by remember(name) { mutableStateOf<String?>(null) }
+            // never while an unlock runs: it would register the wallet and its sync credentials again as it finishes
             fun delete(choice: DeleteChoice) {
+                if(unlocking) return
                 if(repo.deleteWallets(choice)) onDeleted() else deleteError = DELETE_FAILED
             }
             if(choices.isEmpty()) {
                 deleteError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-                Button(onClick = { delete(DeleteChoice.only(name)) }, modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { delete(DeleteChoice.only(name)) }, enabled = !unlocking, modifier = Modifier.fillMaxWidth()) {
                     Text("Yes, delete \"$name\"")
                 }
             } else {
@@ -1047,12 +1056,12 @@ private fun UnlockScreen(name: String, repo: WalletRepository, unlockFamily: (St
                 }
                 for(choice in choices) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        RadioButton(selected = chosen == choice, onClick = { chosen = choice })
+                        RadioButton(selected = chosen == choice, onClick = { chosen = choice }, enabled = !unlocking)
                         Text(choice.label, modifier = Modifier.weight(1f))
                     }
                 }
                 deleteError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
-                Button(onClick = { chosen?.let { delete(it) } }, enabled = chosen != null, modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { chosen?.let { delete(it) } }, enabled = chosen != null && !unlocking, modifier = Modifier.fillMaxWidth()) {
                     Text("Delete")
                 }
             }
@@ -1278,6 +1287,8 @@ private fun HomeScreen(
     // wallet's own sync and check, on its own: its result or failure changes nothing shown here, and its balance reaches
     // the wallet list's total through its session unlock. Its inscription check takes the same path as this wallet's.
     val alsoAccounts = remember(alsoSync) { java.util.concurrent.ConcurrentHashMap<VaultData, HDKey>() }
+    // their balances as last synced, for the family total the wallet list's card shows; read again after each sync
+    var alsoBalances by remember(alsoSync) { mutableStateOf(alsoSync.map { repo.cachedSnapshot(it)?.balance }) }
     suspend fun syncAlong(other: VaultData) = syncFamilyMember(repo, other) {
         alsoAccounts[other] ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             repo.accountKey(other)
@@ -1305,7 +1316,10 @@ private fun HomeScreen(
                     privateResult?.fold({ mwebStateText(it) }, { "unavailable — ${it.message}" })
                 )
                 if(checkAfter && publicResult.isSuccess) checkInscriptions()
-                if(checkAfter) for(other in alsoSync) scope.launch { syncAlong(other) }
+                if(checkAfter) for(other in alsoSync) scope.launch {
+                    syncAlong(other)
+                    alsoBalances = alsoSync.map { repo.cachedSnapshot(it)?.balance }
+                }
             } finally {
                 syncing = false
             }
@@ -1338,8 +1352,8 @@ private fun HomeScreen(
             Column {
                 Text(name, style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    if(linkedData != null) "${network.displayName.uppercase()} · LINKED PAIR"
-                    else network.displayName.uppercase(),
+                    linkedLabel(layers, layer)?.let { "${network.displayName.uppercase()} · $it" }
+                        ?: network.displayName.uppercase(),
                     fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1347,16 +1361,21 @@ private fun HomeScreen(
         }
         LayerSwitch(layers, layer, onLayer)
         run {
-            val publicTotal = snapshot?.balance?.total
-            val privateTotal = privateSnap?.let { it.confirmed + it.unconfirmed }
+            val also = alsoBalances.filterNotNull().takeIf { it.isNotEmpty() }
+            val shown = publicHomeTotal(
+                snapshot?.balance?.total, snapshot?.balance?.unconfirmed,
+                privateSnap?.let { it.confirmed + it.unconfirmed }, privateSnap?.unconfirmed,
+                also?.sumOf { it.total }, also?.sumOf { it.unconfirmed }
+            )
             BalanceHeader(
                 coin = repo.coin(data),
-                eyebrow = if(privateTotal != null) "Total balance" else "Balance",
-                total = publicTotal?.let { it + (privateTotal ?: 0) },
+                eyebrow = shown.eyebrow,
+                total = shown.total,
                 usdNow = usdNow,
-                publicPart = if(privateTotal != null) publicTotal else null,
-                privatePart = privateTotal,
-                pending = snapshot?.let { it.balance.unconfirmed + (privateSnap?.unconfirmed ?: 0) }
+                publicPart = shown.publicPart,
+                privatePart = shown.privatePart,
+                taprootPart = shown.taprootPart,
+                pending = shown.pending
             )
         }
         StatusSlot(statusWithCheck(status, checking), when {
@@ -1554,7 +1573,7 @@ private fun MwebHomeScreen(
             Column {
                 Text(name, style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "${network.displayName.uppercase()} · PRIVATE LAYER · MWEB",
+                    "${network.displayName.uppercase()} · PRIVATE LAYER · MWEB" + (linkedLabel(layers, layer)?.let { " · $it" } ?: ""),
                     fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
