@@ -318,10 +318,10 @@ class WalletRepository(context: Context) {
         return withContext(Dispatchers.IO) { inscriptionChecker.storedResults(name) }
     }
 
-    /** The indexer marks the check run kept for the wallet's coins its last listing left out (not coins), off the main thread. */
-    private suspend fun loadKeptMarks(data: VaultData): Map<String, KeptMark> {
-        val name = sessionNames[data] ?: return emptyMap()
-        return withContext(Dispatchers.IO) { inscriptionChecker.keptMarks(name) }
+    /** What Send reads of the wallet's results (rows and kept marks), from one read, off the main thread. */
+    private suspend fun loadSendSnapshot(data: VaultData): InscriptionChecker.SendSnapshot? {
+        val name = sessionNames[data] ?: return null
+        return withContext(Dispatchers.IO) { inscriptionChecker.sendSnapshot(name) }
     }
 
     /**
@@ -794,9 +794,11 @@ class WalletRepository(context: Context) {
     private suspend fun classifyCoins(client: ChainBackend, data: VaultData, scan: WalletScanner.UtxoScan, tip: Long): CoinStates {
         val coin = coin(data)
         val network = network(data)
-        val results = if(ChainRules.covers(coin)) loadInscriptionChecks(data) else null
-        //The marks the check run kept for coins its last listing left out: such a coin listed here is held by its mark
-        val marks = if(ChainRules.covers(coin)) loadKeptMarks(data) else emptyMap()
+        //The rows and the marks the check run kept for coins its last listing left out (such a coin listed here is held
+        //by its mark), from one read, so a run saving in between cannot pair one run's rows with another's marks
+        val snapshot = if(ChainRules.covers(coin)) loadSendSnapshot(data) else null
+        val results = snapshot?.rows
+        val marks = snapshot?.marks ?: emptyMap()
         val ready = scan.utxos.filter { spendable(data, tip, it) }.associate { outpoint(it) to it.utxo }
         //The readers' generation first, then the setting and proxy: a change between the two reads is never missed
         val generation = indexerReaders.generation

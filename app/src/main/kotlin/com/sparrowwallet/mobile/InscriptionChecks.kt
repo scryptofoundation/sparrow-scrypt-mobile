@@ -306,6 +306,8 @@ internal class IndexerReaders(
     private val kept = java.util.concurrent.ConcurrentHashMap<Key, java.util.concurrent.ConcurrentHashMap<String, IndexerOutput>>()
     private val locks = java.util.concurrent.ConcurrentHashMap<Key, kotlinx.coroutines.sync.Mutex>()
     private val failedAt = java.util.concurrent.ConcurrentHashMap<Key, Long>()
+    /** When a holds-only reader last answered "unknown" for a coin, by outpoint (in memory: see [answers]). */
+    private val unknownAt = java.util.concurrent.ConcurrentHashMap<Key, java.util.concurrent.ConcurrentHashMap<String, Long>>()
     private val lent = java.util.concurrent.ConcurrentHashMap.newKeySet<InscriptionIndexer>()
     /** Readers whose open is still in flight (a Send pass's or a check run's, see [openWithin]): [clear] closes them too. */
     internal val opening: MutableSet<InscriptionIndexer> = java.util.concurrent.ConcurrentHashMap.newKeySet()
@@ -316,10 +318,19 @@ internal class IndexerReaders(
     /**
      * The answers for [coins] under [setting]: none, with nothing contacted, on Built-in, with no indexer for the coin,
      * when [airGapped], or for no coins.
+     *
+     * A reader that can only add holds (Nintondo's, or one that is not runes-aware on a chain with rune-like tokens) is
+     * asked only about coins not in [decided] (coins the stored results already hold) and not answered "unknown" for
+     * less than [InscriptionChecker.ASKED_FRESH_MS] ago; it is asked in pieces (a coin at a time when it
+     * [InscriptionIndexer.asksOneAtATime]), and a pass cut by its deadline keeps the CARRYING answers received before the
+     * cut (a hold is always safe): any other answer from that pass is dropped, and the coins not reached have none. A
+     * reader that can vouch for "nothing" is asked about every coin in one pass, and a pass cut short gives no answers. A
+     * timeout or a 429 is remembered like a failed open, so the next pass does not stall on it again. An unasked coin has
+     * no answer, exactly as an unknown one.
      */
     suspend fun answers(setting: InscriptionSetting, coin: Coin, network: Network, proxy: SocksProxy?,
                         coins: List<com.sparrowwallet.mobile.electrum.Utxo>, airGapped: Boolean = NetworkPolicy.blocked,
-                        gen: Int = generation): Answers {
+                        gen: Int = generation, decided: Set<String> = emptySet()): Answers {
         //[gen] is the generation the setting and proxy were read in (the caller takes it before reading them): once a
         //change bumps it, this pass opens and asks nothing
         //One deadline for the whole pass, the open included; past it the reader is closed, which ends a blocked request
@@ -333,24 +344,48 @@ internal class IndexerReaders(
         val key = Key(coin, network, url, proxy)
         val reader = reader(key, gen, expired) ?: return none
         val keptHere = kept.computeIfAbsent(key) { java.util.concurrent.ConcurrentHashMap() }
-        val ask = outpoints.distinct().filter { !keptHere.containsKey(it) }
+        val runeLike = com.sparrowwallet.mobile.crypto.track.ChainRules.hasRuneLikeTokens(coin)
+        val holdsOnly = !tokensIndexed || (runeLike && !runesAwareIndexer(coin, reader))
+        val unknownHere = unknownAt.computeIfAbsent(key) { java.util.concurrent.ConcurrentHashMap() }
+        val freshFrom = now() - InscriptionChecker.ASKED_FRESH_MS
+        val ask = outpoints.distinct().filter { op ->
+            !keptHere.containsKey(op) && (!holdsOnly || (op !in decided && (unknownHere[op]?.let { it < freshFrom } ?: true)))
+        }
         val outputs = HashMap<String, IndexerOutput>()
-        if(ask.isNotEmpty()) {
+        val pieces = if(!holdsOnly) listOf(ask) else ask.chunked(if(reader.asksOneAtATime) 1 else 100)
+        for(piece in pieces) {
+            if(piece.isEmpty()) continue
             val answered = try {
-                stopWhenTimeUp(expired) { reader.outputs(ask) }
+                stopWhenTimeUp(expired) { reader.outputs(piece) }
             } catch(e: CancellationException) {
                 throw e
-            } catch(e: Exception) {
-                null
-            }
-            if(answered == null) {
+            } catch(e: com.sparrowwallet.mobile.electrum.RateLimitedException) {
+                //A 429 is remembered like a failed open
+                failedAt[key] = now()
                 drop(key, reader)
                 return none
+            } catch(e: Exception) {
+                drop(key, reader)
+                return none
+            }
+            if(answered == null) {
+                //Past the deadline: remembered like a failed open, and the reader is closed (which ends a blocked request)
+                failedAt[key] = now()
+                drop(key, reader)
+                if(!holdsOnly) return none
+                //Only the carrying answers of a cut-short pass stand
+                outputs.entries.removeAll { !it.value.carries }
+                break
             }
             outputs.putAll(answered)
         }
         val runesAware = runesAwareIndexer(coin, reader)
-        val runeLike = com.sparrowwallet.mobile.crypto.track.ChainRules.hasRuneLikeTokens(coin)
+        if(holdsOnly) {
+            val at = now()
+            for((op, output) in outputs) {
+                if(output.carries) unknownHere.remove(op) else if(!output.indexed) unknownHere[op] = at
+            }
+        }
         val confirmed = coins.filter { it.height > 0 }.map { "${it.txHash}:${it.txPos}" }.toSet()
         val byOutpoint = LinkedHashMap<String, Boolean?>()
         for(outpoint in outpoints) {
@@ -430,6 +465,7 @@ internal class IndexerReaders(
         readers.clear()
         kept.clear()
         failedAt.clear()
+        unknownAt.clear()
         open.forEach { runCatching { it.close() } }
     }
 
@@ -463,7 +499,10 @@ internal suspend fun classifySend(ready: Map<String, com.sparrowwallet.mobile.el
                                   marks: Map<String, KeptMark> = emptyMap(),
                                   generation: Int = readers.generation): CoinStates {
     val covered = com.sparrowwallet.mobile.crypto.track.ChainRules.covers(coin)
-    val answers = readers.answers(setting, coin, network, proxy, ready.values.toList(), airGapped, generation)
+    //Coins the stored results already hold (Inscribed, marked, or with a kept mark): a holds-only reader is not asked
+    val decided = if(!covered) emptySet() else
+        results.orEmpty().values.filter { it.verdict == Verdict.INSCRIBED || it.runes }.map { it.outpoint }.toSet() + marks.keys
+    val answers = readers.answers(setting, coin, network, proxy, ready.values.toList(), airGapped, generation, decided)
     return classifyCoins(ready.keys.toList(), if(covered) withKeptMarks(results, marks, ready) else null, covered,
         com.sparrowwallet.mobile.crypto.track.ChainRules.hasRuneLikeTokens(coin), answers.runesAware,
         { op -> indexerCarries(answers.of(op), answers.tokensIndexed) { writesTokens(ready.getValue(op)) } }

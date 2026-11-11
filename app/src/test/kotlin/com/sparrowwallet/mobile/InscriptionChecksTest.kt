@@ -319,6 +319,7 @@ class InscriptionChecksTest {
     private class SendIndexer(override var runesAware: Boolean = true, var answer: suspend (List<String>) -> Map<String, IndexerOutput>) : InscriptionIndexer {
         var asked = 0
         var closed = false
+        override var asksOneAtATime = false
         override suspend fun status() = IndexerStatus("mainnet", runesAware, 1)
         override suspend fun outputs(outpoints: List<String>): Map<String, IndexerOutput> {
             if(closed) throw IndexerException("closed")
@@ -895,5 +896,107 @@ class InscriptionChecksTest {
         assertEquals(CoinState.HELD, classifySend(ready(a), null, Coin.LITECOIN, Network.MAINNET, InscriptionSetting.Public, null, readers,
             false, { false }, { true }, generation = stale).state(a))
         assertEquals(0, opens)
+    }
+
+    /**
+     * Final review I1 (a): Send asks a holds-only indexer (Nintondo) only about coins the stored results leave undecided
+     * (not Inscribed, not held by a mark or a kept mark) and that it has not answered "unknown" for within the window.
+     */
+    @Test
+    fun sendAsksAHoldsOnlyIndexerOnlyAboutUndecidedStaleCoins(): Unit = runBlocking {
+        var clock = 0L
+        val hour = 3_600_000L
+        val ops = (1..5).map { "%064x:0".format(it) }
+        val asked = ArrayList<String>()
+        val nintondo = SendIndexer(runesAware = false) { list -> asked.addAll(list); list.associateWith { IndexerOutput.unknown(it) } }
+            .apply { asksOneAtATime = true }
+        val readers = IndexerReaders(now = { clock }) { _, _, _, _ -> nintondo }
+        fun row(op: String, verdict: Verdict, runes: Boolean = false) =
+            InscriptionCheck(op.take(64), 0, verdict, InscriptionCheck.Source.BUILT_IN, runes, emptyList(), null, "ab".repeat(32), emptyList())
+        val results = mapOf(ops[0] to row(ops[0], Verdict.INSCRIBED), ops[1] to row(ops[1], Verdict.CLEAN, runes = true), ops[2] to row(ops[2], Verdict.CLEAN))
+        val marks = mapOf(ops[4] to KeptMark(true, null, 0))
+        val ready = ops.associateWith { utxo(it) }
+        suspend fun pass() = classifySend(ready, results, Coin.DOGECOIN, Network.MAINNET, InscriptionSetting.Public, null, readers, false,
+            { false }, { false }, marks)
+        val first = pass()
+        assertEquals(listOf(ops[2], ops[3]), asked)
+        for(held in listOf(ops[0], ops[1], ops[4])) assertEquals(CoinState.HELD, first.state(held), held)
+        asked.clear()
+        clock += hour
+        pass()
+        assertTrue(asked.isEmpty(), "answered unknown an hour ago: not asked again")
+        clock += 6 * hour
+        pass()
+        assertEquals(listOf(ops[2], ops[3]), asked)
+    }
+
+    /**
+     * Final review I1 (b, c): a holds-only pass cut by its deadline keeps the carrying answers it received (a hold), drops
+     * a "nothing" it received, gives no answer for the rest, and is remembered as a failure: the next pass opens nothing.
+     */
+    @Test
+    fun sendKeepsCarryingAnswersReceivedBeforeItsDeadline(): Unit = runBlocking {
+        val (a, b, c) = (1..3).map { "%064x:0".format(it) }
+        val reader = SendIndexer(runesAware = false) { list ->
+            list.associateWith { op ->
+                when(op) {
+                    a -> IndexerOutput(op, true, emptyList(), emptyMap(), true)
+                    b -> IndexerOutput(op, true, emptyList(), emptyMap(), false)
+                    else -> kotlinx.coroutines.awaitCancellation()
+                }
+            }
+        }.apply { asksOneAtATime = true }
+        var opens = 0
+        val readers = IndexerReaders(passDeadlineMs = 400) { _, _, _, _ -> opens++; reader }
+        suspend fun pass() = kotlinx.coroutines.withTimeout(10_000) {
+            readers.answers(InscriptionSetting.Public, Coin.BELLSCOIN, Network.MAINNET, null, listOf(a, b, c).map { utxo(it) }, false)
+        }
+        val answers = pass()
+        assertEquals(true, answers.of(a))
+        assertNull(answers.of(b), "a nothing from a cut-short pass is dropped")
+        assertNull(answers.of(c))
+        assertTrue(reader.closed)
+        assertNull(pass().of(a), "the timeout is remembered")
+        assertEquals(1, opens)
+    }
+
+    /** Final review I1 (c): a 429 is remembered like a failed open, for a holds-only and a whole-pass reader alike. */
+    @Test
+    fun a429IsRememberedForAMinute(): Unit = runBlocking {
+        val a = clean.outpoint
+        for(coin in listOf(Coin.DOGECOIN, Coin.LITECOIN)) {
+            var clock = 0L
+            var opens = 0
+            val made = ArrayList<SendIndexer>()
+            val readers = IndexerReaders(now = { clock }) { _, _, _, _ ->
+                opens++
+                SendIndexer(runesAware = coin == Coin.LITECOIN) { throw com.sparrowwallet.mobile.electrum.RateLimitedException("HTTP 429") }.also { made.add(it) }
+            }
+            suspend fun pass() = readers.answers(InscriptionSetting.Public, coin, Network.MAINNET, null, listOf(utxo(a)), false).of(a)
+            assertNull(pass())
+            clock += 10_000
+            assertNull(pass())
+            assertEquals(1, opens, "$coin")
+            assertEquals(1, made.sumOf { it.asked }, "$coin")
+            clock += IndexerReaders.FAILED_OPEN_MS
+            pass()
+            assertEquals(2, opens, "$coin")
+        }
+    }
+
+    /** Final review I1: a coin left unasked is no answer, exactly as an unknown one: never Clean from it on Bellscoin. */
+    @Test
+    fun anUnaskedCoinIsNoAnswerNeverClean(): Unit = runBlocking {
+        var clock = 0L
+        val a = clean.outpoint
+        val reader = SendIndexer(runesAware = false) { list -> list.associateWith { IndexerOutput.unknown(it) } }.apply { asksOneAtATime = true }
+        val readers = IndexerReaders(now = { clock }) { _, _, _, _ -> reader }
+        suspend fun state(local: Boolean) = classifySend(mapOf(a to utxo(a)), null, Coin.BELLSCOIN, Network.MAINNET, InscriptionSetting.Public,
+            null, readers, false, { false }, { local }).state(a)
+        assertEquals(CoinState.HELD, state(true))
+        assertEquals(1, reader.asked)
+        clock += 60_000
+        assertEquals(CoinState.HELD, state(true))
+        assertEquals(1, reader.asked, "answered unknown a minute ago: not asked")
     }
 }

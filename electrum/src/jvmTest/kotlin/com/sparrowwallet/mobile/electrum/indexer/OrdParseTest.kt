@@ -287,4 +287,17 @@ class OrdParseTest {
         val bare = OrdParse.inscription("""{"id":"$inscription","number":"7","content_length":-3}""")
         assertEquals(IndexerInscription(inscription, null, null, null), bare)
     }
+
+    /** Final review M6: at most 100 rune entries are taken from one output; more and it is unlisted (carries), never clean. */
+    @Test fun tooManyRunesOnOneOutputCarry() {
+        fun name(i: Int) = "R" + ('A' + i / 26) + ('A' + i % 26)
+        fun answer(n: Int) = (0 until n).joinToString(",", "{", "}") { "\"${name(it)}\":{\"amount\":1,\"divisibility\":0}" }
+        val many = output("""{"indexed":true,"inscriptions":[],"runes":${answer(101)},"spent":false}""")
+        assertTrue(many.unlisted)
+        assertTrue(many.carries)
+        assertTrue(many.runes.size <= 100, "${many.runes.size}")
+        val hundred = output("""{"indexed":true,"inscriptions":[],"runes":${answer(100)},"spent":false}""")
+        assertFalse(hundred.unlisted)
+        assertEquals(100, hundred.runes.size)
+    }
 }

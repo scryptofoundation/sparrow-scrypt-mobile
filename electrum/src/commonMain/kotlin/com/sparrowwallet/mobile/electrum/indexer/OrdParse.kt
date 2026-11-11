@@ -20,6 +20,8 @@ import kotlinx.serialization.json.JsonPrimitive
 object OrdParse {
     const val MAX_JSON_CHARS = 4_000_000
     private const val MAX_DIVISIBILITY = 38
+    /** The most rune entries taken from one output; more and the output is unlisted (it carries), never clean. */
+    const val MAX_RUNES = 100
     internal const val MAX_CONTENT_TYPE = 255
     private const val NO_SYMBOL = "¤"
 
@@ -106,7 +108,10 @@ object OrdParse {
             else -> unlisted = true
         }
         val runes = LinkedHashMap<String, RuneBalance>()
-        for((nameNode, balanceNode) in entries) {
+        if(entries.size > MAX_RUNES) {
+            unlisted = true
+        }
+        for((nameNode, balanceNode) in entries.take(MAX_RUNES)) {
             val name = nameNode.text()
             val balance = balance(balanceNode)
             if(name == null || !RUNE_NAME.matches(name) || balance == null) unlisted = true else runes[name] = balance

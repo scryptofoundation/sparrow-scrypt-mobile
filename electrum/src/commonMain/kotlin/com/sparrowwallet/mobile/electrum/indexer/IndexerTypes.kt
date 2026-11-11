@@ -49,6 +49,12 @@ interface InscriptionIndexer {
      */
     val runesAware: Boolean
 
+    /**
+     * True for a reader that asks one output per request (Nintondo's find_meta): a caller with a deadline then asks it a
+     * coin at a time, so the answers that came before the deadline are not lost with the rest.
+     */
+    val asksOneAtATime: Boolean get() = false
+
     suspend fun status(): IndexerStatus
 
     /** The indexer's view of each outpoint: an entry for every outpoint asked, unknown where it cannot say. */

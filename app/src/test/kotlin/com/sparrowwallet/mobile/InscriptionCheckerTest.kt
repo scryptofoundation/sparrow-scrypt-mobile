@@ -137,6 +137,7 @@ private class FakeIndexer(var answer: suspend (List<String>) -> Map<String, Inde
     /** Runs inside each inscription call, before it answers (to hold it, or to outlast a deadline). */
     var onInscription: suspend () -> Unit = {}
     @Volatile var closed = false
+    override var asksOneAtATime = false
     /** Calls refused because the reader was closed, as the real readers refuse them. */
     var refused = 0
 
@@ -1367,8 +1368,12 @@ class InscriptionCheckerTest {
         checker.withIndexer(chain, both.drop(1), null, null)
         assertTrue("$a:0" !in checker.storedResults(wallet)!!)
         val ready = both.associateBy { "${it.txHash}:${it.txPos}" }
-        val states = classifySend(ready, checker.storedResults(wallet), Coin.LITECOIN, Network.MAINNET, InscriptionSetting.BuiltIn, null,
-            IndexerReaders(), false, { false }, { false }, marks = checker.keptMarks(wallet))
+        //Final review M1: rows and marks come from one read
+        val snapshot = checker.sendSnapshot(wallet)!!
+        assertEquals(checker.storedResults(wallet), snapshot.rows)
+        assertEquals(checker.keptMarks(wallet), snapshot.marks)
+        val states = classifySend(ready, snapshot.rows, Coin.LITECOIN, Network.MAINNET, InscriptionSetting.BuiltIn, null,
+            IndexerReaders(), false, { false }, { false }, marks = snapshot.marks)
         assertEquals(CoinState.HELD, states.state("$a:0"))
         assertEquals(CoinState.CLEAN, states.state("$b:0"))
     }
@@ -1736,5 +1741,149 @@ class InscriptionCheckerTest {
         assertTrue(requestDeeperIfAllowed(checker, wallet, Coin.LITECOIN, "P2WPKH", false, d.outpoint) { calls.incrementAndGet(); emptyMap() })
         checker.queueEmpties()
         assertEquals(1, calls.get())
+    }
+
+    /**
+     * Final review I1: an indexer that can only add holds (Nintondo, one coin at a time) is asked only about coins the
+     * stored results leave undecided: not a coin already held by a mark or found Inscribed, nor one it answered "unknown"
+     * for within [InscriptionChecker.ASKED_FRESH_MS], unless it is new or checked deeper.
+     */
+    @Test fun aHoldsOnlyIndexerIsAskedOnlyAboutUndecidedStaleCoins(): Unit = runBlocking {
+        val hour = 60L * 60 * 1000
+        var clock = 1_000_000_000_000L
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val coins = (1..150).map { oldCoin(chain, 10_000L + it) }
+        val utxos = coins.map { Utxo(it, 0, 100, 10_000) }
+        val marked = coins.take(10).map { "$it:0" }.toSet()
+        val nintondo = FakeIndexer { asked -> asked.associateWith { if(it in marked) IndexerOutput(it, true, emptyList(), emptyMap(), true) else IndexerOutput.unknown(it) } }
+            .apply { runesAware = false; asksOneAtATime = true }
+        suspend fun run(list: List<Utxo>, deeper: Set<String> = emptySet()): List<String> {
+            val before = nintondo.asked.size
+            InscriptionChecker(InscriptionStore(dir, cipher), now = { clock }).check(wallet, Coin.DOGECOIN, Network.MAINNET, chain, list, deeper,
+                indexer = nintondo, indexerSource = InscriptionCheck.Source.PUBLIC)
+            return nintondo.asked.drop(before).flatten()
+        }
+        assertEquals(utxos.map { "${it.txHash}:0" }, run(utxos))
+        assertTrue(nintondo.asked.all { it.size == 1 }, "one coin a request")
+
+        clock += hour
+        val x = oldCoin(chain, 99_999)
+        val withX = utxos + Utxo(x, 0, 100, 99_999)
+        assertEquals(listOf("$x:0"), run(withX), "only the new coin")
+        val twenty = "${coins[20]}:0"
+        assertEquals(listOf(twenty), run(withX, setOf(twenty)), "and a coin checked deeper")
+
+        clock += 5 * hour + 30 * 60 * 1000
+        val again = run(withX)
+        assertEquals((coins.drop(10).map { "$it:0" } - twenty).toSet(), again.toSet(), "the stale unknown coins only")
+        assertEquals(139, again.size)
+        val rows = InscriptionChecker(InscriptionStore(dir, cipher)).results(wallet)
+        for(op in marked) assertEquals(CoinState.HELD, sendState(rows.getValue(op), Coin.DOGECOIN), op)
+    }
+
+    /**
+     * Final review I1 (b, d): from a holds-only indexer cut short by its deadline, the carrying answers received before it
+     * stand (a hold is always safe) and the run is not "unreachable"; the rest have no answer. A runes-aware reader stays
+     * whole-pass: cut short, nothing it said is used.
+     */
+    @Test fun carryingAnswersBeforeTheDeadlineAreKept(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val b = oldCoin(chain, 60_000)
+        val c = oldCoin(chain, 70_000)
+        val utxos = listOf(Utxo(a, 0, 100, 50_000), Utxo(b, 0, 100, 60_000), Utxo(c, 0, 100, 70_000))
+        val slow = FakeIndexer { asked ->
+            asked.associateWith { op -> if(op.startsWith(a)) IndexerOutput(op, true, emptyList(), emptyMap(), true) else kotlinx.coroutines.awaitCancellation() }
+        }.apply { runesAware = false; asksOneAtATime = true }
+        val checker = InscriptionChecker(InscriptionStore(newDir(), CheckerCipher()), indexerDeadlineMs = 400)
+        val rows = kotlinx.coroutines.withTimeout(10_000) {
+            checker.check(wallet, Coin.DOGECOIN, Network.MAINNET, chain, utxos, indexer = slow, indexerSource = InscriptionCheck.Source.PUBLIC)
+        }
+        assertTrue(rows.getValue("$a:0").runes)
+        assertEquals(CoinState.HELD, sendState(rows.getValue("$a:0"), Coin.DOGECOIN))
+        assertFalse(rows.getValue("$b:0").runes)
+        assertFalse(rows.getValue("$c:0").runes)
+        assertFalse(checker.status(wallet).value!!.indexerUnreachable, "some answers came")
+
+        val whole = FakeIndexer { asked ->
+            asked.associateWith { op -> if(op.startsWith(a)) IndexerOutput(op, true, emptyList(), emptyMap(), true) else kotlinx.coroutines.awaitCancellation() }
+        }.apply { asksOneAtATime = true }
+        val ltc = InscriptionChecker(InscriptionStore(newDir(), CheckerCipher()), indexerDeadlineMs = 400)
+        val ltcRows = kotlinx.coroutines.withTimeout(10_000) {
+            ltc.check(wallet, Coin.LITECOIN, Network.MAINNET, chain, utxos, indexer = whole, indexerSource = InscriptionCheck.Source.PUBLIC)
+        }
+        assertFalse(ltcRows.getValue("$a:0").runes, "whole-pass: a cut pass gives nothing")
+        assertTrue(ltc.status(wallet).value!!.indexerUnreachable)
+    }
+
+    /**
+     * Final review I2: a results file that exists but cannot be read is set aside (one kept copy) and the wallet counts
+     * as checked with no rows, so Send treats every coin as Unchecked (rule 5), never by the old local rule alone.
+     */
+    @Test fun anUnreadableResultsFileIsSetAsideAndTheWalletCountsAsChecked(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        File(dir, "My Wallet.bin").writeBytes(byteArrayOf(1, 2, 3))
+        val checker = checker(dir, cipher)
+        assertEquals(emptyMap(), checker.storedResults(wallet))
+        assertTrue(File(dir, "My Wallet.bin.unreadable").readBytes().contentEquals(byteArrayOf(1, 2, 3)))
+        assertEquals(emptyMap(), InscriptionStore(dir, cipher).loadOrNull(wallet), "a readable file with no rows")
+        val op = "11".repeat(32) + ":0"
+        assertEquals(CoinState.UNCHECKED, classifyCoins(listOf(op), checker.storedResults(wallet), true, true, false, { null }, { false }).state(op))
+        File(dir, "My Wallet.bin").writeBytes(byteArrayOf(4, 5))
+        checker(dir, cipher).storedResults(wallet)
+        assertTrue(File(dir, "My Wallet.bin.unreadable").readBytes().contentEquals(byteArrayOf(4, 5)), "one kept copy, the latest")
+        assertEquals(setOf("My Wallet.bin", "My Wallet.bin.unreadable"), dir.list()!!.toSet())
+    }
+
+    /**
+     * Final review I2: after lost results, a coin with no indexer answer is not written Clean while the setting names an
+     * indexer (its earlier marks are gone): it stays Unchecked with the plain reason, run after run, until an indexer
+     * answers for it or it is checked deeper. On Built-in the trace stands as usual.
+     */
+    @Test fun afterLostResultsNoCleanIsWrittenWithoutAnIndexerAnswer(): Unit = runBlocking {
+        val chain = FakeChain()
+        val a = oldCoin(chain, 100_000)
+        val op = "$a:0"
+        val utxos = listOf(Utxo(a, 0, 100, 100_000))
+        fun lostDir() = newDir().also { File(it, "My Wallet.bin").writeBytes(byteArrayOf(9)) }
+        val cipher = CheckerCipher()
+        val down = FakeIndexer { throw IOException("down") }
+        val dir = lostDir()
+        val first = checker(dir, cipher).withIndexer(chain, utxos, down).getValue(op)
+        assertEquals(Verdict.UNCHECKED, first.verdict, first.toString())
+        assertEquals(InscriptionChecker.LOST_REASON, first.reason)
+        assertEquals(CoinState.UNCHECKED, sendState(first))
+        val second = checker(dir, cipher).withIndexer(chain, utxos, down).getValue(op)
+        assertEquals(InscriptionChecker.LOST_REASON, second.reason, "still lost while the indexer is down")
+        val deeper = checker(dir, cipher).check(wallet, Coin.LITECOIN, Network.MAINNET, chain, utxos, setOf(op), indexer = down,
+            indexerSource = InscriptionCheck.Source.PUBLIC).getValue(op)
+        assertEquals(Verdict.CLEAN, deeper.verdict, "checked deeper: the trace stands")
+
+        val answered = checker(lostDir(), cipher).withIndexer(chain, utxos, FakeIndexer { asked -> asked.associateWith { nothing(it) } }).getValue(op)
+        assertEquals(Verdict.CLEAN, answered.verdict, "an indexer answer settles it")
+        val builtIn = checker(lostDir(), cipher).withIndexer(chain, utxos, null, null).getValue(op)
+        assertEquals(Verdict.CLEAN, builtIn.verdict, "Built-in: the trace stands")
+    }
+
+    /** Final review M3: the last run's "indexer unreachable" survives a restart, so the header does not say Up to date. */
+    @Test fun theLastRunsReachSurvivesARestart(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val a = oldCoin(chain, 50_000)
+        val utxos = listOf(Utxo(a, 0, 100, 50_000))
+        checker(dir, cipher).withIndexer(chain, utxos, FakeIndexer { throw IOException("down") })
+        val fresh = checker(dir, cipher)
+        fresh.storedResults(wallet)
+        val status = fresh.status(wallet).value!!
+        assertTrue(status.indexerUnreachable)
+        assertFalse(status.running)
+        checker(dir, cipher).withIndexer(chain, utxos, FakeIndexer { asked -> asked.associateWith { nothing(it) } })
+        val after = checker(dir, cipher)
+        after.storedResults(wallet)
+        assertFalse(after.status(wallet).value!!.indexerUnreachable)
     }
 }

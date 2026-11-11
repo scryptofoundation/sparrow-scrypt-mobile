@@ -39,6 +39,9 @@ class NintondoIndexer internal constructor(
     /** Nintondo indexes inscriptions only: an answer showing no runes says nothing about runes or dunes. */
     override val runesAware: Boolean get() = false
 
+    /** find_meta answers one output per request. */
+    override val asksOneAtATime: Boolean get() = true
+
     override suspend fun status(): IndexerStatus {
         refuseClosed(closed)
         val r = http.get("/status", JSON)

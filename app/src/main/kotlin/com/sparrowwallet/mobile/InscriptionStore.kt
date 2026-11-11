@@ -59,13 +59,27 @@ class KeystoreCipher(private val alias: String) : StoreCipher {
 data class KeptMark(val runes: Boolean, val runeList: Map<String, RuneBalance>? = null, val since: Long, val missingRuns: Int = 0)
 
 /**
- * [blocks] (block hashes by height, deep enough not to change) and [marks] (indexer marks of outpoints the last listing
- * left out, by outpoint) were added in version 1 without a version bump: a file without them loads with none, and an
- * older reader (ignoreUnknownKeys) skips them.
+ * [blocks] (block hashes by height, deep enough not to change), [marks] (indexer marks of outpoints the last listing
+ * left out, by outpoint), [asked] (when a holds-only indexer last answered "unknown" for a coin, by outpoint), [lost]
+ * (the wallet's earlier file could not be read and was set aside), and [lastUnreachable] with [lastRunAt] (whether the
+ * last finished run could not reach its indexer, and when it ended) were added in version 1 without a version bump: a file
+ * without them loads with none, and an older reader (ignoreUnknownKeys) skips them.
  */
 @Serializable
 private data class InscriptionFile(val v: Int, val checks: Map<String, InscriptionCheck>, val blocks: Map<Int, String> = emptyMap(),
-                                   val marks: Map<String, KeptMark> = emptyMap())
+                                   val marks: Map<String, KeptMark> = emptyMap(), val asked: Map<String, Long> = emptyMap(),
+                                   val lost: Boolean = false, val lastUnreachable: Boolean? = null, val lastRunAt: Long? = null)
+
+/** Everything a wallet's results file holds (see [InscriptionFile] for the optional parts). */
+class StoredFile(
+    val checks: Map<String, InscriptionCheck>,
+    val blocks: Map<Int, String> = emptyMap(),
+    val marks: Map<String, KeptMark> = emptyMap(),
+    val asked: Map<String, Long> = emptyMap(),
+    val lost: Boolean = false,
+    val lastUnreachable: Boolean? = null,
+    val lastRunAt: Long? = null
+)
 
 /**
  * One encrypted file per wallet holding its inscription checks, by outpoint. Holds only check results: no keys, no xpub.
@@ -91,8 +105,33 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
     fun loadMarks(walletName: String): Map<String, KeptMark> = loadFile(walletName)?.marks ?: emptyMap()
 
     /** Everything in the wallet's file in one read, or null when there is no readable file (see [loadOrNull]). */
-    fun loadAll(walletName: String): Triple<Map<String, InscriptionCheck>, Map<Int, String>, Map<String, KeptMark>>? =
-        loadFile(walletName)?.let { Triple(it.checks, it.blocks, it.marks) }
+    fun loadAll(walletName: String): StoredFile? = loadFile(walletName)?.stored()
+
+    /**
+     * Everything in the wallet's file in one read, or null when there is none. A file that exists but cannot be read
+     * (undecryptable, unparseable, an unknown version) is not taken for "never checked", which would let Send fall back
+     * to the old local rule and lose the indexer marks it held: it is set aside as `<name>.bin.unreadable` (one kept
+     * copy, the latest), and a readable file with no rows and [StoredFile.lost] set takes its place, so the wallet counts
+     * as checked and every coin is Unchecked until checked again.
+     */
+    @Synchronized
+    fun loadOrSetAside(walletName: String): StoredFile? {
+        val file = fileFor(walletName)
+        if(!file.exists()) return null
+        loadFile(walletName)?.let { return it.stored() }
+        val aside = File(dir, file.name + UNREADABLE_SUFFIX)
+        try {
+            java.nio.file.Files.move(file.toPath(), aside.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        } catch(e: Exception) {
+            //Not movable: the copy is kept by overwriting the aside file, then the unreadable one is replaced below
+            runCatching { file.copyTo(aside, overwrite = true) }
+        }
+        val replacement = StoredFile(emptyMap(), lost = true)
+        save(walletName, replacement)
+        return replacement
+    }
+
+    private fun InscriptionFile.stored() = StoredFile(checks, blocks, marks, asked, lost, lastUnreachable, lastRunAt)
 
     /** The checks and the block hashes in one read, or null when there is no readable file (see [loadOrNull]). */
     fun loadWithBlocks(walletName: String): Pair<Map<String, InscriptionCheck>, Map<Int, String>>? =
@@ -114,11 +153,15 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
      * through its own temp file, so two writers (even through two stores) never mix; the last one wins. [blocks] are
      * block hashes by height the checker keeps with the checks, [marks] the kept indexer marks (see [InscriptionChecker]).
      */
-    @Synchronized
     fun save(walletName: String, checks: Map<String, InscriptionCheck>, blocks: Map<Int, String> = emptyMap(),
-             marks: Map<String, KeptMark> = emptyMap()) {
+             marks: Map<String, KeptMark> = emptyMap()) = save(walletName, StoredFile(checks, blocks, marks))
+
+    /** Replaces the wallet's file with everything in [file] (see the other [save]). */
+    @Synchronized
+    fun save(walletName: String, file: StoredFile) {
         dir.mkdirs()
-        val sealed = cipher.seal(json.encodeToString(InscriptionFile.serializer(), InscriptionFile(VERSION, checks, blocks, marks)).encodeToByteArray())
+        val content = InscriptionFile(VERSION, file.checks, file.blocks, file.marks, file.asked, file.lost, file.lastUnreachable, file.lastRunAt)
+        val sealed = cipher.seal(json.encodeToString(InscriptionFile.serializer(), content).encodeToByteArray())
         val target = fileFor(walletName)
         val temp = File.createTempFile(target.name + ".", ".tmp", dir)
         try {
@@ -135,11 +178,15 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
     }
 
     @Synchronized
-    fun delete(walletName: String) { fileFor(walletName).delete() }
+    fun delete(walletName: String) {
+        fileFor(walletName).let { File(dir, it.name + UNREADABLE_SUFFIX).delete(); it.delete() }
+    }
 
     companion object {
         const val VERSION = 1
         const val KEY_ALIAS = "sparrow-inscriptions"
+        /** The name ending of a results file set aside because it could not be read. */
+        const val UNREADABLE_SUFFIX = ".unreadable"
     }
 }
 

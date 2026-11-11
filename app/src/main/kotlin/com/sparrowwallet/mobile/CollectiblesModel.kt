@@ -187,7 +187,8 @@ object CollectiblesModel {
         else -> null
     }
 
-    private fun canCheckDeeper(reason: String) = reason == InscriptionTracer.BUDGET_USED || reason == InscriptionTracer.FEES_NEED_DEEPER
+    private fun canCheckDeeper(reason: String) = reason == InscriptionTracer.BUDGET_USED || reason == InscriptionTracer.FEES_NEED_DEEPER ||
+        reason == InscriptionChecker.LOST_REASON
 
     private class RuneSums(val rows: List<RuneRow>, val represented: Set<String>, val skipped: Boolean)
 

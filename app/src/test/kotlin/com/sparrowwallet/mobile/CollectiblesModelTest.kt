@@ -690,4 +690,10 @@ class CollectiblesModelTest {
         small.put("a", InscriptionContent("text/plain", null, ByteArray(100)))
         assertEquals(500L, small.bytes())
     }
+
+    /** Final review I2: a coin whose earlier results were lost says so, and offers Check deeper (its reason names it). */
+    @Test fun aCoinWhoseResultsWereLostCanBeCheckedDeeper() {
+        val v = view(map(row(0, Verdict.UNCHECKED, reason = InscriptionChecker.LOST_REASON, block = null)))
+        assertTrue(v.unchecked.single().canCheckDeeper)
+    }
 }
