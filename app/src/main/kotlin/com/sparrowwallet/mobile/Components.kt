@@ -121,6 +121,26 @@ internal fun LayerTag(privateLayer: Boolean) {
     )
 }
 
+/**
+ * A wallet card's tag for one of its companions, [label] as given ("Private", "Taproot", see [companionTags]): Private in
+ * the private layer's copper, Taproot in the public blue (its Home is drawn in the public colors).
+ */
+@Composable
+internal fun CompanionTag(label: String) {
+    val dark = isSystemInDarkTheme()
+    val color = if(label == Layer.PRIVATE.label) (if(dark) LtcPalette.copperDark else LtcPalette.copperLight)
+                else (if(dark) LtcPalette.blueDark else LtcPalette.blueLight)
+    Text(
+        label,
+        fontFamily = MonoFont, fontSize = 8.5.sp, letterSpacing = 0.8.sp,
+        color = color,
+        modifier = Modifier
+            .clip(RoundedCornerShape(5.dp))
+            .background(color.copy(alpha = 0.14f))
+            .padding(horizontal = 7.dp, vertical = 2.dp)
+    )
+}
+
 /** The standard Back action: a real button, full width, same on every screen. */
 @Composable
 internal fun BackButton(enabled: Boolean = true, onClick: () -> Unit) {

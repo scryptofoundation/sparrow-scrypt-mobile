@@ -351,4 +351,23 @@ class WalletFamilyTest {
         assertEquals("Solo", pendingPsbtKey(Screen.Home("Solo", vault("P2WPKH"))))
         assertEquals("Lone", pendingPsbtKey(Screen.Home("Lone", vault("MWEB"))))
     }
+
+    @Test
+    fun aReopenSyncsTheTaprootWalletItAdded() {
+        val before = WalletFamily(pub, priv)
+        val after = WalletFamily(pub, priv, tap)
+        assertEquals(listOf("Main Taproot"), joinedAlsoSync(before, after, Layer.PUBLIC, airGapped = false).map { it.name })
+        assertEquals(listOf("Main Taproot"), joinedAlsoSync(WalletFamily(pub), WalletFamily(pub, taproot = tap), Layer.PUBLIC, false).map { it.name })
+    }
+
+    @Test
+    fun aReopenSyncsNothingAlreadyThereOrAirGapped() {
+        val all = WalletFamily(pub, priv, tap)
+        assertEquals(emptyList(), joinedAlsoSync(all, all, Layer.PUBLIC, airGapped = false))
+        assertEquals(emptyList(), joinedAlsoSync(WalletFamily(pub), all, Layer.PUBLIC, airGapped = true))
+        // a reopen that failed keeps the family as it was
+        assertEquals(emptyList(), joinedAlsoSync(WalletFamily(pub, priv), WalletFamily(pub, priv), Layer.PUBLIC, false))
+        // the Private layer's Home also syncs only the public wallet, which was there
+        assertEquals(emptyList(), joinedAlsoSync(WalletFamily(pub, priv), all, Layer.PRIVATE, false))
+    }
 }

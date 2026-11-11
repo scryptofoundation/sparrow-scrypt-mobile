@@ -204,6 +204,8 @@ private fun App(repo: WalletRepository) {
     val visitWallet = collectiblesVisit(screen)
     val visit = remember(visitWallet) { visitWallet?.let { CollectiblesVisit() } }
     var airGapped by remember { mutableStateOf(NetworkPolicy.blocked) }
+    // work that outlives the screen that started it (a new Taproot wallet's first sync)
+    val appScope = rememberCoroutineScope()
     BackHandler(enabled = backTarget(screen) != null) { backTarget(screen)?.let { screen = it } }
 
     // one password opens a wallet family: silently unlock the other members with the same
@@ -267,7 +269,9 @@ private fun App(repo: WalletRepository) {
             is Screen.ImportSparrow -> ImportSparrowScreen(
                 repo = repo,
                 payload = s.payload,
-                onImported = { name, data, password -> screen = homeFor(name, data, password) },
+                // the new wallet and its family are unlocked off the main thread, as on the unlock screen
+                openFamily = { name, password -> homeFor(name, repo.unlock(name, password), password) },
+                onImported = { screen = it },
                 onBack = { screen = Screen.WalletList }
             )
             is Screen.LinkReceive -> LinkReceiveScreen(
@@ -299,7 +303,8 @@ private fun App(repo: WalletRepository) {
             )
             is Screen.RestoreFromApp -> OtherWalletRestoreScreen(
                 repo = repo,
-                onRestored = { name, data, password -> screen = homeFor(name, data, password) },
+                openFamily = { name, password -> homeFor(name, repo.unlock(name, password), password) },
+                onRestored = { screen = it },
                 onBack = { screen = Screen.WalletList }
             )
             is Screen.Unlock -> UnlockScreen(
@@ -371,7 +376,13 @@ private fun App(repo: WalletRepository) {
                 onBack = { screen = s.home },
                 // the typed password only adds the wallet; the family reopens with the session's (see addTaprootAndReopen)
                 addTaproot = { typed -> addTaprootAndReopen(s.home, typed, repo::addTaprootCompanion, ::homeFor) },
-                onAdded = { screen = it })
+                onAdded = { next ->
+                    screen = next
+                    // no Home runs here, so the new Taproot wallet's sync and check start now, as its Home would start them
+                    for(member in joinedAlsoSync(s.home.family, next.home.family, next.home.layer, NetworkPolicy.blocked)) {
+                        appScope.launch { syncFamilyMember(repo, member.data) }
+                    }
+                })
             is Screen.Inscription -> InscriptionScreen(repo, s.home, s.tile, visit ?: remember { CollectiblesVisit() },
                 onBack = { screen = Screen.Collectibles(s.home) })
             is Screen.Server -> ServerScreen(repo, s.home.data, onBack = { screen = s.home })
@@ -483,9 +494,8 @@ private fun WalletListScreen(
                     style = MaterialTheme.typography.titleMedium
                 )
                 for(w in coinWallets) {
-                    val pairedPrivate = w.scriptType != "MWEB" && w.linkedWallet?.let { ln ->
-                        wallets.any { it.name == ln && it.scriptType == "MWEB" }
-                    } == true
+                    // the companions Home opens with it, as Home judges them
+                    val tags = remember(wallets, w) { companionTags(w, wallets) }
                     OutlinedButton(onClick = { onOpen(w.name) }, modifier = Modifier.fillMaxWidth()) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically) {
@@ -494,7 +504,7 @@ private fun WalletListScreen(
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp),
                                     modifier = Modifier.padding(top = 5.dp)) {
                                     if(coin.mweb) LayerTag(privateLayer = w.scriptType == "MWEB")
-                                    if(pairedPrivate) LayerTag(privateLayer = true)
+                                    for(tag in tags) CompanionTag(tag)
                                 }
                             }
                             NetworkBadge(w.network)
@@ -543,7 +553,7 @@ private fun WalletListScreen(
         pickError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
 
         val syncStore = remember { repo.syncStore }
-        AirGapSetting(repo, wallets.map { it.name }, airGapped, onAirGapChanged)
+        AirGapSetting(repo, wallets, airGapped, onAirGapChanged)
         if(airGapped) return@ScreenColumn
 
         // background refresh: scheduled view-only checks + received-funds notifications
@@ -586,11 +596,14 @@ private fun WalletListScreen(
     }
 }
 
-/** The air-gapped switch: turning on needs a confirm, turning off every wallet's password. */
+/**
+ * The air-gapped switch: turning on needs a confirm, turning off every wallet's password (a companion's is tried from
+ * its parent's first, see [AirGapMode.leave]).
+ */
 @Composable
 private fun AirGapSetting(
     repo: WalletRepository,
-    walletNames: List<String>,
+    wallets: List<WalletRepository.WalletInfo>,
     airGapped: Boolean,
     onChanged: (Boolean) -> Unit
 ) {
@@ -637,16 +650,19 @@ private fun AirGapSetting(
 
     if(leaving) {
         val passwords = remember { androidx.compose.runtime.mutableStateMapOf<String, String>() }
+        // companions their parent's password did not open, asked for by name
+        var ownPassword by remember { mutableStateOf(emptySet<String>()) }
+        val fields = remember(wallets, ownPassword) { AirGapMode.passwordFields(wallets, ownPassword) }
         var error by remember { mutableStateOf<String?>(null) }
         var busy by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { if(!busy) { leaving = false; passwords.clear(); error = null } },
+            onDismissRequest = { if(!busy) { leaving = false; passwords.clear(); ownPassword = emptySet(); error = null } },
             title = { Text("Go back online?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Wallets kept offline will be on a device that connects to the internet. " +
                         "Enter each wallet's password to continue.")
-                    for(name in walletNames) {
+                    for(name in fields) {
                         OutlinedTextField(
                             value = passwords[name] ?: "", onValueChange = { passwords[name] = it },
                             label = { Text(name) },
@@ -663,24 +679,30 @@ private fun AirGapSetting(
                     busy = true; error = null
                     scope.launch {
                         val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                            AirGapMode.leave(settings, walletNames, passwords.toMap()) { n, p -> repo.unlock(n, p, session = false) }
+                            AirGapMode.leave(settings, wallets, passwords.toMap()) { n, p -> repo.unlock(n, p, session = false) }
                         }
                         busy = false
                         when(result) {
                             AirGapMode.LeaveResult.Left -> {
                                 leaving = false
                                 passwords.clear()
+                                ownPassword = emptySet()
                                 SyncWorker.schedule(context, repo.syncStore.intervalMinutes)
                                 onChanged(false)
                             }
                             is AirGapMode.LeaveResult.WrongPassword -> error = "Wrong password for ${result.wallet}"
                             is AirGapMode.LeaveResult.MissingPassword -> error = "Enter the password for ${result.wallet}"
+                            is AirGapMode.LeaveResult.OwnPasswordNeeded -> {
+                                ownPassword = ownPassword + result.wallets
+                                error = "Its main wallet's password does not open ${result.wallets.joinToString(", ")}. " +
+                                    "Enter its own password."
+                            }
                         }
                     }
                 }) { Text("Go online") }
             },
             dismissButton = {
-                TextButton(enabled = !busy, onClick = { leaving = false; passwords.clear(); error = null }) { Text("Cancel") }
+                TextButton(enabled = !busy, onClick = { leaving = false; passwords.clear(); ownPassword = emptySet(); error = null }) { Text("Cancel") }
             }
         )
     }
@@ -716,7 +738,8 @@ private fun LinkReceiveScreen(
 @Composable
 private fun LinkSendScreen(repo: WalletRepository, pairing: SparrowLink.Pairing, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val wallets = remember { repo.listWallets() }
+    // never a Taproot companion: it has no row of its own (see linkSendWallets)
+    val wallets = remember { linkSendWallets(repo.listWallets()) }
     var selected by remember { mutableStateOf(wallets.firstOrNull()?.name) }
     var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
@@ -781,7 +804,8 @@ private fun LinkSendScreen(repo: WalletRepository, pairing: SparrowLink.Pairing,
 private fun ImportSparrowScreen(
     repo: WalletRepository,
     payload: SparrowLink.ReceivedPayload,
-    onImported: (String, VaultData, String) -> Unit,
+    openFamily: (name: String, password: String) -> Screen.Home,
+    onImported: (Screen.Home) -> Unit,
     onBack: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -839,7 +863,9 @@ private fun ImportSparrowScreen(
                         val walletName = repo.importSparrowPair(
                             payload, filePassword, linkedPassword.ifBlank { filePassword }, name, devicePassword
                         )
-                        onImported(walletName, repo.unlock(walletName, devicePassword), devicePassword)
+                        onImported(kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            openFamily(walletName, devicePassword)
+                        })
                     } catch(t: Throwable) {
                         error = t.message ?: "Import failed"
                     } finally {
@@ -971,8 +997,8 @@ private fun UnlockScreen(name: String, repo: WalletRepository, unlockFamily: (St
     val scope = rememberCoroutineScope()
     ScreenColumn {
         Text("Unlock \"$name\"", style = MaterialTheme.typography.headlineSmall)
-        repo.walletInfo(name)?.linkedWallet?.let {
-            Text("Also unlocks the linked wallet \"$it\".", style = MaterialTheme.typography.bodySmall)
+        remember(name) { repo.listWallets().let { all -> unlockHint(all.firstOrNull { it.name == walletFileName(name) }, all) } }?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall)
         }
         OutlinedTextField(
             value = password, onValueChange = { password = it },
@@ -1157,6 +1183,22 @@ private fun TxDetailScreen(tx: TxInfo, coin: Coin, network: Network, onSaveLabel
     }
 }
 
+/**
+ * Syncs [other], a family member a Home also syncs ([WalletFamily.alsoSync]), with the account key [account] gives, then
+ * starts its inscription check, as the Public layer's Home does after its own sync. Its result or failure is not shown;
+ * its balance reaches the wallet list through its session unlock.
+ */
+internal suspend fun syncFamilyMember(repo: WalletRepository, other: VaultData,
+                                      account: suspend () -> HDKey = {
+                                          kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { repo.accountKey(other) }
+                                      }) {
+    runCatching {
+        val otherAccount = account()
+        repo.syncWallet(other, otherAccount)
+        otherAccount
+    }.onSuccess { repo.startInscriptionCheck(other, it) }
+}
+
 @Composable
 private fun HomeScreen(
     repo: WalletRepository,
@@ -1237,14 +1279,10 @@ private fun HomeScreen(
     // wallet's own sync and check, on its own: its result or failure changes nothing shown here, and its balance reaches
     // the wallet list's total through its session unlock. Its inscription check takes the same path as this wallet's.
     val alsoAccounts = remember(alsoSync) { java.util.concurrent.ConcurrentHashMap<VaultData, HDKey>() }
-    suspend fun syncAlong(other: VaultData) {
-        runCatching {
-            val otherAccount = alsoAccounts[other] ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
-                repo.accountKey(other)
-            }.also { alsoAccounts[other] = it }
-            repo.syncWallet(other, otherAccount)
-            otherAccount
-        }.onSuccess { repo.startInscriptionCheck(other, it) }
+    suspend fun syncAlong(other: VaultData) = syncFamilyMember(repo, other) {
+        alsoAccounts[other] ?: kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            repo.accountKey(other)
+        }.also { alsoAccounts[other] = it }
     }
 
     // One wallet in two layers: refresh syncs the public side and the linked private

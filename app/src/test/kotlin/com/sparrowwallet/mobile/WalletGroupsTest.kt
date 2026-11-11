@@ -288,4 +288,76 @@ class WalletGroupsTest {
         assertEquals("pub", family[1].linkedWallet)
         assertEquals("priv", family[0].linkedWallet)
     }
+
+    @Test
+    fun aRowIsTaggedWithTheCompanionsItHas() {
+        assertEquals(listOf("Private", "Taproot"), companionTags(family[0], family))
+        assertEquals(emptyList(), companionTags(family[3], family))
+        // a companion has no row; asked anyway, it has no companions of its own
+        assertEquals(emptyList(), companionTags(family[1], family))
+        assertEquals(emptyList(), companionTags(family[2], family))
+        val onlyTaproot = listOf(family[0].copy(links = WalletLinks(taproot = "tap")), family[2])
+        assertEquals(listOf("Taproot"), companionTags(onlyTaproot[0], onlyTaproot))
+    }
+
+    @Test
+    fun aRowNeverTagsALayerHomeWillNotOpen() {
+        // the Taproot wallet does not name it back: listed on its own, no tag
+        val oneSided = listOf(family[0], family[1], family[2].copy(links = WalletLinks()))
+        assertEquals(listOf("Private"), companionTags(oneSided[0], oneSided))
+        // a slot naming a wallet of the other kind
+        val crossed = listOf(
+            w("pub", Coin.LITECOIN, "P2WPKH", links = WalletLinks(mweb = "tap", taproot = "priv")),
+            w("priv", Coin.LITECOIN, "MWEB", links = WalletLinks(parent = "pub")),
+            w("tap", Coin.LITECOIN, "P2TR", links = WalletLinks(parent = "pub"))
+        )
+        assertEquals(emptyList(), companionTags(crossed[0], crossed))
+        // a named companion that is not on the phone
+        assertEquals(emptyList(), companionTags(family[0], listOf(family[0])))
+        // the older Private pair whose link was written on the public side only still counts, as Home opens it
+        val older = listOf(w("pub", Coin.LITECOIN, "P2WPKH", linked = "priv"), w("priv", Coin.LITECOIN, "MWEB"))
+        assertEquals(listOf("Private"), companionTags(older[0], older))
+    }
+
+    @Test
+    fun theTagsAreTheLayersHomeOpens() {
+        val vaults = mapOf("pub" to "P2WPKH", "priv" to "MWEB", "tap" to "P2TR")
+            .mapValues { com.sparrowwallet.mobile.storage.VaultData("abandon", scriptType = it.value) }
+        for(wallets in listOf(family, listOf(family[0], family[1], family[2].copy(links = WalletLinks())), listOf(family[0], family[2]))) {
+            val opened = WalletFamily.open("pub", vaults.getValue("pub"), wallets) { vaults[it] }
+            assertEquals(opened.family.layers.drop(1).map { it.label }, companionTags(wallets[0], wallets))
+        }
+    }
+
+    @Test
+    fun theUnlockHintNamesTheCompanions() {
+        assertEquals("Also opens: priv, tap.", unlockHint(family[0], family))
+        val onlyTaproot = listOf(family[0].copy(links = WalletLinks(taproot = "tap")), family[2])
+        assertEquals("Also opens: tap.", unlockHint(onlyTaproot[0], onlyTaproot))
+        val onlyPrivate = listOf(family[0].copy(links = WalletLinks(mweb = "priv")), family[1])
+        assertEquals("Also opens: priv.", unlockHint(onlyPrivate[0], onlyPrivate))
+    }
+
+    @Test
+    fun aWalletWithoutCompanionsKeepsItsOldHint() {
+        assertNull(unlockHint(family[3], family))
+        assertNull(unlockHint(null, family))
+        // an MWEB wallet listed on its own still names the wallet it links to, as before
+        val orphan = listOf(w("priv", Coin.LITECOIN, "MWEB", links = WalletLinks(parent = "gone")))
+        assertEquals("Also unlocks the linked wallet \"gone\".", unlockHint(orphan[0], orphan))
+        // a one-sided Taproot link names nothing
+        val oneSided = listOf(w("pub", Coin.LITECOIN, "P2WPKH", links = WalletLinks(taproot = "tap")), w("tap", Coin.LITECOIN, "P2TR"))
+        assertNull(unlockHint(oneSided[0], oneSided))
+    }
+
+    @Test
+    fun linkSendsEveryWalletButATaprootCompanion() {
+        assertEquals(listOf("pub", "priv", "solo"), linkSendWallets(family).map { it.name })
+        // a Taproot wallet on its own row is still offered
+        val loose = listOf(family[0].copy(links = WalletLinks(mweb = "priv")), family[1], family[2].copy(links = WalletLinks()),
+            w("standalone", Coin.LITECOIN, "P2TR"))
+        assertEquals(listOf("pub", "priv", "tap", "standalone"), linkSendWallets(loose).map { it.name })
+        val oneSided = listOf(family[0].copy(links = WalletLinks(mweb = "priv")), family[1], family[2])
+        assertEquals(listOf("pub", "priv", "tap"), linkSendWallets(oneSided).map { it.name })
+    }
 }

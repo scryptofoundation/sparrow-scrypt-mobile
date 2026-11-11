@@ -17,7 +17,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import com.sparrowwallet.mobile.storage.VaultData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -29,7 +28,9 @@ import kotlinx.coroutines.withContext
 @Composable
 internal fun OtherWalletRestoreScreen(
     repo: WalletRepository,
-    onRestored: (String, VaultData, String) -> Unit,
+    /** Opens the restored wallet and its family (slow: called off the main thread). */
+    openFamily: (name: String, password: String) -> Screen.Home,
+    onRestored: (Screen.Home) -> Unit,
     onBack: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -90,9 +91,9 @@ internal fun OtherWalletRestoreScreen(
                         val restored = withContext(Dispatchers.Default) {
                             val vaults = OtherWallets.restoreVaults(app, account, phrase, walletName, includeMweb)
                             val saved = repo.restoreFromApp(vaults, password)
-                            saved to repo.unlock(saved, password)
+                            openFamily(saved, password)
                         }
-                        onRestored(restored.first, restored.second, password)
+                        onRestored(restored)
                     } catch(t: Throwable) {
                         error = t.message ?: "Restore failed"
                     } finally {

@@ -114,6 +114,15 @@ data class WalletFamily(val public: Member, val private: Member? = null, val tap
     }
 }
 
+/**
+ * The members whose sync and inscription check start at once when a reopen turns [before] into [after] shown on [layer]
+ * (adding the Taproot wallet from Collectibles, which lands on no Home): those [after]'s Home on [layer] also syncs
+ * ([WalletFamily.alsoSync]) that are not a member of [before], by name. None while [airGapped]: Home never syncs then.
+ */
+fun joinedAlsoSync(before: WalletFamily, after: WalletFamily, layer: Layer, airGapped: Boolean): List<Member> =
+    if(airGapped) emptyList()
+    else after.alsoSync(layer).filter { m -> Layer.entries.none { before.member(it)?.name == m.name } }
+
 /** The layer switch's segments: one per layer in the order Public, Private, Taproot; none when there is only one layer. */
 fun switchLayers(layers: List<Layer>): List<Layer> =
     Layer.entries.filter { it in layers }.takeIf { it.size > 1 }.orEmpty()
