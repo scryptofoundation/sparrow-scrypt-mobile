@@ -14,12 +14,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 
 /** A password field's keyboard: a password keyboard with no autocorrect, so nothing typed is suggested or learnt. */
 internal val PasswordKeyboard = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false)
+
+/**
+ * A seed words field's keyboard: the password keyboard (no suggestions, no autocorrect, nothing learnt), lower case, and
+ * no visual transformation on the field, so the words stay visible while they are typed.
+ */
+internal val SeedKeyboard = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false,
+    capitalization = KeyboardCapitalization.None)
 
 /**
  * A password dialog's state: whether it is [open], what is [typed], the [error] shown and whether its confirm is [busy].

@@ -71,7 +71,7 @@ internal fun OtherWalletRestoreScreen(
         )
         OutlinedTextField(
             value = phrase, onValueChange = { phrase = it; error = null },
-            label = { Text("Recovery phrase from ${app.name}") },
+            label = { Text("Recovery phrase from ${app.name}") }, keyboardOptions = SeedKeyboard,
             modifier = Modifier.fillMaxWidth()
         )
         OutlinedTextField(

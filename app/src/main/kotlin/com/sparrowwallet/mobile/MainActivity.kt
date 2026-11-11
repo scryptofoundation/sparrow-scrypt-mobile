@@ -949,7 +949,7 @@ private fun SaveWalletScreen(
         if(mnemonicEditable) {
             OutlinedTextField(
                 value = phrase, onValueChange = { phrase = it },
-                label = { Text("Recovery phrase (12–24 words)") },
+                label = { Text("Recovery phrase (12–24 words)") }, keyboardOptions = SeedKeyboard,
                 modifier = Modifier.fillMaxWidth()
             )
             phrase.trim().takeIf { it.isNotEmpty() }?.let { p ->

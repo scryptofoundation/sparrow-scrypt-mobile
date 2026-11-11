@@ -78,6 +78,13 @@ class AddTaprootTest {
     }
 
     @Test
+    fun seedFieldsTurnOffKeyboardSuggestionsAndLearning() {
+        assertEquals(androidx.compose.ui.text.input.KeyboardType.Password, SeedKeyboard.keyboardType)
+        assertEquals(false, SeedKeyboard.autoCorrectEnabled)
+        assertEquals(androidx.compose.ui.text.input.KeyboardCapitalization.None, SeedKeyboard.capitalization)
+    }
+
+    @Test
     fun anAddThatThrowsIsASaveFailure() {
         val outcome = addTaprootAndReopen(home, "typed", add = { _, _ -> throw IllegalStateException("disk") }, reopen = { _, _, _ -> home })
         assertEquals(AddTaprootOutcome.Refused(TaprootCompanion.SAVE_FAILED), outcome)
