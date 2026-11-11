@@ -20,7 +20,7 @@ import kotlinx.serialization.json.JsonPrimitive
 object OrdParse {
     const val MAX_JSON_CHARS = 4_000_000
     private const val MAX_DIVISIBILITY = 38
-    private const val MAX_CONTENT_TYPE = 255
+    internal const val MAX_CONTENT_TYPE = 255
     private const val NO_SYMBOL = "¤"
 
     internal val INSCRIPTION_ID = Regex("[0-9a-f]{64}i[0-9]{1,10}")
@@ -28,7 +28,6 @@ object OrdParse {
     private val RUNE_NAME = Regex("[A-Z•]{1,40}")
     private val DIGITS = Regex("[0-9]{1,40}")
     private val SMALL = Regex("[0-9]{1,2}")
-    private val LONG = Regex("-?[0-9]{1,19}")
 
     fun status(json: String): IndexerStatus {
         val node = readTree(json) as? JsonObject ?: throw IllegalArgumentException("Not an ord server status")
@@ -65,6 +64,12 @@ object OrdParse {
             node["content_length"].long()?.takeIf { it >= 0 }
         )
     }
+
+    /**
+     * The hash in ord's /block/0 answer, or "" when it names none (the desktop's Ord020Dialect.genesis reads it the same
+     * way); the caller checks the hash's form.
+     */
+    fun blockHash(json: String): String = (readTree(json) as? JsonObject)?.get("hash").text() ?: ""
 
     private fun output(outpoint: String, node: JsonElement, runeIndex: Boolean, inBatch: Boolean): IndexerOutput {
         if(node !is JsonObject) throw IllegalArgumentException("Unexpected output from inscriptions indexer")
@@ -136,7 +141,7 @@ object OrdParse {
         return if(showableSymbol(codePoint)) s else NO_SYMBOL
     }
 
-    private fun readTree(json: String): JsonElement {
+    internal fun readTree(json: String): JsonElement {
         if(json.length > MAX_JSON_CHARS) throw IllegalArgumentException("Inscriptions indexer response too large")
         return try {
             Json.parseToJsonElement(json)
@@ -144,18 +149,25 @@ object OrdParse {
             throw IllegalArgumentException("Unreadable inscriptions indexer response", e)
         }
     }
-
-    private fun JsonElement?.text(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
-
-    /** Only the JSON literal true: not "true", not 1. */
-    private fun JsonElement?.isTrue(): Boolean = this is JsonPrimitive && this !is JsonNull && !isString && content == "true"
-
-    /** Only the JSON literal false. */
-    private fun JsonElement?.isFalse(): Boolean = this is JsonPrimitive && this !is JsonNull && !isString && content == "false"
-
-    private fun JsonElement?.long(): Long? =
-        (this as? JsonPrimitive)?.takeIf { it !is JsonNull && !it.isString && LONG.matches(it.content) }?.content?.toLongOrNull()
 }
+
+/** A JSON string's text; null for anything else (a number, a literal, null, an array or object). */
+internal fun JsonElement?.text(): String? = (this as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+/** Only the JSON literal true: not "true", not 1. */
+internal fun JsonElement?.isTrue(): Boolean = this is JsonPrimitive && this !is JsonNull && !isString && content == "true"
+
+/** Only the JSON literal false. */
+internal fun JsonElement?.isFalse(): Boolean = this is JsonPrimitive && this !is JsonNull && !isString && content == "false"
+
+private val LONG = Regex("-?[0-9]{1,19}")
+
+/** A whole JSON number that fits a Long; null for text, fractions, literals and anything else. */
+internal fun JsonElement?.long(): Long? =
+    (this as? JsonPrimitive)?.takeIf { it !is JsonNull && !it.isString && LONG.matches(it.content) }?.content?.toLongOrNull()
+
+/** A server's name as it may be shown in a message: no control characters, and short. */
+internal fun shown(name: String): String = name.filterNot { it.isISOControl() }.take(64)
 
 /** Whether a code point may be shown as a rune's symbol (the desktop's OrdClient.symbol rules, by Unicode category). */
 internal expect fun showableSymbol(codePoint: Int): Boolean

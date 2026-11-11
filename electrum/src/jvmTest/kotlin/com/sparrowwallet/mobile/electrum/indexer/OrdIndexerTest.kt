@@ -222,7 +222,10 @@ class OrdIndexerTest {
         assertEquals(listOf("GET /status", "POST /outputs", "POST /outputs"), requests.toList())
     }
 
-    /** ord 0.20's answers name the transaction but not the output, so two outputs of one transaction never share a request. */
+    /**
+     * ord 0.20's answers name the transaction but not the output, so two outputs of one transaction never share a POST:
+     * the first of each transaction is batched, the others are asked one by one with GET /output/{outpoint}.
+     */
     @Test fun outputsOfOneTransactionGoInSeparateRequests(): Unit = runBlocking {
         val txid = "ab".repeat(32)
         val asked = listOf("$txid:0", outpoint(1), "$txid:1", outpoint(2), "$txid:2")
@@ -235,12 +238,32 @@ class OrdIndexerTest {
                     batches += batch
                     200 to batch.joinToString(",", "[", "]") { clean(it.take(64)) }
                 }
+                path == "/output/$txid:1" -> 200 to carrying(txid + "i0")
+                path.startsWith("/output/") -> 200 to clean(txid)
                 else -> 404 to ""
             }
         }
         val outputs = OrdIndexer(base, null).outputs(asked)
-        assertEquals(asked.toSet(), outputs.keys)
-        assertEquals(listOf(listOf("$txid:0", outpoint(1), outpoint(2)), listOf("$txid:1"), listOf("$txid:2")), batches.toList())
+        assertEquals(asked, outputs.keys.toList())
+        assertEquals(listOf(listOf("$txid:0", outpoint(1), outpoint(2))), batches.toList())
+        assertEquals(listOf("GET /status", "POST /outputs", "GET /output/$txid:1", "GET /output/$txid:2"), requests.toList())
+        assertTrue(outputs.getValue("$txid:1").carries)
+        assertTrue(outputs.getValue("$txid:2").indexed)
+        assertFalse(outputs.getValue("$txid:2").carries)
+
+        //without the batch route every output is asked once, the extra ones of a transaction included
+        requests.clear()
+        routes = { method, path, _ ->
+            when {
+                path == "/status" -> 200 to status
+                method == "POST" -> 405 to ""
+                path.startsWith("/output/") -> 200 to clean(path.removePrefix("/output/").take(64))
+                else -> 404 to ""
+            }
+        }
+        assertEquals(asked, OrdIndexer(base, null).outputs(asked).keys.toList())
+        assertEquals(listOf("GET /status", "POST /outputs", "GET /output/$txid:0", "GET /output/${outpoint(1)}", "GET /output/${outpoint(2)}",
+            "GET /output/$txid:1", "GET /output/$txid:2"), requests.toList())
     }
 
     /** Plain http through the proxy could be read or forged by an exit node: refused unless the server is an onion service. */

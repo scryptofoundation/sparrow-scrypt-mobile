@@ -83,7 +83,8 @@ class ElectrumBackend(
      * transaction, the bytes come from the (checked) raw call. The placement is [transactionAt]'s, on this same answer, with the tip read before it.
      */
     override suspend fun placedTransaction(txid: String): PlacedTx {
-        //The tip first, as [transactionAt] reads it, so a block landing between the two reads costs no retry
+        //The tip first, as [transactionAt] reads it. If a block lands between the two reads, the height comes out one
+        //behind the tip and costs a retry; safety is unaffected
         placingTip ?: client.tipHeight().also { placingTip = it }
         val json = client.getTransactionVerbose(txid)
         val hex = json["hex"]?.let { it as? JsonPrimitive }?.takeIf { it.isString }?.content
