@@ -194,7 +194,9 @@ internal fun LayerSwitch(layers: List<Layer>, selected: Layer, onSelect: (Layer)
     val segments = switchLayers(layers)
     if(segments.isEmpty()) return
     val measurer = androidx.compose.ui.text.rememberTextMeasurer()
-    val style = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    // on the ambient style, as the two-segment switch's labels always were
+    val style = androidx.compose.material3.LocalTextStyle.current
+        .merge(androidx.compose.ui.text.TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold))
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -215,7 +217,7 @@ internal fun LayerSwitch(layers: List<Layer>, selected: Layer, onSelect: (Layer)
                     .padding(horizontal = 4.dp, vertical = 7.dp),
                 contentAlignment = Alignment.Center
             ) {
-                val natural = remember(layer, measurer) {
+                val natural = remember(layer, measurer, style) {
                     measurer.measure(layer.label, style, maxLines = 1, softWrap = false).size.width
                 }
                 val room = constraints.maxWidth
