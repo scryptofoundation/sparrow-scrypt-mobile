@@ -323,10 +323,7 @@ class InscriptionChecksTest {
         override suspend fun outputs(outpoints: List<String>): Map<String, IndexerOutput> {
             if(closed) throw IndexerException("closed")
             asked++
-            val answered = answer(outpoints)
-            //a reader closed while it was asking refuses what is left, as the real readers do
-            if(closed) throw IndexerException("closed")
-            return answered
+            return answer(outpoints)
         }
         override suspend fun inscription(id: String): IndexerInscription? = error("Send never asks for an inscription")
         override fun close() { closed = true }
@@ -639,11 +636,22 @@ class InscriptionChecksTest {
     @Test
     fun aSettingsChangeMidPassIsNoAnswer(): Unit = runBlocking {
         val a = clean.outpoint
+        val b = "dd".repeat(32) + ":1"
         lateinit var readers: IndexerReaders
-        val reader = SendIndexer { asked -> readers.clear(); asked.associateWith { nothing(it) } }
+        lateinit var reader: SendIndexer
+        //one request per outpoint, each refused once the reader is closed, as Nintondo's reader does: the settings change
+        //while the first one is out
+        reader = SendIndexer { asked ->
+            asked.associateWith { op ->
+                if(reader.closed) throw IndexerException("closed")
+                if(op == a) readers.clear()
+                nothing(op)
+            }
+        }
         readers = IndexerReaders { _, _, _, _ -> reader }
-        val answers = readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        val answers = readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a), utxo(b)), false)
         assertNull(answers.of(a))
+        assertNull(answers.of(b))
         assertTrue(reader.closed)
     }
 
@@ -747,5 +755,87 @@ class InscriptionChecksTest {
         assertTrue(made.last().closed, "server settings")
         assertEquals(true, raw.getBoolean("${ServerKeys.prefix(Coin.LITECOIN, Network.MAINNET)}.useProxy", false))
         assertEquals(3, made.size)
+    }
+
+    /**
+     * Re-review M1: a pass that read the setting before a settings change never opens or asks the old indexer after it:
+     * one pass opening (and holding its key's lock) and one waiting on that lock both give no answer, the reader opened
+     * across the change is closed and not kept, and nothing is asked.
+     */
+    @Test
+    fun aPassThatStartedBeforeASettingsChangeAsksNothingAfterIt(): Unit = runBlocking {
+        val a = clean.outpoint
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val made = ArrayList<SendIndexer>()
+        val readers = IndexerReaders { _, _, _, _ ->
+            entered.complete(Unit)
+            gate.await()
+            SendIndexer { asked -> asked.associateWith { nothing(it) } }.also { made.add(it) }
+        }
+        suspend fun pass() = readers.answers(InscriptionSetting.Public, Coin.LITECOIN, Network.MAINNET, null, listOf(utxo(a)), false)
+        val opening = async(kotlinx.coroutines.Dispatchers.Default) { pass() }
+        entered.await()
+        val waiting = async(kotlinx.coroutines.Dispatchers.Default) { pass() }
+        kotlinx.coroutines.delay(100)
+        readers.clear()
+        gate.complete(Unit)
+        assertNull(opening.await().of(a))
+        assertNull(waiting.await().of(a))
+        assertEquals(1, made.size, "the waiting pass opened nothing")
+        assertTrue(made.single().closed)
+        assertEquals(0, made.single().asked)
+        //the next pass, after the change, opens afresh
+        assertEquals(false, pass().of(a))
+        assertEquals(2, made.size)
+    }
+
+    /** Re-review M1: a check run's reader opened before a settings change is not lent: it is closed at once. */
+    @Test
+    fun aReaderOpenedBeforeASettingsChangeIsNotLent() {
+        val readers = IndexerReaders()
+        val before = readers.generation
+        val reader = SendIndexer { emptyMap() }
+        readers.clear()
+        assertFalse(readers.lend(reader, before))
+        assertTrue(reader.closed)
+        val fresh = SendIndexer { emptyMap() }
+        assertTrue(readers.lend(fresh, readers.generation))
+        readers.clear()
+        assertTrue(fresh.closed, "a lent reader is closed by the next change")
+    }
+
+    /**
+     * Re-review M2: the Send pass deadline is real and covers the open. An indexer that accepts and never replies (to the
+     * open's status request, or to the outputs request) gives no answer a little after the deadline, not at the socket
+     * timeout.
+     */
+    @Test
+    fun aHungIndexerEndsTheSendPassAtItsDeadline(): Unit = runBlocking {
+        val a = clean.outpoint
+        //accepts connections (the backlog) and never replies
+        java.net.ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1")).use { silent ->
+            val readers = IndexerReaders(passDeadlineMs = 1_000)
+            val started = System.nanoTime()
+            val answers = readers.answers(InscriptionSetting.YourOwn("http://127.0.0.1:${silent.localPort}"), Coin.LITECOIN,
+                Network.MAINNET, null, listOf(utxo(a)), false)
+            val tookMs = (System.nanoTime() - started) / 1_000_000
+            assertNull(answers.of(a))
+            assertTrue(tookMs < 6_000, "open: took $tookMs ms")
+        }
+
+        //answers its status and block 0, then never replies to the outputs request
+        val server = TinyHttp.ord { _, _, _ -> null }
+        try {
+            val readers = IndexerReaders(passDeadlineMs = 1_000)
+            val started = System.nanoTime()
+            val answers = readers.answers(InscriptionSetting.YourOwn(server.url), Coin.LITECOIN,
+                Network.MAINNET, null, listOf(utxo(a)), false)
+            val tookMs = (System.nanoTime() - started) / 1_000_000
+            assertNull(answers.of(a))
+            assertTrue(tookMs < 6_000, "outputs: took $tookMs ms")
+        } finally {
+            server.close()
+        }
     }
 }

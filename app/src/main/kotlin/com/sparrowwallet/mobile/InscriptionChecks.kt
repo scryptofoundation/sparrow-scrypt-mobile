@@ -317,19 +317,24 @@ internal class IndexerReaders(
      */
     suspend fun answers(setting: InscriptionSetting, coin: Coin, network: Network, proxy: SocksProxy?,
                         coins: List<com.sparrowwallet.mobile.electrum.Utxo>, airGapped: Boolean = NetworkPolicy.blocked): Answers {
+        //The generation the setting and proxy were read in: once a change bumps it, this pass opens and asks nothing
+        val gen = generation
+        //One deadline for the whole pass, the open included; past it the reader is closed, which ends a blocked request
+        val deadline = System.nanoTime() + passDeadlineMs * 1_000_000L
+        val expired = { System.nanoTime() >= deadline }
         val outpoints = coins.map { "${it.txHash}:${it.txPos}" }
         val url = setting.url(coin, network)
         val tokensIndexed = url == null || !Indexers.isNintondo(url)
         val none = Answers(outpoints.associateWith { null }, false, tokensIndexed)
         if(url == null || airGapped || coins.isEmpty()) return none
         val key = Key(coin, network, url, proxy)
-        val reader = reader(key) ?: return none
+        val reader = reader(key, gen, expired) ?: return none
         val keptHere = kept.computeIfAbsent(key) { java.util.concurrent.ConcurrentHashMap() }
         val ask = outpoints.distinct().filter { !keptHere.containsKey(it) }
         val outputs = HashMap<String, IndexerOutput>()
         if(ask.isNotEmpty()) {
             val answered = try {
-                kotlinx.coroutines.withTimeoutOrNull(passDeadlineMs) { reader.outputs(ask) }
+                stopWhenTimeUp(expired) { reader.outputs(ask) }
             } catch(e: CancellationException) {
                 throw e
             } catch(e: Exception) {
@@ -354,31 +359,37 @@ internal class IndexerReaders(
     }
 
     /**
-     * The open reader for [key], opening it once if needed; null (and nothing kept for it) when it cannot be opened, or
-     * when it failed to open less than [FAILED_OPEN_MS] ago.
+     * The open reader for [key], opening it once if needed (before [expired]; an open that finishes later is closed); null
+     * (and nothing kept for it) when it cannot be opened, when it failed to open less than [FAILED_OPEN_MS] ago, or when
+     * the settings changed since the pass read them ([gen]), whether before it got its key's lock, while it opened, or
+     * as it was put in the map (then it is taken out and closed, so it cannot escape [clear]).
      */
-    private suspend fun reader(key: Key): InscriptionIndexer? = locks.computeIfAbsent(key) { kotlinx.coroutines.sync.Mutex() }.withLock {
-        readers[key]?.let { return@withLock it }
-        failedAt[key]?.let { if(now() - it < FAILED_OPEN_MS) return@withLock null }
-        kept.remove(key)
-        val gen = generation
-        try {
-            val reader = open(key.url, key.coin, key.network, key.proxy)
-            failedAt.remove(key)
-            if(gen != generation) {
-                //the settings changed while it opened
-                reader.close()
+    private suspend fun reader(key: Key, gen: Int, expired: () -> Boolean): InscriptionIndexer? =
+        locks.computeIfAbsent(key) { kotlinx.coroutines.sync.Mutex() }.withLock {
+            if(gen != generation) return@withLock null
+            readers[key]?.let { return@withLock it }
+            failedAt[key]?.let { if(now() - it < FAILED_OPEN_MS) return@withLock null }
+            kept.remove(key)
+            val reader = try {
+                stopWhenTimeUp(expired, late = { it.close() }) { open(key.url, key.coin, key.network, key.proxy) }
+            } catch(e: CancellationException) {
+                throw e
+            } catch(e: Exception) {
+                null
+            }
+            if(reader == null) {
+                failedAt[key] = now()
                 return@withLock null
             }
+            failedAt.remove(key)
             readers[key] = reader
+            if(gen != generation) {
+                readers.remove(key, reader)
+                runCatching { reader.close() }
+                return@withLock null
+            }
             reader
-        } catch(e: CancellationException) {
-            throw e
-        } catch(e: Exception) {
-            failedAt[key] = now()
-            null
         }
-    }
 
     private fun drop(key: Key, reader: InscriptionIndexer) {
         if(readers.remove(key, reader)) {
@@ -457,7 +468,8 @@ class CheckIndexer(val reader: InscriptionIndexer?, val source: InscriptionCheck
  * Opens the check run's reader for [setting] with [open] (in the app [Indexers.open]): none on Built-in, with no indexer
  * for the coin, or when [airGapped], contacting nothing. A failed open (unreachable, wrong chain, an unsupported kind,
  * plain http through the proxy, a malformed URL) is no reader, not an error; so is an open still going when [timeUp]
- * says the run's time is up (a reader that arrives after that is closed). Cancellation is rethrown.
+ * says the run's time is up or after [INDEXER_DEADLINE_MS] (a reader that arrives after that is closed). Cancellation is
+ * rethrown.
  */
 suspend fun openCheckIndexer(setting: InscriptionSetting, coin: Coin, network: Network, proxy: SocksProxy?, airGapped: Boolean,
                              timeUp: () -> Boolean = { false },
@@ -465,8 +477,9 @@ suspend fun openCheckIndexer(setting: InscriptionSetting, coin: Coin, network: N
     val url = setting.url(coin, network) ?: return CheckIndexer(null, null)
     if(airGapped) return CheckIndexer(null, null)
     val source = if(setting is InscriptionSetting.YourOwn) InscriptionCheck.Source.YOUR_OWN else InscriptionCheck.Source.PUBLIC
+    val deadline = System.nanoTime() + INDEXER_DEADLINE_MS * 1_000_000L
     return try {
-        CheckIndexer(stopWhenTimeUp(timeUp, late = { it.close() }) { open(url, coin, network, proxy) }, source)
+        CheckIndexer(stopWhenTimeUp({ timeUp() || System.nanoTime() >= deadline }, late = { it.close() }) { open(url, coin, network, proxy) }, source)
     } catch(e: CancellationException) {
         throw e
     } catch(e: Exception) {
@@ -504,6 +517,9 @@ internal suspend fun <T> stopWhenTimeUp(timeUp: () -> Boolean, late: ((T) -> Uni
 }
 
 private const val TIME_UP_POLL_MS = 250L
+
+/** How long a check run waits for its indexer's open, and then for its outputs answer; past it, no answer. */
+internal const val INDEXER_DEADLINE_MS = 30_000L
 
 /** What Send may do with a ready coin: spend it freely, hold it back, or use it last with a warning. */
 enum class CoinState { CLEAN, HELD, UNCHECKED }

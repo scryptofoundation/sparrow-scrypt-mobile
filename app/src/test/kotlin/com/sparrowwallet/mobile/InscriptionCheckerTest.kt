@@ -67,6 +67,8 @@ private class FakeChain : ChainBackend {
     var rawCalls = 0
     var blockCalls = 0
     var blockHashNull = false
+    /** Nonzero: the server reports another block's hash for a height, as a lying or reorged server would. */
+    var blockHashShift = 0
     var blockHashFails = false
     var blockHashRateLimited = false
     var cancelOn: String? = null
@@ -113,7 +115,7 @@ private class FakeChain : ChainBackend {
         beforeBlock(height)
         if(blockHashFails) throw IOException("connection reset")
         if(blockHashRateLimited) throw com.sparrowwallet.mobile.electrum.RateLimitedException("HTTP 429")
-        return if(blockHashNull) null else block(height)
+        return if(blockHashNull) null else if(blockHashShift != 0) block(height + blockHashShift) else block(height)
     }
 
     override fun close() {}
@@ -494,6 +496,7 @@ class InscriptionCheckerTest {
         assertNull(row.value)
         assertNull(row.chain)
         assertNull(row.index)
+        assertTrue(InscriptionStore(dir, cipher).loadMarks(wallet).isEmpty(), "no kept marks in an old file")
     }
 
     private fun le(value: Long, bytes: Int): ByteArray = ByteArray(bytes) { ((value shr (8 * it)) and 0xFF).toByte() }
@@ -1207,5 +1210,127 @@ class InscriptionCheckerTest {
         val rows = kotlinx.coroutines.withTimeout(10_000) { quick.withIndexer(chain, coins.map { Utxo(it, 0, 100, 1_000) }, stuck) }
         assertEquals(1, stuck.inscriptionsAsked.size)
         assertTrue(rows.values.all { it.found.single().number == null && it.verdict == Verdict.INSCRIBED })
+    }
+
+    /**
+     * Re-review I1: the mark does not depend on the block. The same transaction re-mined in another block (a reorg), or a
+     * server reporting another hash for the height, keeps the coin held with no indexer: the txid fixes what it carries.
+     */
+    @Test fun theMarkSurvivesAReorgAndAServerReportingAnotherHash(): Unit = runBlocking {
+        for(lying in listOf(false, true)) {
+            val dir = newDir()
+            val cipher = CheckerCipher()
+            val chain = FakeChain()
+            //near the tip, so its block is asked every run
+            val a = chain.add(tx(listOf("aa".repeat(32) to 0), listOf(100_000L)), 950)
+            val op = "$a:0"
+            val first = checker(dir, cipher).withIndexer(chain, listOf(Utxo(a, 0, 950, 100_000)),
+                FakeIndexer { asked -> asked.associateWith { runesOn(it) } }).getValue(op)
+            assertTrue(first.runes)
+            val height = if(lying) {
+                chain.blockHashShift = 3
+                950
+            } else {
+                chain.heights[a] = 951
+                951
+            }
+            val next = checker(dir, cipher).withIndexer(chain, listOf(Utxo(a, 0, height, 100_000)), null, null).getValue(op)
+            assertTrue(next.blockHash != first.blockHash, "the block changed: $next")
+            assertTrue(next.runes, "lying=$lying: $next")
+            assertEquals(CoinState.HELD, sendState(next), "lying=$lying")
+        }
+    }
+
+    /**
+     * Re-review I2: a marked coin left out of one listing (an Electrum server hides outputs spent in its mempool) keeps its
+     * mark, kept apart from the coins, and gets it back when it is listed again. The kept mark is not a coin anywhere.
+     */
+    @Test fun aMarkOutlivesTheCoinsAbsenceFromAListing(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val a = oldCoin(chain, 100_000)
+        val b = oldCoin(chain, 60_000)
+        val both = listOf(Utxo(a, 0, 100, 100_000), Utxo(b, 0, 100, 60_000))
+        checker(dir, cipher).withIndexer(chain, both, FakeIndexer { asked -> asked.associateWith { if(it.startsWith(a)) runesOn(it) else nothing(it) } })
+
+        val checker = checker(dir, cipher)
+        val seen = ArrayList<Pair<Int, Int>>()
+        val hidden = checker.check(wallet, Coin.LITECOIN, Network.MAINNET, chain, both.drop(1), progress = { done, total -> seen.add(done to total) })
+        assertEquals(setOf("$b:0"), hidden.keys, "a kept mark is not a coin")
+        assertEquals(setOf("$b:0"), checker.results(wallet).keys)
+        assertEquals(setOf("$b:0"), checker.storedResults(wallet)!!.keys)
+        assertEquals(setOf("$b:0"), InscriptionStore(dir, cipher).load(wallet).keys)
+        assertTrue(seen.all { it.second == 1 }, "progress counts listed coins only: $seen")
+        assertEquals(1, checker.status(wallet).value!!.total)
+        assertEquals(setOf("$a:0"), InscriptionStore(dir, cipher).loadMarks(wallet).keys)
+
+        //it comes back: no indexer this run, still held
+        val back = checker(dir, cipher).withIndexer(chain, both, null, null)
+        assertTrue(back.getValue("$a:0").runes, back.toString())
+        assertEquals(CoinState.HELD, sendState(back.getValue("$a:0")))
+        assertTrue(InscriptionStore(dir, cipher).loadMarks(wallet).isEmpty(), "the mark is on its row again")
+    }
+
+    /** Re-review I2: kept marks are dropped only by their bound: unlisted for more than 30 days, or past the newest 1,000. */
+    @Test fun keptMarksAreBounded(): Unit = runBlocking {
+        val day = 24L * 60 * 60 * 1000
+        var clock = 1_000_000_000_000L
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val a = oldCoin(chain, 100_000)
+        val b = oldCoin(chain, 60_000)
+        fun at() = InscriptionChecker(InscriptionStore(dir, cipher), now = { clock })
+        at().withIndexer(chain, listOf(Utxo(a, 0, 100, 100_000)), FakeIndexer { asked -> asked.associateWith { runesOn(it) } })
+        val onlyB = listOf(Utxo(b, 0, 100, 60_000))
+        at().withIndexer(chain, onlyB, null, null)
+        clock += 29 * day
+        at().withIndexer(chain, onlyB, null, null)
+        assertEquals(setOf("$a:0"), InscriptionStore(dir, cipher).loadMarks(wallet).keys, "29 days: kept")
+        clock += 2 * day
+        at().withIndexer(chain, onlyB, null, null)
+        assertTrue(InscriptionStore(dir, cipher).loadMarks(wallet).isEmpty(), "31 days: dropped")
+
+        //at most the newest 1,000
+        val many = (1..1_005).associate { i -> "%064x:0".format(i) to KeptMark(true, null, clock - i * 1_000L) }
+        val store = InscriptionStore(dir, cipher)
+        store.save(wallet, store.load(wallet), store.loadBlocks(wallet), many)
+        at().withIndexer(chain, onlyB, null, null)
+        val kept = InscriptionStore(dir, cipher).loadMarks(wallet)
+        assertEquals(1_000, kept.size)
+        assertEquals((1..1_000).map { "%064x:0".format(it) }.toSet(), kept.keys, "the newest")
+    }
+
+    /**
+     * Re-review M2: the number lookups' deadline is real. A reader whose inscription request is answered by nothing (the
+     * server accepts and never replies) is given up at the deadline, not at the socket timeout.
+     */
+    @Test fun aHungNumberLookupEndsAtTheDeadline(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val chain = FakeChain()
+        val coins = storedInscribed(dir, cipher, chain, 1)
+        val server = TinyHttp.ord { _, path, body ->
+            if(path == "/outputs") {
+                kotlinx.serialization.json.Json.parseToJsonElement(body).let { it as kotlinx.serialization.json.JsonArray }
+                    .joinToString(",", "[", "]") { o ->
+                        val txid = (o as kotlinx.serialization.json.JsonPrimitive).content.take(64)
+                        """{"indexed":true,"inscriptions":["${txid}i0"],"runes":{},"spent":false,"transaction":"$txid"}"""
+                    }
+            } else null
+        }
+        try {
+            val reader = com.sparrowwallet.mobile.electrum.indexer.Indexers.open(server.url, Coin.LITECOIN, Network.MAINNET, null)
+            val quick = InscriptionChecker(InscriptionStore(dir, cipher), numberFillDeadlineMs = 1_000)
+            val started = System.nanoTime()
+            val rows = quick.withIndexer(chain, coins.map { Utxo(it, 0, 100, 1_000) }, reader)
+            val tookMs = (System.nanoTime() - started) / 1_000_000
+            assertTrue(tookMs < 6_000, "took $tookMs ms")
+            assertTrue(rows.values.all { it.verdict == Verdict.INSCRIBED && it.found.single().number == null })
+            reader.close()
+        } finally {
+            server.close()
+        }
     }
 }
