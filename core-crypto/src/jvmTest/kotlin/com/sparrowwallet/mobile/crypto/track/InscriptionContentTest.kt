@@ -137,6 +137,34 @@ class InscriptionContentTest {
     }
 
     @Test
+    fun aChainWalkedOnlyFromItsFirstStepIsNotTheWholeContent() = runBlocking {
+        val chain = FakeChainSource()
+        val data = body(4_000)
+        val steps = doginalsSteps(data, hash(9))
+        assertTrue(steps.size > 1)
+        for(step in steps) {
+            chain.add(step, 101)
+        }
+        val genesis = steps.first().txid
+        //An indexer-named id carries the first step as its last: the walk holds only the genesis, so no content
+        assertNull(InscriptionContent.fromChain(genesis + "i0", genesis, chain, 1_000_000))
+        assertNull(InscriptionContent.doginals(steps.dropLast(1)))
+        assertNull(InscriptionContent.doginals(steps.take(1)))
+        assertContentEquals(data, assertNotNull(InscriptionContent.doginals(steps)).body)
+    }
+
+    @Test
+    fun aSingleStepInscriptionWorksWithItsGenesisAsTheLastStep() = runBlocking {
+        val chain = FakeChainSource()
+        val data = body(100)
+        val steps = doginalsSteps(data, hash(9))
+        assertEquals(1, steps.size)
+        chain.add(steps.first(), 101)
+        val genesis = steps.first().txid
+        assertContentEquals(data, assertNotNull(InscriptionContent.fromChain(genesis + "i0", genesis, chain, 1_000_000)).body)
+    }
+
+    @Test
     fun bodyOverTheLimitIsNotAssembled() = runBlocking {
         val chain = FakeChainSource()
         val big = ByteArray(1_300) { 7 }

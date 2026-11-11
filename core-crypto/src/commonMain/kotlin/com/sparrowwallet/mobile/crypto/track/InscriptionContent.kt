@@ -155,7 +155,8 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
         /**
          * A Doginals inscription from its chain's transactions, first step to last: each scriptSig's pushes before the
          * signature and the redeem script, joined, are "ord", the part count, the content type, then countdown and part
-         * pairs. Null when the body is over [maxBytes].
+         * pairs. Null when the body is over [maxBytes], or when the steps do not hold every part the genesis step declares
+         * (the desktop reader does not check this; the phone refuses to show part of an inscription as the whole).
          */
         fun doginals(genesisToLast: List<RawTx.Parsed>, maxBytes: Int = Int.MAX_VALUE): InscriptionContent? {
             val envelope = ArrayList<ScriptReader.Chunk>()
@@ -167,6 +168,12 @@ class InscriptionContent(val contentType: String?, val contentEncoding: String?,
                 envelope.addAll(chunks.subList(0, maxOf(0, chunks.size - 2)))
             }
             if(envelope.size < 3 || !envelope[0].data.contentEquals(ORD)) {
+                return null
+            }
+            //The genesis step declares how many parts the inscription has: with fewer collected (a chain walked from a step
+            //that is not the last, e.g. an indexer-named id whose "last step" is its first) the body would be only part of it
+            val declared = InscriptionLocator.number(envelope[1])
+            if((envelope.size - 3) % 2 != 0 || ((envelope.size - 3) / 2).toLong() != declared) {
                 return null
             }
             val contentType = envelope[2].data?.decodeToString()

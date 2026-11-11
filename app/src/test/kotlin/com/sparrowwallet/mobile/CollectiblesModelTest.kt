@@ -9,6 +9,7 @@ import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.electrum.indexer.RuneBalance
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import java.util.Locale
 import kotlin.test.Test
@@ -223,6 +224,147 @@ class CollectiblesModelTest {
     @Test fun sameInputsGiveTheSameView() {
         val rows = map(row(0, Verdict.INSCRIBED, listOf(found("${"1".repeat(64)}i0"))), row(1, Verdict.UNCHECKED, reason = "x", block = null))
         assertEquals(view(rows), view(rows))
+    }
+
+    //Held coins, reasons, duplicates, unreadable balances
+
+    private fun marked(n: Int, runeList: Map<String, RuneBalance>? = null, verdict: Verdict = Verdict.CLEAN) =
+        row(n, verdict, runes = true, runeList = runeList)
+
+    private fun heldOf(v: CollectiblesView) = v.unchecked.filter { it.reason == CollectiblesModel.HELD }
+
+    @Test fun heldCoinWithNoRuneListShowsOnLitecoinPublicAndYourOwn() {
+        for(setting in listOf(InscriptionSetting.Public, InscriptionSetting.YourOwn(own))) {
+            for(list in listOf<Map<String, RuneBalance>?>(null, emptyMap())) {
+                val v = view(map(marked(0, list)), setting = setting)
+                assertEquals(listOf("$txid:0"), heldOf(v).map { it.outpoint })
+                assertFalse(heldOf(v).single().canCheckDeeper)
+                assertFalse(v.empty)
+            }
+        }
+    }
+
+    @Test fun heldCoinWithAListShowsOnBuiltInAndOffLitecoin() {
+        val list = mapOf("A" to RuneBalance("100", 2, null))
+        assertEquals(1, heldOf(view(map(marked(0, list)), setting = InscriptionSetting.BuiltIn)).size)
+        for(coin in listOf(Coin.DOGECOIN, Coin.BELLSCOIN)) {
+            for(setting in listOf(InscriptionSetting.Public, InscriptionSetting.BuiltIn)) {
+                val v = view(map(marked(0, list), marked(1)), setting = setting, coin = coin)
+                assertEquals(2, heldOf(v).size)
+                assertFalse(v.empty)
+            }
+        }
+    }
+
+    @Test fun heldCoinWhoseEntriesWereAllSkippedShows() {
+        val v = view(map(marked(0, mapOf("BAD" to RuneBalance("1x", 0, null)))), setting = InscriptionSetting.Public)
+        assertEquals(1, heldOf(v).size)
+        assertFalse(v.empty)
+    }
+
+    @Test fun heldCoinWithABalanceRowIsNotListedTwice() {
+        val v = view(map(marked(0, mapOf("A" to RuneBalance("100", 2, null)))), setting = InscriptionSetting.Public)
+        assertTrue(v.unchecked.isEmpty())
+        assertEquals(1, v.runes!!.size)
+        assertTrue(v.empty)
+    }
+
+    @Test fun inscribedAndMarkedShowsAsATileOnly() {
+        val f = found("${"1".repeat(64)}i0", number = 3)
+        val v = view(
+            map(row(0, Verdict.INSCRIBED, listOf(f), runes = true)), setting = InscriptionSetting.Public
+        )
+        assertEquals(1, v.tiles.size)
+        assertTrue(v.unchecked.isEmpty())
+        assertFalse(v.empty)
+    }
+
+    @Test fun uncheckedAndMarkedKeepsItsOwnReason() {
+        val v = view(map(marked(0, null, Verdict.UNCHECKED).copy(reason = "Server error: x")), setting = InscriptionSetting.Public)
+        assertEquals(listOf("Server error: x"), v.unchecked.map { it.reason })
+    }
+
+    @Test fun emptyIsFalseWheneverAnythingIsListed() {
+        assertFalse(view(map(row(0, Verdict.UNCHECKED, reason = "x", block = null))).empty)
+        assertFalse(view(map(row(0, block = null))).empty)
+        assertFalse(view(map(row(0, Verdict.INSCRIBED, emptyList()))).empty)
+        assertTrue(view(map(row(0), row(1))).empty)
+    }
+
+    @Test fun reasonsAreSingleLineSafeAndShortButDeeperStillWorks() {
+        val hostile = "Server error\nline two‮evil​ " + "x".repeat(500)
+        val v = view(map(row(0, Verdict.UNCHECKED, reason = hostile, block = null)))
+        val shown = v.unchecked.single().reason
+        assertFalse(shown.any { it == '\n' || it == '‮' || it == '​' })
+        assertTrue(shown.startsWith("Server error line twoevil"))
+        assertTrue(shown.length <= 120)
+        assertFalse(v.unchecked.single().canCheckDeeper)
+        val budget = view(map(row(0, Verdict.UNCHECKED, reason = InscriptionTracer.BUDGET_USED, block = null)))
+        assertTrue(budget.unchecked.single().canCheckDeeper)
+        assertEquals(InscriptionTracer.BUDGET_USED, budget.unchecked.single().reason)
+    }
+
+    @Test fun overlongRuneAmountsAreSkipped() {
+        val v = view(
+            map(row(0, runeList = mapOf("OK" to RuneBalance("1", 0, null), "LONG" to RuneBalance("1".repeat(41), 0, null)))),
+            setting = InscriptionSetting.Public
+        )
+        assertEquals(listOf("OK"), v.runes!!.map { it.name })
+    }
+
+    @Test fun twoUnnamedInscriptionsOnOneCoinAreBothListedAndCounted() {
+        val a = found("?i0", height = 5)
+        val v = view(map(row(0, Verdict.INSCRIBED, listOf(a, a)), row(1, Verdict.INSCRIBED, listOf(a))))
+        assertEquals(3, v.tiles.size)
+        assertEquals(listOf(2, 2, 1), v.tiles.map { it.onCoin })
+        assertEquals(3, v.tiles.map { it.key }.toSet().size)
+    }
+
+    @Test fun skippedRuneEntriesAreSaid() {
+        val bad = row(0, runeList = mapOf("BAD" to RuneBalance("1x", 2, null)))
+        assertEquals(CollectiblesModel.RUNES_UNREADABLE, view(map(bad), setting = InscriptionSetting.Public).runesNote)
+        val mixed = map(row(0, runeList = mapOf("D" to RuneBalance("1", 2, null))), row(1, runeList = mapOf("D" to RuneBalance("1", 0, null))))
+        assertEquals(CollectiblesModel.RUNES_UNREADABLE, view(mixed, setting = InscriptionSetting.Public).runesNote)
+        assertEquals(CollectiblesModel.RUNES_NOTE, view(map(bad), setting = InscriptionSetting.BuiltIn).runesNote)
+        assertNull(view(map(row(0, runeList = mapOf("A" to RuneBalance("1", 0, null)))), setting = InscriptionSetting.Public).runesNote)
+    }
+
+    @Test fun concurrentCallersShareOneLoad() = runBlocking {
+        val cache = ContentCache(64)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var calls = 0
+        val load: suspend () -> InscriptionContent? = { calls++; gate.await(); content }
+        val a = async { ContentLoading.load(cache, "k", false, load) }
+        val b = async { ContentLoading.load(cache, "k", false, load) }
+        kotlinx.coroutines.yield()
+        gate.complete(Unit)
+        assertSame(content, a.await())
+        assertSame(content, b.await())
+        assertEquals(1, calls)
+    }
+
+    @Test fun aCancelledSharedLoadDoesNotPoisonTheWaiter() = runBlocking {
+        val cache = ContentCache(64)
+        var calls = 0
+        val never = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val load: suspend () -> InscriptionContent? = {
+            if(calls++ == 0) never.await()
+            content
+        }
+        val a = async { ContentLoading.load(cache, "k", false, load) }
+        kotlinx.coroutines.yield()
+        val b = async { ContentLoading.load(cache, "k", false, load) }
+        kotlinx.coroutines.yield()
+        a.cancel()
+        assertSame(content, b.await())
+        assertEquals(2, calls)
+        assertSame(content, ContentLoading.load(cache, "k", false) { null })
+    }
+
+    @Test fun aFailedSharedLoadDoesNotPoisonLaterCallers() = runBlocking {
+        val cache = ContentCache(64)
+        assertNull(ContentLoading.load(cache, "k", false) { throw IllegalStateException("x") })
+        assertSame(content, ContentLoading.load(cache, "k", false) { content })
     }
 
     //Content loading

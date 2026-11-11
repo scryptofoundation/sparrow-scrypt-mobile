@@ -117,7 +117,7 @@ object PreviewRules {
         return sample
     }
 
-    private fun isStripped(cp: Int): Boolean {
+    internal fun isStripped(cp: Int): Boolean {
         if (Character.isISOControl(cp)) return true
         if (cp == 0x3164 || cp == 0x115F || cp == 0x1160 || cp == 0x2800 || cp == 0x034F) return true
         if (cp in 0xFE00..0xFE0F || cp in 0x180B..0x180F || cp in 0xE0100..0xE01EF) return true

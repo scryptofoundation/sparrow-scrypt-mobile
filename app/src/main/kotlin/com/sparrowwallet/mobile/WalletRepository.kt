@@ -505,7 +505,7 @@ class WalletRepository(context: Context) {
     /**
      * An inscription's content for a preview, read from the chain through the wallet's own server (never an indexer),
      * at most [PreviewRules.MAX_CONTENT_BYTES]. [mintTxid] is the last step of a Doginals chain. Null on any failure and
-     * while air-gapped; cancellation propagates. Cached per coin, network and id (see [ContentLoading]).
+     * while air-gapped; cancellation propagates. [mintTxid] is passed unchanged as the last step of a Doginals chain. Cached per coin, network and id (see [ContentLoading]).
      */
     suspend fun inscriptionContent(data: VaultData, inscriptionId: String, mintTxid: String): InscriptionContent? {
         val coin = coin(data)
