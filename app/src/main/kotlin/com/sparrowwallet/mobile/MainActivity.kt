@@ -1080,6 +1080,31 @@ private fun HomeScreen(
         )
     }
     LaunchedEffect(Unit) { if(!gapped) usdNow = PriceService.currentUsd(repo.coin(data)) }
+    // the one-time notice before any public indexer is asked; until it is answered checks stay Built-in. Dismissing it
+    // saves nothing, so it shows again next time
+    val noticeHost = remember(data) {
+        if(repo.inscriptionNoticeDue(repo.coin(data), network)) InscriptionNotice.host(repo.coin(data), network) else null
+    }
+    var showNotice by remember(data) { mutableStateOf(noticeHost != null) }
+    if(showNotice && noticeHost != null) {
+        AlertDialog(
+            onDismissRequest = { showNotice = false },
+            title = { Text(InscriptionNotice.TITLE) },
+            text = { Text(InscriptionNotice.body(noticeHost)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    repo.saveInscriptionDefaultChoice(InscriptionNotice.choice(usePublic = true))
+                    showNotice = false
+                }) { Text(InscriptionNotice.USE_PUBLIC) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    repo.saveInscriptionDefaultChoice(InscriptionNotice.choice(usePublic = false))
+                    showNotice = false
+                }) { Text(InscriptionNotice.USE_BUILT_IN) }
+            }
+        )
+    }
     // the stored inscription checks are read off the main thread, so inscriptionChecks(data) can serve them from memory
     LaunchedEffect(data) { repo.loadInscriptionChecks(data) }
     // the inscription check's line, shown after the sync status while a check for this wallet runs, whoever started it
@@ -2475,9 +2500,9 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
     var proxyPort by remember { mutableStateOf(saved?.proxyPort?.toString() ?: "9050") }
     val publicIndexer = remember { InscriptionSetting.Public.url(coin, network) }
     val savedChecks = remember { repo.inscriptionSetting(coin, network) }
-    // "off", "public" or "custom"; Public only where the coin has a public indexer
-    var checks by remember { mutableStateOf(when(savedChecks) { is InscriptionSetting.Custom -> "custom"; InscriptionSetting.Public -> if(publicIndexer != null) "public" else "off"; else -> "off" }) }
-    var checksUrl by remember { mutableStateOf((savedChecks as? InscriptionSetting.Custom)?.customUrl ?: "") }
+    // Public / Your own / Built-in; Public only where the coin has a public indexer
+    var checks by remember { mutableStateOf(InscriptionChoice.of(savedChecks)) }
+    var checksUrl by remember { mutableStateOf((savedChecks as? InscriptionSetting.YourOwn)?.customUrl ?: "") }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
 
@@ -2524,17 +2549,11 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
                 style = MaterialTheme.typography.bodySmall)
         }
         SectionLabel("Inscription checks")
-        Text("Asks an indexer whether each coin carries an inscription or tokens, so none is spent by accident. " +
-            "The indexer sees the coins it is asked about. With checks off, coins that look like they may carry one " +
-            "are held back from sends.", style = MaterialTheme.typography.bodySmall)
-        RadioList(listOfNotNull("off", publicIndexer?.let { "public" }, "custom"), checks, {
-            when(it) {
-                "public" -> "Public (" + java.net.URI(publicIndexer!!).host + ")"
-                "custom" -> "My own indexer"
-                else -> "Off"
-            }
-        }) { checks = it }
-        if(checks == "custom") {
+        Text("Public or Your own asks an indexer which coins carry an inscription or runes, so none is spent by accident. " +
+            "The indexer sees the coins it is asked about. Built-in checks on-chain only: slower, and it cannot see runes.",
+            style = MaterialTheme.typography.bodySmall)
+        RadioList(inscriptionChoices(publicIndexer), checks, { inscriptionChoiceLabel(it, publicIndexer) }) { checks = it }
+        if(checks == InscriptionChoice.YOUR_OWN) {
             OutlinedTextField(value = checksUrl, onValueChange = { checksUrl = it },
                 label = { Text("Indexer URL (ord or Nintondo API)") }, modifier = Modifier.fillMaxWidth())
         }
@@ -2559,16 +2578,35 @@ private fun ServerScreen(repo: WalletRepository, data: VaultData, onBack: () -> 
                 onClick = {
                     val s = current() ?: run { status = "Fix the server fields first"; return@Button }
                     val checksSetting = when(checks) {
-                        "public" -> InscriptionSetting.Public
-                        "custom" -> InscriptionSetting.parse("custom:" + checksUrl.trim())
-                        else -> InscriptionSetting.Off
+                        InscriptionChoice.PUBLIC -> InscriptionSetting.Public
+                        InscriptionChoice.YOUR_OWN -> yourOwnSetting(checksUrl)
+                            ?: run { status = "The indexer URL must start with http:// or https://"; return@Button }
+                        InscriptionChoice.BUILT_IN -> InscriptionSetting.BuiltIn
                     }
-                    if(checks == "custom" && checksSetting == InscriptionSetting.Off) {
-                        status = "The indexer URL must start with http:// or https://"; return@Button
+                    fun save() {
+                        repo.saveServerSettings(coin, network, s)
+                        repo.saveInscriptionSetting(coin, network, checksSetting)
+                        status = "Saved for ${coin.displayName} ${network.displayName}"
                     }
-                    repo.saveServerSettings(coin, network, s)
-                    repo.saveInscriptionSetting(coin, network, checksSetting)
-                    status = "Saved for ${coin.displayName} ${network.displayName}"
+                    if(checksSetting !is InscriptionSetting.YourOwn) {
+                        save(); return@Button
+                    }
+                    // Your own is opened first (its chain and kind checked) through the proxy being saved; nothing is
+                    // saved when it is refused
+                    val proxy = s.takeIf { it.useProxy }?.let { com.sparrowwallet.mobile.electrum.SocksProxy(it.proxyHost, it.proxyPort) }
+                    busy = true; status = "Checking the indexer…"
+                    scope.launch {
+                        try {
+                            val refused = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                checkYourOwnIndexer(checksSetting.url(coin, network), NetworkPolicy.blocked) { url ->
+                                    com.sparrowwallet.mobile.electrum.indexer.Indexers.open(url, coin, network, proxy)
+                                }
+                            }
+                            if(refused != null) status = refused else save()
+                        } finally {
+                            busy = false
+                        }
+                    }
                 },
                 enabled = !busy, modifier = Modifier.weight(1f)
             ) { Text("Save") }

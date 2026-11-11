@@ -64,8 +64,8 @@ class AirGapModeTest {
     }
 }
 
-/** Minimal in-memory SharedPreferences: only what AirGapMode uses. */
-private class FakePrefs : SharedPreferences {
+/** Minimal in-memory SharedPreferences: only what AirGapMode and InscriptionPrefs use. */
+internal class FakePrefs : SharedPreferences {
     private val map = mutableMapOf<String, Any?>()
     override fun getAll(): MutableMap<String, *> = map
     override fun getString(key: String, defValue: String?) = map[key] as String? ?: defValue

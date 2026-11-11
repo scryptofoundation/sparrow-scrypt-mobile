@@ -684,13 +684,27 @@ class WalletRepository(context: Context) {
     private val indexerAnswers = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
     private val indexers = java.util.concurrent.ConcurrentHashMap<String, InscriptionIndex>()
 
-    fun inscriptionSetting(coin: Coin, network: Network): InscriptionSetting =
-        InscriptionSetting.parse(prefs.getString("inscriptions.${coin.id}.${network.id}", null))
+    private val inscriptionPrefs = InscriptionPrefs(prefs)
+
+    /** The effective setting: Built-in for a coin with nothing saved until the one-time notice is answered. */
+    fun inscriptionSetting(coin: Coin, network: Network): InscriptionSetting = inscriptionPrefs.setting(coin, network)
 
     fun saveInscriptionSetting(coin: Coin, network: Network, setting: InscriptionSetting) {
-        prefs.edit().putString("inscriptions.${coin.id}.${network.id}", setting.stored()).apply()
+        inscriptionPrefs.save(coin, network, setting)
         lastScan.clearAll()
     }
+
+    /** The notice's answer ("public" or "builtin"), or null until it is answered. */
+    fun inscriptionDefaultChoice(): String? = inscriptionPrefs.defaultChoice()
+
+    fun saveInscriptionDefaultChoice(choice: String) {
+        inscriptionPrefs.saveDefaultChoice(choice)
+        lastScan.clearAll()
+    }
+
+    /** Whether Home shows the one-time notice for this coin and network (see [InscriptionPrefs.noticeDue]). */
+    fun inscriptionNoticeDue(coin: Coin, network: Network): Boolean =
+        inscriptionPrefs.noticeDue(coin, network, NetworkPolicy.blocked)
 
     /** What the coin's indexer says about a coin: carries, clean, or null (checks off, not indexed, unreachable). */
     suspend fun indexerAnswer(coin: Coin, network: Network, utxo: com.sparrowwallet.mobile.electrum.Utxo): Boolean? {

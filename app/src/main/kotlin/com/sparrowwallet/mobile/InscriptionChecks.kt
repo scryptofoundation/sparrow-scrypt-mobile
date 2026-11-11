@@ -1,48 +1,171 @@
 package com.sparrowwallet.mobile
 
+import android.content.SharedPreferences
 import com.sparrowwallet.mobile.crypto.Coin
 import com.sparrowwallet.mobile.crypto.Network
 import com.sparrowwallet.mobile.crypto.track.Verdict
 import com.sparrowwallet.mobile.electrum.InscriptionIndex
 import com.sparrowwallet.mobile.electrum.WalletScanner
+import com.sparrowwallet.mobile.electrum.indexer.Indexers
+import com.sparrowwallet.mobile.electrum.indexer.InscriptionIndexer
 import com.sparrowwallet.mobile.electrum.inscriptions.CheckPolicy
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.electrum.inscriptions.TrackerRun
+import kotlinx.coroutines.CancellationException
+import java.net.URI
 
 /**
- * Where a coin's inscription checks go, per coin and network like desktop: Off (the default; the local rule holds
- * coins that may carry one), the coin's public indexer, or the user's own. A public indexer sees the coins asked about.
+ * Where a coin's inscription checks go, per coin and network like desktop: the coin's public indexer, the user's own,
+ * or Built-in (on-chain only, no indexer). An indexer sees the coins it is asked about, so with nothing saved no
+ * indexer is asked until the one-time notice ([InscriptionNotice]) is answered.
  */
 sealed interface InscriptionSetting {
-    /** The indexer to ask, or null when checks are off or the coin has no public indexer on this network. */
+    /** The indexer to ask, or null on Built-in or when the coin has no public indexer on this network. */
     fun url(coin: Coin, network: Network): String?
 
     fun stored(): String
 
-    data object Off : InscriptionSetting {
-        override fun url(coin: Coin, network: Network): String? = null
-        override fun stored() = "off"
-    }
-
     data object Public : InscriptionSetting {
-        override fun url(coin: Coin, network: Network): String? = InscriptionIndex.publicUrl(coin.id, network.id)
-        override fun stored() = "public"
+        override fun url(coin: Coin, network: Network): String? = Indexers.publicUrl(coin, network)
+        override fun stored() = PUBLIC
     }
 
-    data class Custom(val customUrl: String) : InscriptionSetting {
+    data class YourOwn(val customUrl: String) : InscriptionSetting {
         override fun url(coin: Coin, network: Network): String = customUrl.trimEnd('/')
-        override fun stored() = "custom:$customUrl"
+        override fun stored() = "$CUSTOM_PREFIX$customUrl"
+    }
+
+    data object BuiltIn : InscriptionSetting {
+        override fun url(coin: Coin, network: Network): String? = null
+        override fun stored() = BUILT_IN
     }
 
     companion object {
-        fun parse(stored: String?): InscriptionSetting = when {
-            stored == "public" -> Public
-            stored != null && stored.startsWith("custom:") -> stored.removePrefix("custom:").let { url ->
-                if(url.startsWith("http://") || url.startsWith("https://")) Custom(url) else Off
+        const val PUBLIC = "public"
+        const val BUILT_IN = "builtin"
+        private const val CUSTOM_PREFIX = "custom:"
+
+        fun isHttpUrl(url: String): Boolean = url.startsWith("http://") || url.startsWith("https://")
+
+        /**
+         * A saved value, for a coin and network that has a public indexer ([hasPublic]) or not. "off" (the old default
+         * when saved) and anything unreadable read as Built-in; a saved "public" where no public indexer exists does too.
+         * With nothing saved, [defaultChoice] (the notice's answer, null until answered) decides: "public" gives Public
+         * where one exists, anything else Built-in, so no indexer is asked before the notice is answered.
+         */
+        fun parse(stored: String?, hasPublic: Boolean, defaultChoice: String?): InscriptionSetting = when {
+            stored == null -> if(defaultChoice == PUBLIC && hasPublic) Public else BuiltIn
+            stored == PUBLIC -> if(hasPublic) Public else BuiltIn
+            stored.startsWith(CUSTOM_PREFIX) -> stored.removePrefix(CUSTOM_PREFIX).let { url ->
+                if(isHttpUrl(url)) YourOwn(url) else BuiltIn
             }
-            else -> Off
+            else -> BuiltIn
         }
     }
+}
+
+/**
+ * The stored inscription settings: one per coin and network (`inscriptions.<coin>.<network>`), and the notice's answer
+ * (`inscriptions.default`, "public" or "builtin", absent until answered) for coins with nothing saved.
+ */
+internal class InscriptionPrefs(private val prefs: SharedPreferences) {
+    private fun stored(coin: Coin, network: Network): String? = prefs.getString(key(coin, network), null)
+
+    private fun hasPublic(coin: Coin, network: Network): Boolean = Indexers.publicUrl(coin, network) != null
+
+    fun setting(coin: Coin, network: Network): InscriptionSetting =
+        InscriptionSetting.parse(stored(coin, network), hasPublic(coin, network), defaultChoice())
+
+    fun save(coin: Coin, network: Network, setting: InscriptionSetting) {
+        prefs.edit().putString(key(coin, network), setting.stored()).apply()
+    }
+
+    /** The notice's answer, or null until it is answered (an unknown value counts as unanswered). */
+    fun defaultChoice(): String? =
+        prefs.getString(DEFAULT_KEY, null)?.takeIf { it == InscriptionSetting.PUBLIC || it == InscriptionSetting.BUILT_IN }
+
+    fun saveDefaultChoice(choice: String) {
+        require(choice == InscriptionSetting.PUBLIC || choice == InscriptionSetting.BUILT_IN) { "Unknown choice $choice" }
+        prefs.edit().putString(DEFAULT_KEY, choice).apply()
+    }
+
+    /**
+     * Whether Home shows the one-time notice for this coin and network: not [airGapped], nothing saved for it, a public
+     * indexer exists for it, and the notice has not been answered (for any coin).
+     */
+    fun noticeDue(coin: Coin, network: Network, airGapped: Boolean): Boolean =
+        !airGapped && stored(coin, network) == null && hasPublic(coin, network) && defaultChoice() == null
+
+    companion object {
+        const val DEFAULT_KEY = "inscriptions.default"
+
+        fun key(coin: Coin, network: Network) = "inscriptions.${coin.id}.${network.id}"
+    }
+}
+
+/** The one-time notice on Home before any public indexer is asked; exact copy. */
+object InscriptionNotice {
+    const val TITLE = "Inscription checks"
+    const val USE_PUBLIC = "Use the public indexer"
+    const val USE_BUILT_IN = "Use Built-in instead"
+
+    fun body(host: String): String =
+        "Sparrow can ask a public indexer ($host) which of this wallet's coins carry inscriptions or runes. That tells " +
+            "the indexer which coins are yours. It goes through your Tor proxy when one is set. You can check on-chain " +
+            "only instead: that is slower and cannot see runes."
+
+    /** The public indexer's host for the coin and network, or null when it has none. */
+    fun host(coin: Coin, network: Network): String? = Indexers.publicUrl(coin, network)?.let(::indexerHost)
+
+    /** The value saved as the default choice for each button. */
+    fun choice(usePublic: Boolean): String = if(usePublic) InscriptionSetting.PUBLIC else InscriptionSetting.BUILT_IN
+}
+
+/** An indexer URL's host name, or the URL itself when it has none. */
+fun indexerHost(url: String): String = runCatching { URI(url).host }.getOrNull() ?: url
+
+/** The Server screen's choices, in this order; Public only where the coin has a public indexer. */
+enum class InscriptionChoice {
+    PUBLIC, YOUR_OWN, BUILT_IN;
+
+    companion object {
+        fun of(setting: InscriptionSetting): InscriptionChoice = when(setting) {
+            InscriptionSetting.Public -> PUBLIC
+            is InscriptionSetting.YourOwn -> YOUR_OWN
+            InscriptionSetting.BuiltIn -> BUILT_IN
+        }
+    }
+}
+
+fun inscriptionChoices(publicUrl: String?): List<InscriptionChoice> =
+    listOfNotNull(InscriptionChoice.PUBLIC.takeIf { publicUrl != null }, InscriptionChoice.YOUR_OWN, InscriptionChoice.BUILT_IN)
+
+fun inscriptionChoiceLabel(choice: InscriptionChoice, publicUrl: String?): String = when(choice) {
+    InscriptionChoice.PUBLIC -> "Public (${publicUrl?.let(::indexerHost) ?: ""})"
+    InscriptionChoice.YOUR_OWN -> "Your own"
+    InscriptionChoice.BUILT_IN -> "Built-in"
+}
+
+/** The Your own setting for a typed URL, or null when it is not an http or https URL. */
+fun yourOwnSetting(url: String): InscriptionSetting.YourOwn? =
+    url.trim().takeIf { InscriptionSetting.isHttpUrl(it) }?.let { InscriptionSetting.YourOwn(it) }
+
+/**
+ * Save's check of a Your own indexer: opens it with [open] (in the app, [Indexers.open], which checks its chain and kind)
+ * and closes the reader. Returns null when it opened, else the reason to show (the exception's message). Air-gapped, it
+ * contacts nothing. Cancellation is rethrown.
+ */
+suspend fun checkYourOwnIndexer(url: String, airGapped: Boolean, open: suspend (String) -> InscriptionIndexer): String? {
+    if(airGapped) return "Off in air-gapped mode"
+    val reader = try {
+        open(url)
+    } catch(e: CancellationException) {
+        throw e
+    } catch(e: Throwable) {
+        return e.message ?: "Could not reach the indexer"
+    }
+    reader.close()
+    return null
 }
 
 /**
