@@ -114,6 +114,11 @@ class InscriptionChecker(
             epochs[key] = (epochs[key] ?: 0) + 1
             memory.remove(key)
         }
+        //Its Check deeper requests go too, before its run is cancelled, so no follow-up starts for it
+        synchronized(deeperLock) {
+            deeperQueues.remove(key)
+            publishDeeper(key)
+        }
         jobs[key]?.cancel()
     }
 
@@ -141,6 +146,14 @@ class InscriptionChecker(
         if(!running.add(key)) {
             return null
         }
+        return launchClaimed(walletName, key, {}, work)
+    }
+
+    /**
+     * Launches [work] for a wallet whose guard the caller has just taken. When it ends, however it ends, [onEnd] runs,
+     * the guard is let go, and then any Check deeper waiting for the wallet starts (see [requestDeeper]).
+     */
+    private fun launchClaimed(walletName: String, key: String, onEnd: () -> Unit, work: suspend () -> Map<String, InscriptionCheck>): Job {
         claim(key)
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
@@ -153,12 +166,99 @@ class InscriptionChecker(
         }
         jobs[key] = job
         job.invokeOnCompletion {
+            onEnd()
             jobs.remove(key, job)
             claimedEpochs.remove(key)
             running.remove(key)
+            startDeeper(walletName)
         }
         job.start()
         return job
+    }
+
+    /**
+     * Check deeper requests for one wallet: [waiting] for a run, and [inFlight], taken by the run now going. [run] starts
+     * a check with a deeper set; the latest request's is kept.
+     */
+    private class DeeperQueue(var run: (suspend (Set<String>) -> Map<String, InscriptionCheck>)? = null) {
+        val waiting = LinkedHashSet<String>()
+        var inFlight: Set<String> = emptySet()
+    }
+
+    private val deeperLock = Any()
+    /** Guarded by [deeperLock]. In memory only: a request does not outlive the process. */
+    private val deeperQueues = HashMap<String, DeeperQueue>()
+    private val deeperFlows = ConcurrentHashMap<String, MutableStateFlow<Set<String>>>()
+
+    private fun deeperFlow(key: String) = deeperFlows.computeIfAbsent(key) { MutableStateFlow(emptySet()) }
+
+    /** Call under [deeperLock]. */
+    private fun publishDeeper(key: String) {
+        val queue = deeperQueues[key]
+        deeperFlow(key).value = if(queue == null) emptySet() else LinkedHashSet(queue.waiting).apply { addAll(queue.inFlight) }
+    }
+
+    /**
+     * The outpoints a Check deeper was asked for that have not had their run yet or are in it now: the Collectibles
+     * screen shows them as Queued.
+     */
+    fun deeperQueued(walletName: String): StateFlow<Set<String>> = deeperFlow(key(walletName))
+
+    /**
+     * Asks for [outpoint] to be checked deeper. [run] is the wallet's check with a deeper set (in the app, the same path
+     * as Home's: the listing, then [checkWithIndexer] with the setting, proxy and air-gap rules read when it runs). With
+     * no run going for the wallet, one starts now with every waiting outpoint as deeper, and its job is returned. With
+     * one going (Home's, the worker's, or another deeper run), the request waits and null is returned: when that run
+     * ends, however it ends (finished, failed, cancelled, out of time), a follow-up run starts with what is waiting.
+     *
+     * One attempt per request: the outpoints a run takes leave the queue when it ends, whatever its outcome, and are never
+     * put back, so a coin that keeps failing does not loop; asking again is a new attempt. A request for an outpoint
+     * already waiting or in a run is dropped. A taken outpoint that is no longer among the wallet's stored rows (the
+     * coins the last run listed: spent since) is dropped, and with none left no run is made. [forget] empties the queue.
+     */
+    fun requestDeeper(walletName: String, outpoint: String, run: suspend (Set<String>) -> Map<String, InscriptionCheck>): Job? {
+        val key = key(walletName)
+        synchronized(deeperLock) {
+            val queue = deeperQueues.getOrPut(key) { DeeperQueue() }
+            queue.run = run
+            if(outpoint in queue.inFlight || !queue.waiting.add(outpoint)) {
+                return null
+            }
+            publishDeeper(key)
+        }
+        return startDeeper(walletName)
+    }
+
+    /** Starts a run with the wallet's waiting outpoints when there are some and its guard is free; returns its job, or null. */
+    private fun startDeeper(walletName: String): Job? {
+        val key = key(walletName)
+        val taken: Set<String>
+        val run: suspend (Set<String>) -> Map<String, InscriptionCheck>
+        synchronized(deeperLock) {
+            val queue = deeperQueues[key] ?: return null
+            run = queue.run ?: return null
+            if(queue.waiting.isEmpty() || !running.add(key)) {
+                //Nothing waiting, or a run holds the guard: its end calls here again
+                return null
+            }
+            taken = LinkedHashSet(queue.waiting)
+            queue.waiting.clear()
+            queue.inFlight = taken
+            publishDeeper(key)
+        }
+        val onEnd = {
+            synchronized(deeperLock) {
+                val queue = deeperQueues[key]
+                if(queue != null && queue.inFlight === taken) {
+                    queue.inFlight = emptySet()
+                    publishDeeper(key)
+                }
+            }
+        }
+        return launchClaimed(walletName, key, onEnd) {
+            val unspent = taken.filterTo(LinkedHashSet()) { it in results(walletName) }
+            if(unspent.isEmpty()) emptyMap() else run(unspent)
+        }
     }
 
     /**
@@ -583,6 +683,7 @@ class InscriptionChecker(
         } finally {
             claimedEpochs.remove(key)
             running.remove(key)
+            startDeeper(walletName)
         }
     }
 

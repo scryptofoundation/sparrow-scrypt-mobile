@@ -26,6 +26,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import java.io.File
 import java.io.IOException
 import java.security.SecureRandom
@@ -37,6 +38,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -1389,5 +1391,199 @@ class InscriptionCheckerTest {
         assertEquals(0, opens)
         assertEquals(InscriptionCheck.Source.BUILT_IN, rows.getValue("$a:0").source)
         assertTrue(checker.status(wallet).value!!.indexerUnreachable)
+    }
+
+    // ---- Check deeper ----
+
+    /** A coin 600 steps above Litecoin's first inscription: the default budget leaves it Unchecked, the deeper one traces it. */
+    private fun longCoin(chain: FakeChain, n: Int, depth: Int = 600): String {
+        chain.tip = 2_700_000
+        var previous = chain.add(tx(listOf("cc".repeat(32) to n), listOf(10_000L)), 2_000_000)
+        for(i in 0 until depth) {
+            previous = chain.add(tx(listOf(previous to 0), listOf(10_000L)), 2_500_000 + i)
+        }
+        return previous
+    }
+
+    private class Deep(val chain: FakeChain, val long: String, val plain: String, val utxos: List<Utxo>) {
+        val outpoint = "$long:0"
+    }
+
+    /** A wallet whose first run left its long coin Unchecked for the budget and its plain coin Clean. */
+    private suspend fun deep(checker: InscriptionChecker): Deep {
+        val chain = FakeChain()
+        val long = longCoin(chain, 1)
+        val plain = oldCoin(chain, 50_000)
+        val d = Deep(chain, long, plain, listOf(Utxo(long, 0, 2_500_599, 10_000), Utxo(plain, 0, 100, 50_000)))
+        val first = checker.ltc(chain, d.utxos)
+        assertEquals(com.sparrowwallet.mobile.crypto.track.InscriptionTracer.BUDGET_USED, first.getValue(d.outpoint).reason)
+        assertEquals(Verdict.CLEAN, first.getValue("$plain:0").verdict)
+        return d
+    }
+
+    private suspend fun InscriptionChecker.queueEmpties() =
+        kotlinx.coroutines.withTimeout(30_000) { deeperQueued(wallet).first { it.isEmpty() } }
+
+    /** Holds the wallet's guard with a run that waits for [release], as Home's check would while it runs. */
+    private suspend fun InscriptionChecker.busy(release: CompletableDeferred<Unit>, then: suspend () -> Map<String, InscriptionCheck> = { emptyMap() }): Job {
+        val started = CompletableDeferred<Unit>()
+        val job = assertNotNull(start(wallet) { started.complete(Unit); release.await(); then() })
+        started.await()
+        return job
+    }
+
+    @Test fun deeperRequestStartsARunWhenIdle(): Unit = runBlocking {
+        val checker = checker(newDir(), CheckerCipher())
+        val d = deep(checker)
+        val asked = java.util.Collections.synchronizedList(ArrayList<Set<String>>())
+        val shown = java.util.Collections.synchronizedList(ArrayList<Set<String>>())
+        val job = checker.requestDeeper(wallet, d.outpoint) { deeper ->
+            asked.add(deeper)
+            shown.add(checker.deeperQueued(wallet).value)
+            checker.ltc(d.chain, d.utxos, deeper)
+        }
+        assertNotNull(job, "a run starts at once").join()
+        assertEquals(listOf(setOf(d.outpoint)), asked)
+        assertEquals(listOf(setOf(d.outpoint)), shown, "the coin shows as asked for while its run goes")
+        assertEquals(Verdict.CLEAN, checker.results(wallet).getValue(d.outpoint).verdict, "traced with the deeper budget")
+        checker.queueEmpties()
+    }
+
+    /**
+     * A request while a check runs waits for it, then a follow-up run traces the coin with the deeper budget; the first
+     * run's results stand, and the follow-up starts only once the guard is free.
+     */
+    @Test fun deeperRequestIsQueuedBehindARunningCheck(): Unit = runBlocking {
+        val dir = newDir()
+        val cipher = CheckerCipher()
+        val checker = checker(dir, cipher)
+        val d = deep(checker)
+        val release = CompletableDeferred<Unit>()
+        var current: Map<String, InscriptionCheck>? = null
+        val running = checker.busy(release) { checker.ltc(d.chain, d.utxos).also { current = it } }
+        val asked = java.util.Collections.synchronizedList(ArrayList<Set<String>>())
+        val followed = CompletableDeferred<Map<String, InscriptionCheck>>()
+        val queued = checker.requestDeeper(wallet, d.outpoint) { deeper ->
+            asked.add(deeper)
+            checker.ltc(d.chain, d.utxos, deeper).also { followed.complete(it) }
+        }
+        assertNull(queued, "queued behind the running check, not started")
+        assertEquals(setOf(d.outpoint), checker.deeperQueued(wallet).value)
+        assertTrue(asked.isEmpty())
+        release.complete(Unit)
+        running.join()
+        val after = kotlinx.coroutines.withTimeout(30_000) { followed.await() }
+        assertEquals(listOf(setOf(d.outpoint)), asked, "one follow-up run, with the queued coin as deeper")
+        assertEquals(Verdict.UNCHECKED, current!!.getValue(d.outpoint).verdict, "the running check did not trace it deeper")
+        assertEquals(Verdict.CLEAN, after.getValue(d.outpoint).verdict)
+        assertEquals(current!!.getValue("${d.plain}:0"), after.getValue("${d.plain}:0"), "the first run's result stands")
+        assertEquals(after, InscriptionStore(dir, cipher).load(wallet))
+        checker.queueEmpties()
+    }
+
+    @Test fun aQueuedCoinThatWasSpentIsDropped(): Unit = runBlocking {
+        val checker = checker(newDir(), CheckerCipher())
+        val d = deep(checker)
+        val release = CompletableDeferred<Unit>()
+        //The running check lists the coins again: the long coin has been spent since
+        val running = checker.busy(release) { checker.ltc(d.chain, d.utxos.filter { it.txHash != d.long }) }
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        assertNull(checker.requestDeeper(wallet, d.outpoint) { calls.incrementAndGet(); emptyMap() })
+        release.complete(Unit)
+        running.join()
+        checker.queueEmpties()
+        assertEquals(0, calls.get(), "no run for a coin no longer unspent")
+        assertFalse(d.outpoint in checker.results(wallet))
+    }
+
+    /** The check a request waits behind may fail, be cancelled or run out of time: the follow-up still runs, once. */
+    @Test fun theFollowUpRunsHoweverTheRunningCheckEnds(): Unit = runBlocking {
+        for(ending in listOf("fails", "cancelled", "time up")) {
+            val checker = checker(newDir(), CheckerCipher())
+            val d = deep(checker)
+            val started = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            //The background worker's run, which holds the guard through tryRun
+            val worker = async(kotlinx.coroutines.Dispatchers.IO) {
+                checker.tryRun(wallet) {
+                    started.complete(Unit)
+                    release.await()
+                    when(ending) {
+                        "fails" -> throw IOException("server down")
+                        "cancelled" -> kotlinx.coroutines.awaitCancellation()
+                        else -> checker.ltc(d.chain, d.utxos, timeUp = { true })
+                    }
+                }
+            }
+            started.await()
+            val calls = java.util.concurrent.atomic.AtomicInteger()
+            val followed = CompletableDeferred<Set<String>>()
+            assertNull(checker.requestDeeper(wallet, d.outpoint) { deeper -> calls.incrementAndGet(); followed.complete(deeper); emptyMap() }, ending)
+            if(ending == "cancelled") worker.cancel() else release.complete(Unit)
+            runCatching { worker.await() }
+            assertEquals(setOf(d.outpoint), kotlinx.coroutines.withTimeout(30_000) { followed.await() }, ending)
+            checker.queueEmpties()
+            assertEquals(1, calls.get(), ending)
+        }
+    }
+
+    /** One attempt per request: a deeper run that fails is not run again by itself, and asking again is a new attempt. */
+    @Test fun aDeeperRunThatFailsIsNotRetried(): Unit = runBlocking {
+        val checker = checker(newDir(), CheckerCipher())
+        val d = deep(checker)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        checker.requestDeeper(wallet, d.outpoint) { calls.incrementAndGet(); throw IOException("server down") }!!.join()
+        checker.queueEmpties()
+        //Another run ends: nothing is waiting, so nothing follows it
+        checker.start(wallet) { emptyMap() }!!.join()
+        assertEquals(1, calls.get())
+        assertTrue(checker.deeperQueued(wallet).value.isEmpty())
+        checker.requestDeeper(wallet, d.outpoint) { calls.incrementAndGet(); emptyMap() }!!.join()
+        assertEquals(2, calls.get())
+    }
+
+    @Test fun aDoubleTapGivesOneRun(): Unit = runBlocking {
+        val checker = checker(newDir(), CheckerCipher())
+        val d = deep(checker)
+        val release = CompletableDeferred<Unit>()
+        val running = checker.busy(release)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val followed = CompletableDeferred<Unit>()
+        repeat(2) { assertNull(checker.requestDeeper(wallet, d.outpoint) { calls.incrementAndGet(); followed.complete(Unit); emptyMap() }) }
+        release.complete(Unit)
+        running.join()
+        kotlinx.coroutines.withTimeout(30_000) { followed.await() }
+        checker.queueEmpties()
+        assertEquals(1, calls.get())
+    }
+
+    /** A deleted wallet's queue goes with it: no follow-up runs for it. */
+    @Test fun forgetEmptiesTheQueue(): Unit = runBlocking {
+        val checker = checker(newDir(), CheckerCipher())
+        val d = deep(checker)
+        val running = checker.busy(CompletableDeferred())
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        assertNull(checker.requestDeeper(wallet, d.outpoint) { calls.incrementAndGet(); emptyMap() })
+        checker.forget(wallet)
+        assertTrue(checker.deeperQueued(wallet).value.isEmpty())
+        running.join()
+        assertTrue(running.isCancelled)
+        assertNotNull(checker.start(wallet) { emptyMap() }?.also { it.join() }, "no follow-up holds the guard")
+        assertEquals(0, calls.get())
+    }
+
+    /** A deeper run goes through the same path as every run: on Built-in it opens no indexer, and the coin is traced deeper. */
+    @Test fun aDeeperCheckOnBuiltInOpensNoIndexer(): Unit = runBlocking {
+        val checker = checker(newDir(), CheckerCipher())
+        val d = deep(checker)
+        val listed = d.utxos.mapIndexed { i, u -> com.sparrowwallet.mobile.electrum.WalletScanner.ChainUtxo(u, 0, i) }
+        var opens = 0
+        val job = checker.requestDeeper(wallet, d.outpoint) { deeper ->
+            checkWithIndexer(checker, wallet, Coin.LITECOIN, Network.MAINNET, d.chain, listed, InscriptionSetting.BuiltIn, null,
+                airGapped = false, readers = IndexerReaders(), deeper = deeper, open = { _, _, _, _ -> opens++; FakeIndexer { emptyMap() } })
+        }
+        job!!.join()
+        assertEquals(0, opens)
+        assertEquals(Verdict.CLEAN, checker.results(wallet).getValue(d.outpoint).verdict)
     }
 }

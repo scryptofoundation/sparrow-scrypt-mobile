@@ -113,6 +113,8 @@ internal sealed interface Screen {
     data class PsbtSign(val home: Home, val unsigned: WalletRepository.UnsignedSendPreview) : Screen
     data class SignPsbt(val home: Home) : Screen
     data class ExportToDesktop(val home: Home) : Screen
+    data class Collectibles(val home: Home) : Screen
+    data class Inscription(val home: Home, val tile: CollectibleTile) : Screen
 }
 
 /** A wallet's pending PSBT is kept under its public side's name: a peg-in starts from the private side. */
@@ -132,6 +134,8 @@ internal fun backTarget(screen: Screen): Screen? = when(screen) {
     is Screen.PsbtSign -> screen.home
     is Screen.SignPsbt -> screen.home
     is Screen.ExportToDesktop -> screen.home
+    is Screen.Collectibles -> screen.home
+    is Screen.Inscription -> Screen.Collectibles(screen.home)
     is Screen.Create, is Screen.Restore, is Screen.RestoreFromApp, is Screen.ImportSparrow, is Screen.LinkReceive,
     is Screen.LinkSend, is Screen.Unlock -> Screen.WalletList
 }
@@ -283,6 +287,7 @@ private fun App(repo: WalletRepository) {
                     onSyncLabels = { pairing -> screen = Screen.LabelSync(s, pairing) },
                     onSignPsbt = { screen = Screen.SignPsbt(s) },
                     onExport = { screen = Screen.ExportToDesktop(s) },
+                    onCollectibles = { screen = Screen.Collectibles(s) },
                     onResumePsbt = repo.pendingPsbts[pendingPsbtKey(s)]?.let { unsigned -> { screen = Screen.PsbtSign(s, unsigned) } }
                 )
             }
@@ -298,6 +303,10 @@ private fun App(repo: WalletRepository) {
             is Screen.PsbtSign -> PsbtSignScreen(repo, s.home, s.unsigned, onBack = { screen = s.home })
             is Screen.SignPsbt -> SignPsbtScreen(repo, s.home, onBack = { screen = s.home })
             is Screen.ExportToDesktop -> ExportToDesktopScreen(repo, s.home.data, onBack = { screen = s.home })
+            is Screen.Collectibles -> CollectiblesScreen(repo, s.home.data,
+                onTile = { tile -> screen = Screen.Inscription(s.home, tile) },
+                onBack = { screen = s.home })
+            is Screen.Inscription -> InscriptionScreen(repo, s.home.data, s.tile, onBack = { screen = Screen.Collectibles(s.home) })
             is Screen.Server -> ServerScreen(repo, s.home.data, onBack = { screen = s.home })
             is Screen.Details -> DetailsScreen(repo, s.home.name, s.home.data,
                 onExport = { screen = Screen.ExportToDesktop(s.home) },
@@ -1062,6 +1071,7 @@ private fun HomeScreen(
     onSyncLabels: (SparrowLink.Pairing) -> Unit = {},
     onSignPsbt: (() -> Unit)? = null,
     onExport: () -> Unit = {},
+    onCollectibles: () -> Unit = {},
     onResumePsbt: (() -> Unit)? = null
 ) {
     val scope = rememberCoroutineScope()
@@ -1243,6 +1253,10 @@ private fun HomeScreen(
                 }
             }
         }
+        // under the Activity card: the wallet's inscriptions and runes, from the stored checks
+        if(remember(data) { CollectiblesModel.available(repo.coin(data), data.scriptType) }) {
+            OutlinedButton(onClick = onCollectibles, modifier = Modifier.fillMaxWidth()) { Text("Collectibles") }
+        }
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onDetails, modifier = Modifier.weight(1f)) { Text("Details") }
@@ -1323,14 +1337,21 @@ private fun MwebHomeScreen(
         )
     }
     LaunchedEffect(Unit) { usdNow = PriceService.currentUsd(Coin.LITECOIN) }
+    // the linked public wallet's account key, derived on its first sync and kept for its inscription check
+    var linkedAccount by remember(linkedData) { mutableStateOf<HDKey?>(null) }
 
-    fun refresh() {
+    fun refresh(checkAfter: Boolean = true) {
         syncing = true
         scope.launch {
             try {
                 // one wallet: refresh both layers together, report both the same way
                 val publicJob = if(linkedData != null && linkedData.scriptType != "MWEB")
-                    async { runCatching { repo.syncWallet(linkedData, repo.accountKey(linkedData)) } } else null
+                    async {
+                        runCatching {
+                            val account = linkedAccount ?: repo.accountKey(linkedData).also { linkedAccount = it }
+                            repo.syncWallet(linkedData, account)
+                        }
+                    } else null
                 val privateState = try {
                     val snap = repo.mwebSync(data)
                     snapshot = snap
@@ -1344,6 +1365,10 @@ private fun MwebHomeScreen(
                     publicResult?.fold({ "" }, { "sync failed — ${it.message}" }),
                     privateState
                 )
+                // as Home does after a public sync: the linked public wallet's inscription check, in the app's scope
+                if(checkAfter && publicResult?.isSuccess == true && linkedData != null) {
+                    linkedAccount?.let { repo.startInscriptionCheck(linkedData, it) }
+                }
             } finally {
                 syncing = false
             }
@@ -1360,7 +1385,7 @@ private fun MwebHomeScreen(
         while(polls++ < 120) {
             if(snapshot?.initialScanComplete == true) break
             kotlinx.coroutines.delay(6_000)
-            if(!syncing) refresh()
+            if(!syncing) refresh(checkAfter = false) // the first sync's check covers the public coins
         }
     }
 

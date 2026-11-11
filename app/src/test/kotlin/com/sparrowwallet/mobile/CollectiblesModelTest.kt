@@ -16,6 +16,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -327,6 +328,148 @@ class CollectiblesModelTest {
         assertEquals(CollectiblesModel.RUNES_UNREADABLE, view(mixed, setting = InscriptionSetting.Public).runesNote)
         assertEquals(CollectiblesModel.RUNES_NOTE, view(map(bad), setting = InscriptionSetting.BuiltIn).runesNote)
         assertNull(view(map(row(0, runeList = mapOf("A" to RuneBalance("1", 0, null)))), setting = InscriptionSetting.Public).runesNote)
+    }
+
+    // ---- the screen's decisions ----
+
+    @Test fun collectiblesButtonOnlyForPublicWalletsOnCoveredCoins() {
+        for(coin in listOf(Coin.LITECOIN, Coin.DOGECOIN, Coin.PEPECOIN, Coin.BELLSCOIN, Coin.JUNKCOIN)) {
+            assertTrue(CollectiblesModel.available(coin, "P2WPKH"), coin.name)
+            assertTrue(CollectiblesModel.available(coin, "P2PKH"), coin.name)
+        }
+        assertFalse(CollectiblesModel.available(Coin.LITECOIN, "MWEB"))
+        assertFalse(CollectiblesModel.available(Coin.LUCKYCOIN, "P2PKH"))
+        assertFalse(CollectiblesModel.available(Coin.DINGOCOIN, "P2PKH"))
+    }
+
+    @Test fun queuedRowsSayQueuedAndOthersDoNot() {
+        val rows = map(
+            row(0, Verdict.UNCHECKED, reason = InscriptionTracer.BUDGET_USED, block = null),
+            row(1, Verdict.UNCHECKED, reason = InscriptionTracer.FEES_NEED_DEEPER, block = null),
+            row(2, Verdict.CLEAN, runes = true, block = null)
+        )
+        val v = view(rows, setting = InscriptionSetting.Public, queued = setOf("$txid:0", "$txid:2"))
+        val by = v.unchecked.associateBy { it.outpoint }
+        assertTrue(by.getValue("$txid:0").queued)
+        assertFalse(by.getValue("$txid:0").canCheckDeeper)
+        assertFalse(by.getValue("$txid:1").queued)
+        assertTrue(by.getValue("$txid:1").canCheckDeeper)
+        //A held row never offers Check deeper, queued or not
+        assertEquals(CollectiblesModel.HELD, by.getValue("$txid:2").reason)
+        assertFalse(by.getValue("$txid:2").queued)
+        assertFalse(by.getValue("$txid:2").canCheckDeeper)
+    }
+
+    @Test fun deeperButtonStates() {
+        val row = UncheckedRow("o:0", 1, InscriptionTracer.BUDGET_USED, canCheckDeeper = true)
+        assertEquals(DeeperButton.CHECK, CollectiblesModel.deeperButton(row, airGapped = false))
+        assertEquals(DeeperButton.OFF, CollectiblesModel.deeperButton(row, airGapped = true))
+        assertEquals(DeeperButton.QUEUED, CollectiblesModel.deeperButton(row.copy(canCheckDeeper = false, queued = true), airGapped = false))
+        assertEquals(DeeperButton.NONE, CollectiblesModel.deeperButton(row.copy(canCheckDeeper = false), airGapped = false))
+        assertEquals(DeeperButton.NONE, CollectiblesModel.deeperButton(UncheckedRow("o:1", 1, CollectiblesModel.HELD, false), airGapped = false))
+        assertEquals("Check deeper", CollectiblesModel.CHECK_DEEPER)
+        assertEquals("Queued", CollectiblesModel.QUEUED)
+    }
+
+    private fun tile(id: String = "${"1".repeat(64)}i0", label: String = "#1,234", onCoin: Int = 1, value: Long? = 150_000_000L,
+                     height: Int = 512_340, time: Long = 1_700_000_000L, chain: Int? = 0, index: Int? = 4) =
+        CollectibleTile(id, "$txid:1", label, "b".repeat(64), height, time, onCoin, value, InscriptionCheck.Source.PUBLIC,
+            chain = chain, index = index)
+
+    private val png = byteArrayOf(0x89.toByte(), 'P'.code.toByte(), 'N'.code.toByte(), 'G'.code.toByte(), 0x0d, 0x0a, 0x1a, 0x0a,
+        0, 0, 0, 13, 'I'.code.toByte(), 'H'.code.toByte(), 'D'.code.toByte(), 'R'.code.toByte(), 0, 0, 0, 64, 0, 0, 0, 32)
+
+    @Test fun previewDecisions() {
+        val t = tile()
+        assertEquals(InscriptionPreview.Shown.Unavailable(InscriptionPreview.UNAVAILABLE),
+            InscriptionPreview.shown(tile(id = "?unnamed"), airGapped = false, failed = false, content = null))
+        assertEquals(InscriptionPreview.Shown.Unavailable(InscriptionPreview.AIR_GAPPED),
+            InscriptionPreview.shown(t, airGapped = true, failed = false, content = InscriptionContent("text/plain", null, "hi".encodeToByteArray())))
+        assertEquals(InscriptionPreview.Shown.Unavailable("Preview unavailable"), InscriptionPreview.shown(t, false, failed = true, content = null))
+        assertEquals(InscriptionPreview.Shown.Loading, InscriptionPreview.shown(t, false, false, null))
+        val image = assertIs<InscriptionPreview.Shown.Image>(InscriptionPreview.shown(t, false, false, InscriptionContent("image/png", null, png)))
+        assertEquals(64 to 32, image.width to image.height)
+        assertEquals(InscriptionPreview.Shown.Text("hi\tthere"),
+            InscriptionPreview.shown(t, false, false, InscriptionContent("text/plain;charset=utf-8", null, "hi\tthere‮".encodeToByteArray())))
+        assertEquals(InscriptionPreview.Shown.Placeholder("text/html", "1,500 bytes"),
+            InscriptionPreview.shown(t, false, false, InscriptionContent("text/html", null, ByteArray(1_500))))
+        assertEquals(InscriptionPreview.Shown.Placeholder("image/png", "24 bytes"),
+            InscriptionPreview.shown(t, false, false, InscriptionContent("image/png", "br", png)), "encoded: never decoded")
+        assertEquals(InscriptionPreview.Shown.Placeholder("Unknown type", "0 bytes"),
+            InscriptionPreview.shown(t, false, false, InscriptionContent(null, null, ByteArray(0))))
+    }
+
+    @Test fun aHostileContentTypeIsShownSafelyAndShort() {
+        val shown = InscriptionPreview.typeText("text/x\n‮evil​" + "y".repeat(500))
+        assertFalse(shown.any { it == '\n' || it == '‮' || it == '​' })
+        assertTrue(shown.startsWith("text/x evil"))
+        assertTrue(shown.length <= InscriptionPreview.MAX_TYPE_CHARS)
+    }
+
+    @Test fun loadsOnlyWhatMayBeShownAndNeverRetriesAFailureInAVisit() {
+        val failures = PreviewFailures()
+        assertTrue(InscriptionPreview.shouldLoad(tile(), airGapped = false, failures))
+        assertFalse(InscriptionPreview.shouldLoad(tile(id = "?x"), airGapped = false, failures))
+        assertFalse(InscriptionPreview.shouldLoad(tile(), airGapped = true, failures))
+        failures.add(tile().key)
+        assertTrue(tile().key in failures)
+        assertFalse(InscriptionPreview.shouldLoad(tile(), airGapped = false, failures))
+    }
+
+    @Test fun decodedBoundsMustMatchTheHeaderAndTheLimits() {
+        assertTrue(InscriptionPreview.decodedBoundsOk(64, 32, 64, 32))
+        assertFalse(InscriptionPreview.decodedBoundsOk(64, 32, 65, 32), "larger than the header said")
+        assertFalse(InscriptionPreview.decodedBoundsOk(64, 32, 64, 33))
+        assertFalse(InscriptionPreview.decodedBoundsOk(64, 32, -1, -1), "the decoder could not read it")
+        assertFalse(InscriptionPreview.decodedBoundsOk(64, 32, 0, 32))
+        assertFalse(InscriptionPreview.decodedBoundsOk(5_000, 10, 5_000, 10), "over the side limit")
+        assertFalse(InscriptionPreview.decodedBoundsOk(3_000, 3_000, 3_000, 3_000), "over the pixel limit")
+        assertTrue(InscriptionPreview.decodedBoundsOk(64, 32, 32, 16), "smaller is accepted")
+        assertEquals(4, PreviewRules.sampleSize(1_024, 512, InscriptionPreview.THUMB_TARGET))
+    }
+
+    @Test fun detailLines() {
+        val lines = InscriptionDetail.lines(tile(), Coin.LITECOIN, content = "image/png, 24 bytes", address = "ltc1qaddress")
+        val by = lines.associate { it.label to it }
+        assertEquals("${"1".repeat(64)}i0", by.getValue("Inscription id").value)
+        assertTrue(by.getValue("Inscription id").copy)
+        assertEquals("#1,234", by.getValue("Number").value)
+        assertTrue(by.getValue("Minted").value.startsWith("Block 512,340, "))
+        assertEquals("image/png, 24 bytes", by.getValue("Content").value)
+        assertEquals("$txid:1", by.getValue("Coin").value)
+        assertTrue(by.getValue("Coin").copy)
+        assertEquals("1.50000000 LTC", by.getValue("Value").value)
+        assertEquals("ltc1qaddress", by.getValue("Address").value)
+        assertEquals("Public indexer", by.getValue("Source").value)
+        assertEquals(listOf("Inscription id", "Coin"), lines.filter { it.copy }.map { it.label }, "only the id and the outpoint are copied")
+        //Unknown parts are left out, not guessed
+        val bare = InscriptionDetail.lines(tile(label = "Block 512,340", value = null, chain = null, index = null), Coin.LITECOIN, null, null)
+            .map { it.label }
+        assertFalse("Number" in bare || "Value" in bare || "Address" in bare || "Content" in bare)
+        assertEquals("Unconfirmed", InscriptionDetail.lines(tile(label = "Unconfirmed", height = 0, time = 0), Coin.LITECOIN, null, null)
+            .single { it.label == "Minted" }.value)
+        assertEquals(listOf("Built-in", "Your own indexer", "Public indexer"),
+            listOf(InscriptionCheck.Source.BUILT_IN, InscriptionCheck.Source.YOUR_OWN, InscriptionCheck.Source.PUBLIC).map { InscriptionDetail.source(it) })
+    }
+
+    @Test fun onlyAReceiveOrChangePositionGivesAnAddress() {
+        assertEquals(0 to 4, InscriptionDetail.position(tile()))
+        assertEquals(1 to 0, InscriptionDetail.position(tile(chain = 1, index = 0)))
+        assertNull(InscriptionDetail.position(tile(chain = null)))
+        assertNull(InscriptionDetail.position(tile(index = null)))
+        assertNull(InscriptionDetail.position(tile(chain = 2)))
+        assertNull(InscriptionDetail.position(tile(index = -1)))
+    }
+
+    @Test fun aCoinWithSeveralInscriptionsSaysSo() {
+        assertNull(InscriptionDetail.carries(tile(onCoin = 1)))
+        assertEquals("This coin carries 3 inscriptions.", InscriptionDetail.carries(tile(onCoin = 3)))
+    }
+
+    @Test fun tilesCarryTheCoinsAddressPosition() {
+        val r = row(0, Verdict.INSCRIBED, listOf(found("${"1".repeat(64)}i0"))).copy(chain = 1, index = 9)
+        val t = view(map(r)).tiles.single()
+        assertEquals(1 to 9, t.chain to t.index)
     }
 
     @Test fun concurrentCallersShareOneLoad() = runBlocking {

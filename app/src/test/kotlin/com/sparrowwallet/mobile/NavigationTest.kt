@@ -17,6 +17,14 @@ class NavigationTest {
     }
 
     @Test
+    fun backFromAnInscriptionReturnsToCollectiblesAndFromCollectiblesToHome() {
+        val tile = CollectibleTile("${"a".repeat(64)}i0", "${"b".repeat(64)}:0", "#1", "a".repeat(64), 100, 1_000L, 1, 10_000L,
+            com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck.Source.BUILT_IN)
+        assertEquals(home, backTarget(Screen.Collectibles(home)))
+        assertEquals(Screen.Collectibles(home), backTarget(Screen.Inscription(home, tile)))
+    }
+
+    @Test
     fun backFromHomeAndSetupScreensReturnsToTheList() {
         assertEquals(Screen.WalletList, backTarget(home))
         assertEquals(Screen.WalletList, backTarget(Screen.Unlock("w")))

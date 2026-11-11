@@ -43,6 +43,7 @@ import com.sparrowwallet.mobile.storage.SparrowLink
 import com.sparrowwallet.mobile.storage.VaultData
 import com.sparrowwallet.mobile.storage.WalletVault
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
@@ -351,6 +352,39 @@ class WalletRepository(context: Context) {
     fun inscriptionProgress(data: VaultData): kotlinx.coroutines.flow.StateFlow<Pair<Int, Int>?>? =
         sessionNames[data]?.let { inscriptionChecker.progress(it) }
 
+    /** The wallet's last or current check run (see [CheckStatus]), for the Collectibles header. */
+    fun inscriptionStatus(data: VaultData): kotlinx.coroutines.flow.StateFlow<CheckStatus?>? =
+        sessionNames[data]?.let { inscriptionChecker.status(it) }
+
+    /** The outpoints a Check deeper was asked for and has not finished (see [InscriptionChecker.deeperQueued]). */
+    fun deeperQueued(data: VaultData): kotlinx.coroutines.flow.StateFlow<Set<String>>? =
+        sessionNames[data]?.let { inscriptionChecker.deeperQueued(it) }
+
+    /**
+     * Asks for one coin of an open public wallet to be checked deeper: now when no check runs for the wallet, else after
+     * the running one (see [InscriptionChecker.requestDeeper]). The run is Home's: the same listing and [checkWithIndexer]
+     * path, so the setting, proxy, notice and air-gap rules are read when it runs. Like [startInscriptionCheck] it keeps
+     * only the xpub and the shown-receive count. MWEB wallets, uncovered coins and air-gapped mode queue nothing.
+     */
+    fun requestDeeperCheck(data: VaultData, account: HDKey, outpoint: String) {
+        val name = sessionNames[data] ?: return
+        val coin = coin(data)
+        if(!checkApplies(data.scriptType, coin)) {
+            return
+        }
+        val network = network(data)
+        val scriptType = data.scriptType
+        val xpub = account.xpub(params(data).xpubHeader)
+        val receiveTo = receiveShownTo(data)
+        inscriptionChecker.requestDeeper(name, outpoint) { deeper ->
+            runCheck(name, coin, network, scriptType, deeper, { false }, XpubKey.fromXpub(xpub), receiveTo)
+        }
+    }
+
+    /** The address at a position of the wallet's account ([chain] 0 receive, 1 change). Derives keys: call it off the main thread. */
+    fun addressAt(data: VaultData, chain: Int, index: Int): String =
+        Addresses.forKey(accountKey(data).deriveChild(chain.toLong()).deriveChild(index.toLong()).pubKey, scriptType(data), params(data))
+
     /**
      * The background worker's check of a wallet from its cached xpub alone, with the default budgets and the receive
      * addresses Home has shown (kept under the xpub's hash). [timeUp] stops it between coins, saving what it decided.
@@ -511,11 +545,15 @@ class WalletRepository(context: Context) {
         val coin = coin(data)
         val network = network(data)
         return ContentLoading.load(contentCache, ContentLoading.key(coin, network, inscriptionId), NetworkPolicy.blocked) {
-            withBackend(coin, network) { backend ->
+            //Each load opens its own server connection: a screenful of tiles takes turns, a few at a time
+            contentLoads.withPermit { withBackend(coin, network) { backend ->
                 InscriptionContent.fromChain(inscriptionId, mintTxid, BackendChainSource(backend), PreviewRules.MAX_CONTENT_BYTES)
-            }
+            } }
         }
     }
+
+    /** Content loads at once, across screens. */
+    private val contentLoads = kotlinx.coroutines.sync.Semaphore(2)
 
     fun network(data: VaultData): Network = Network.fromId(data.network)
 
