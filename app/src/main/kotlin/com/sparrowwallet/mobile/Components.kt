@@ -8,6 +8,8 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -102,6 +104,17 @@ internal fun TypeChip(kind: TxKind) {
             .background(color.copy(alpha = 0.14f))
             .padding(horizontal = 6.dp, vertical = 2.dp)
     )
+}
+
+/**
+ * A wallet card's tags: side by side, and onto a second line when a large font leaves no room for them, so a tag is
+ * never squeezed into a column of single letters.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun WalletTags(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = modifier) { content() }
 }
 
 /** Small layer tag for wallet cards: PUBLIC (blue) or PRIVATE · MWEB (copper). */

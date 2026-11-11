@@ -501,8 +501,7 @@ private fun WalletListScreen(
                             verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(w.name)
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    modifier = Modifier.padding(top = 5.dp)) {
+                                WalletTags(modifier = Modifier.padding(top = 5.dp)) {
                                     if(coin.mweb) LayerTag(privateLayer = w.scriptType == "MWEB")
                                     for(tag in tags) CompanionTag(tag)
                                 }
