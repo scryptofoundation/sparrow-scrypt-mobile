@@ -28,6 +28,8 @@ import com.sparrowwallet.mobile.crypto.sha256
 import com.sparrowwallet.mobile.crypto.toHex
 import com.sparrowwallet.mobile.electrum.ElectrumBackend
 import com.sparrowwallet.mobile.electrum.indexer.Indexers
+import com.sparrowwallet.mobile.crypto.track.InscriptionContent
+import com.sparrowwallet.mobile.electrum.BackendChainSource
 import com.sparrowwallet.mobile.electrum.ChainBackend
 import com.sparrowwallet.mobile.electrum.SocksProxy
 import com.sparrowwallet.mobile.electrum.WalletScanner
@@ -486,6 +488,23 @@ class WalletRepository(context: Context) {
             if(result.conflicts > 0) ". ${result.conflicts} differed and were left unchanged on both." else "."
         }
         LabelSyncOutcome(summary, updated)
+    }
+
+    private val contentCache = ContentCache(ContentLoading.CACHE_ENTRIES)
+
+    /**
+     * An inscription's content for a preview, read from the chain through the wallet's own server (never an indexer),
+     * at most [PreviewRules.MAX_CONTENT_BYTES]. [mintTxid] is the last step of a Doginals chain. Null on any failure and
+     * while air-gapped; cancellation propagates. Cached per coin, network and id (see [ContentLoading]).
+     */
+    suspend fun inscriptionContent(data: VaultData, inscriptionId: String, mintTxid: String): InscriptionContent? {
+        val coin = coin(data)
+        val network = network(data)
+        return ContentLoading.load(contentCache, ContentLoading.key(coin, network, inscriptionId), NetworkPolicy.blocked) {
+            withBackend(coin, network) { backend ->
+                InscriptionContent.fromChain(inscriptionId, mintTxid, BackendChainSource(backend), PreviewRules.MAX_CONTENT_BYTES)
+            }
+        }
     }
 
     fun network(data: VaultData): Network = Network.fromId(data.network)
