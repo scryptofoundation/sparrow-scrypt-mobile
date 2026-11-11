@@ -22,14 +22,18 @@ import java.math.BigInteger
  * One inscription on one coin, as the Collectibles grid draws it. [value] is the coin's value when known. [mintTxid] is
  * kept as the check found it and is passed unchanged to [WalletRepository.inscriptionContent] as the last step of a
  * Doginals chain. [key] is unique within a view (outpoint, id and position on the coin), for a list key: the same id can
- * appear on more than one coin.
+ * appear on more than one coin, and in both wallets of a family. [layer] is the family layer of the wallet that holds it:
+ * its preview, address and detail come from that wallet. [tag] is "Taproot" on a Taproot wallet's tile shown beside its
+ * public wallet's, else null.
  */
 data class CollectibleTile(
     val inscriptionId: String, val outpoint: String, val label: String, val mintTxid: String,
     val mintHeight: Int, val mintTime: Long, val onCoin: Int, val value: Long?, val source: InscriptionCheck.Source,
-    val key: String = "$outpoint/$inscriptionId/0",
+    val layer: Layer = Layer.PUBLIC,
+    val key: String = "${layer.name}/$outpoint/$inscriptionId/0",
     /** The coin's address position in the wallet (receive 0, change 1, and index), when the check stored it. */
-    val chain: Int? = null, val index: Int? = null
+    val chain: Int? = null, val index: Int? = null,
+    val tag: String? = null
 ) {
     /** An unnamed inscription (its id starts with "?") has no content to read, so no preview. */
     val hasPreview: Boolean get() = !inscriptionId.startsWith("?")
@@ -38,8 +42,19 @@ data class CollectibleTile(
 /** A rune's summed balance; [amount] is already shifted by its divisibility. Display text only. */
 data class RuneRow(val name: String, val symbol: String?, val amount: String)
 
-/** [queued]: a Check deeper was asked for this coin and is waiting for, or in, its run. */
-data class UncheckedRow(val outpoint: String, val value: Long?, val reason: String, val canCheckDeeper: Boolean, val queued: Boolean = false)
+/**
+ * [queued]: a Check deeper was asked for this coin and is waiting for, or in, its run. [layer] and [tag] as on
+ * [CollectibleTile]: Check deeper goes to the wallet on [layer].
+ */
+data class UncheckedRow(val outpoint: String, val value: Long?, val reason: String, val canCheckDeeper: Boolean, val queued: Boolean = false,
+                        val layer: Layer = Layer.PUBLIC, val tag: String? = null)
+
+/**
+ * One shown wallet's stored results: [checks] null when it was never checked, [status] its last or current run,
+ * [deeperQueued] the outpoints a Check deeper waits for on this wallet. [layer] is its layer in the family.
+ */
+data class WalletChecks(val layer: Layer, val checks: Map<String, InscriptionCheck>?, val status: CheckStatus?,
+                        val deeperQueued: Set<String>, val scriptType: String)
 
 /** What an unchecked row offers: nothing, "Check deeper", "Queued" (disabled), or "Check deeper" disabled while air-gapped. */
 enum class DeeperButton { NONE, CHECK, QUEUED, OFF }
@@ -82,20 +97,64 @@ object CollectiblesModel {
         else -> DeeperButton.CHECK
     }
 
+    /** The tag on items the Taproot wallet holds, when it is shown beside its public wallet. */
+    val TAPROOT_TAG = Layer.TAPROOT.label
+    const val TAPROOT_HINT = "Inscriptions sent to this seed's Taproot addresses are kept in its Taproot wallet."
+    const val ADD_TAPROOT = "Add Taproot wallet"
+
+    /**
+     * The layers whose wallets a Collectibles screen opened from [layer]'s Home shows: from the Public layer the public
+     * wallet and its Taproot wallet, never the Private (MWEB) one; from any other layer that wallet alone.
+     */
+    fun shownLayers(family: WalletFamily, layer: Layer): List<Layer> = when(layer) {
+        Layer.PUBLIC -> listOfNotNull(Layer.PUBLIC, family.taproot?.let { Layer.TAPROOT })
+        else -> listOf(layer)
+    }
+
+    /**
+     * The wallet holding an item on [itemLayer], on a screen opened from [shownFrom]: only a shown wallet, never another
+     * in its place (an address derived from another wallet's keys would be wrong), so null when none is shown there.
+     */
+    fun holder(family: WalletFamily, shownFrom: Layer, itemLayer: Layer): Member? =
+        if(itemLayer in shownLayers(family, shownFrom)) family.member(itemLayer) else null
+
+    /**
+     * Whether the screen offers "Add Taproot wallet": opened from the Public layer, for a public wallet [info] (null when
+     * it is not listed) that [TaprootCompanion.offered] allows among [wallets]. A one-sided link counts as none.
+     */
+    fun companionHint(info: WalletRepository.WalletInfo?, hasSeed: Boolean, seedType: String?,
+                      wallets: List<WalletRepository.WalletInfo>, layer: Layer): Boolean =
+        layer == Layer.PUBLIC && info != null && TaprootCompanion.offered(info, hasSeed, seedType, wallets)
+
+    /**
+     * The view of [wallets] (one, or a public wallet and its Taproot wallet) together. One wallet gives the view it always
+     * did. With two, items the Taproot wallet holds are tagged; the header runs while either runs (both wallets' counts
+     * summed, a finished wallet's last count included), says an indexer was unreachable when either wallet's last run
+     * could not reach it, and "Not checked yet" only while neither has results; [CollectiblesView.empty] needs results
+     * and nothing listed from either. Rune balances are summed over both, rows in outpoint order (the public wallet's
+     * first on a tie). An MWEB wallet adds nothing.
+     */
     fun build(
-        checks: Map<String, InscriptionCheck>?, status: CheckStatus?, setting: InscriptionSetting,
-        coin: Coin, deeperQueued: Set<String>, airGapped: Boolean = false
+        wallets: List<WalletChecks>, setting: InscriptionSetting, coin: Coin, airGapped: Boolean = false
     ): CollectiblesView {
-        val rows = checks?.values?.sortedWith(compareBy({ it.txid }, { it.vout })) ?: emptyList()
-        val tiles = rows.flatMap { tiles(it) }.sortedWith(
+        val shown = wallets.filter { it.scriptType != "MWEB" }
+        val tagged = shown.size > 1
+        fun tagOf(layer: Layer) = if(tagged && layer == Layer.TAPROOT) TAPROOT_TAG else null
+        val rows = shown.flatMap { w -> w.checks?.values.orEmpty().map { w to it } }
+            .sortedWith(compareBy({ it.second.txid }, { it.second.vout }, { it.first.layer.ordinal }))
+        val tiles = rows.flatMap { (w, row) -> tiles(row, w.layer, tagOf(w.layer)) }.sortedWith(
             compareByDescending<CollectibleTile> { if(it.mintHeight <= 0) Int.MAX_VALUE else it.mintHeight }
                 .thenByDescending { it.mintTime }.thenBy { it.inscriptionId }.thenBy { it.outpoint }.thenBy { it.key }
         )
         val withRunes = coin == Coin.LITECOIN && setting !is InscriptionSetting.BuiltIn
-        val sums = if(withRunes) sumRunes(rows) else null
-        val unchecked = rows.mapNotNull { unchecked(it, deeperQueued, sums?.represented ?: emptySet(), coin) }
+        val sums = if(withRunes) sumRunes(rows.map { (w, row) -> w.layer to row }) else null
+        //a balance in one wallet never stands for a held coin of the other
+        val represented = sums?.represented.orEmpty().groupBy({ it.first }, { it.second }).mapValues { it.value.toSet() }
+        val unchecked = rows.mapNotNull { (w, row) ->
+            unchecked(row, w.deeperQueued, represented[w.layer].orEmpty(), coin)?.copy(layer = w.layer, tag = tagOf(w.layer))
+        }
         return CollectiblesView(
-            header = if(airGapped) CHECKS_OFF else header(checks != null, status, setting),
+            header = if(airGapped) CHECKS_OFF else header(shown, setting),
             tiles = tiles,
             runes = sums?.rows,
             runesNote = when {
@@ -104,7 +163,7 @@ object CollectiblesModel {
                 else -> null
             },
             unchecked = unchecked,
-            empty = checks != null && tiles.isEmpty() && unchecked.isEmpty()
+            empty = shown.any { it.checks != null } && tiles.isEmpty() && unchecked.isEmpty()
         )
     }
 
@@ -128,20 +187,25 @@ object CollectiblesModel {
         return (if(negative) "-" else "") + out
     }
 
-    private fun header(hasChecks: Boolean, status: CheckStatus?, setting: InscriptionSetting): String = when {
-        status != null && status.running -> "Checked ${status.done} of ${status.total} coins"
-        !hasChecks -> "Not checked yet"
-        status != null && status.indexerUnreachable && setting is InscriptionSetting.Public -> "Public indexer unreachable, checking on-chain"
-        status != null && status.indexerUnreachable && setting is InscriptionSetting.YourOwn -> "Your indexer unreachable, checking on-chain"
-        else -> "Up to date"
+    private fun header(wallets: List<WalletChecks>, setting: InscriptionSetting): String {
+        val statuses = wallets.mapNotNull { it.status }
+        val unreachable = statuses.any { it.indexerUnreachable }
+        return when {
+            statuses.any { it.running } -> "Checked ${statuses.sumOf { it.done }} of ${statuses.sumOf { it.total }} coins"
+            wallets.none { it.checks != null } -> "Not checked yet"
+            unreachable && setting is InscriptionSetting.Public -> "Public indexer unreachable, checking on-chain"
+            unreachable && setting is InscriptionSetting.YourOwn -> "Your indexer unreachable, checking on-chain"
+            else -> "Up to date"
+        }
     }
 
-    private fun tiles(row: InscriptionCheck): List<CollectibleTile> {
+    private fun tiles(row: InscriptionCheck, layer: Layer, tag: String?): List<CollectibleTile> {
         if(row.verdict != Verdict.INSCRIBED) return emptyList()
         return row.found.mapIndexed { at, it ->
             CollectibleTile(
                 it.inscriptionId, row.outpoint, label(it), it.mintTxid, it.mintHeight, it.mintTime, row.found.size, row.value,
-                row.source, "${row.outpoint}/${it.inscriptionId}/$at", row.chain, row.index
+                row.source, layer, key = "${layer.name}/${row.outpoint}/${it.inscriptionId}/$at", chain = row.chain, index = row.index,
+                tag = tag
             )
         }
     }
@@ -195,7 +259,8 @@ object CollectiblesModel {
         reason == InscriptionTracer.FEES_NEED_DEEPER ||
         (reason == InscriptionChecker.LOST_REASON && !com.sparrowwallet.mobile.crypto.track.ChainRules.hasRuneLikeTokens(coin))
 
-    private class RuneSums(val rows: List<RuneRow>, val represented: Set<String>, val skipped: Boolean)
+    /** [represented]: the coins with an entry in a balance, each with the layer of the wallet that holds it. */
+    private class RuneSums(val rows: List<RuneRow>, val represented: Set<Pair<Layer, String>>, val skipped: Boolean)
 
     /**
      * Balances summed per rune name over every row that carries a rune list (the marks of rows not listed are not in
@@ -204,13 +269,14 @@ object CollectiblesModel {
      * order) sets the divisibility and the symbol, and an entry with another divisibility is left out of the sum rather
      * than mixed in. An unreadable amount (not digits, or over 40 of them) or a divisibility outside 0..38 is left out
      * too. [RuneSums.skipped] says an entry was left out; [RuneSums.represented] the coins with an entry in a balance.
+     * [rows] are each with the layer of the wallet holding it, and may come from both wallets of a family.
      */
-    private fun sumRunes(rows: List<InscriptionCheck>): RuneSums {
+    private fun sumRunes(rows: List<Pair<Layer, InscriptionCheck>>): RuneSums {
         class Sum(val divisibility: Int, val symbol: String?, var total: BigInteger)
         val sums = LinkedHashMap<String, Sum>()
-        val represented = HashSet<String>()
+        val represented = HashSet<Pair<Layer, String>>()
         var skipped = false
-        for(row in rows) {
+        for((layer, row) in rows) {
             val list = row.runeList ?: continue
             for(name in list.keys.sorted()) {
                 val balance = list.getValue(name)
@@ -229,7 +295,7 @@ object CollectiblesModel {
                     skipped = true
                     continue
                 }
-                represented.add(row.outpoint)
+                represented.add(layer to row.outpoint)
             }
         }
         val out = sums.entries.sortedBy { it.key }.map { RuneRow(it.key, it.value.symbol, shift(it.value.total, it.value.divisibility)) }
@@ -410,9 +476,10 @@ data class DetailLine(val label: String, val value: String, val copy: Boolean = 
 object InscriptionDetail {
     /**
      * The lines for [tile]: id, number (when an indexer gave one), mint block and date, [content] (type and size, once
-     * loaded), the coin and its value, [address] (when the position is known), and the source. Unknown parts are left out.
+     * loaded), the coin and its value, [address] (when the position is known), [wallet] (the name of the wallet holding
+     * it, said only for a tagged tile: one shown beside another wallet's), and the source. Unknown parts are left out.
      */
-    fun lines(tile: CollectibleTile, coin: Coin, content: String?, address: String?): List<DetailLine> = buildList {
+    fun lines(tile: CollectibleTile, coin: Coin, content: String?, address: String?, wallet: String? = null): List<DetailLine> = buildList {
         add(DetailLine("Inscription id", tile.inscriptionId, copy = true))
         if(tile.label.startsWith("#")) add(DetailLine("Number", tile.label))
         add(DetailLine("Minted", if(tile.mintHeight <= 0) "Unconfirmed" else
@@ -421,6 +488,7 @@ object InscriptionDetail {
         add(DetailLine("Coin", tile.outpoint, copy = true))
         tile.value?.let { add(DetailLine("Value", formatAmount(coin, it))) }
         address?.let { add(DetailLine("Address", it)) }
+        if(tile.tag != null) wallet?.let { add(DetailLine("Wallet", it)) }
         add(DetailLine("Source", source(tile.source)))
     }
 

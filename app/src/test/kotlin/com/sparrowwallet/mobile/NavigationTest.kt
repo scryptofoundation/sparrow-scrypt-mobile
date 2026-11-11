@@ -79,6 +79,20 @@ class NavigationTest {
         assertNull(collectiblesVisit(companionHome))
     }
 
+    /** A Taproot wallet's tile opened from the Public layer's grid goes back to that grid, the family's, not the Taproot Home's. */
+    @Test
+    fun theDetailScreenGoesBackToCollectiblesForTheFamily() {
+        val publicHome = Screen.Home(companionHome.family, Layer.PUBLIC)
+        val tile = CollectibleTile("${"a".repeat(64)}i0", "${"b".repeat(64)}:0", "#1", "a".repeat(64), 100, 1_000L, 1, 10_000L,
+            com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck.Source.BUILT_IN, Layer.TAPROOT, tag = "Taproot")
+        val back = backTarget(Screen.Inscription(publicHome, tile))
+        assertEquals(Screen.Collectibles(publicHome), back)
+        assertEquals(Layer.PUBLIC, (back as Screen.Collectibles).home.layer)
+        assertEquals(listOf(Layer.PUBLIC, Layer.TAPROOT), CollectiblesModel.shownLayers(back.home.family, back.home.layer))
+        assertEquals("w", collectiblesVisit(Screen.Inscription(publicHome, tile)))
+        assertEquals(publicHome, backTarget(back))
+    }
+
     @Test
     fun backOnTheListLeavesTheApp() {
         assertNull(backTarget(Screen.WalletList))

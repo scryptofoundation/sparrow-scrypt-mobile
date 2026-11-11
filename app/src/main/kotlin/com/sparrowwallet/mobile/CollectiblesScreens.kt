@@ -35,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +55,7 @@ import com.sparrowwallet.mobile.crypto.track.InscriptionContent
 import com.sparrowwallet.mobile.electrum.inscriptions.InscriptionCheck
 import com.sparrowwallet.mobile.storage.VaultData
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /*
@@ -61,8 +63,11 @@ import kotlinx.coroutines.withContext
  * InscriptionPreview, InscriptionDetail and the checker; these composables only draw it and pass taps on.
  */
 
-/** The stored rows once read (null inside: never checked), so "not read yet" is told from "never checked". */
-private class StoredRows(val checks: Map<String, InscriptionCheck>?)
+/**
+ * The shown wallets' stored rows once read, by layer (null inside: never checked), so "not read yet" is told from
+ * "never checked", and rows read for another set of wallets are never shown for this one.
+ */
+private class StoredRows(val checks: Map<Layer, Map<String, InscriptionCheck>?>)
 
 /** One visit of a wallet's Collectibles, the grid and its detail screens: the grid's place and the previews that failed. */
 internal class CollectiblesVisit {
@@ -73,21 +78,78 @@ internal class CollectiblesVisit {
 /** Preview decodes, one at a time across the app (see [OneAtATime]). */
 private val previewDecodes = OneAtATime()
 
+/**
+ * The Collectibles of [home]'s shown wallet and, from the Public layer, its Taproot wallet too
+ * ([CollectiblesModel.shownLayers]). Each tile's and row's actions go to the wallet holding it ([CollectiblesModel.holder]).
+ * [addTaproot] runs "Add Taproot wallet" (slow: it is called off the main thread) and [onAdded] shows what it gave.
+ */
 @Composable
-internal fun CollectiblesScreen(repo: WalletRepository, data: VaultData, visit: CollectiblesVisit, onTile: (CollectibleTile) -> Unit,
-                                onBack: () -> Unit) {
+internal fun CollectiblesScreen(repo: WalletRepository, home: Screen.Home, visit: CollectiblesVisit, onTile: (CollectibleTile) -> Unit,
+                                onBack: () -> Unit, addTaproot: (String) -> AddTaprootOutcome, onAdded: (Screen.Collectibles) -> Unit) {
+    val family = home.family
+    val data = home.data
     val coin = remember(data) { repo.coin(data) }
     val network = remember(data) { repo.network(data) }
     val gapped = NetworkPolicy.blocked
     val setting = remember(data) { repo.inscriptionSetting(coin, network) }
-    val status = remember(data) { repo.inscriptionStatus(data) }?.collectAsState()?.value
-    val queued = remember(data) { repo.deeperQueued(data) }?.collectAsState()?.value ?: emptySet()
-    // read again whenever the run moves on: each decided coin is saved as the run goes
-    val stored by produceState<StoredRows?>(null, data, status, queued) { value = StoredRows(repo.loadInscriptionChecks(data)) }
-    val view = remember(stored, status, queued, setting) {
-        stored?.let { CollectiblesModel.build(it.checks, status, setting, coin, queued, gapped) }
+    val members = remember(family, home.layer) {
+        CollectiblesModel.shownLayers(family, home.layer).mapNotNull { layer -> family.member(layer)?.let { layer to it } }
+    }
+    // each shown wallet's run and deeper queue, keyed by layer: adding the Taproot wallet adds one
+    val runs = members.map { (layer, member) ->
+        androidx.compose.runtime.key(layer, member.name) {
+            val status = remember(member.data) { repo.inscriptionStatus(member.data) }?.collectAsState()?.value
+            val queued = remember(member.data) { repo.deeperQueued(member.data) }?.collectAsState()?.value ?: emptySet()
+            status to queued
+        }
+    }
+    // read again whenever a run moves on: each decided coin is saved as the run goes
+    val stored by produceState<StoredRows?>(null, members, runs) {
+        value = StoredRows(members.associate { (layer, member) -> layer to repo.loadInscriptionChecks(member.data) })
+    }
+    val view = remember(stored, members, runs, setting, gapped) {
+        stored?.takeIf { it.checks.keys == members.map { m -> m.first }.toSet() }?.let { rows ->
+            CollectiblesModel.build(
+                members.mapIndexed { i, (layer, member) ->
+                    WalletChecks(layer, rows.checks[layer], runs[i].first, runs[i].second, member.data.scriptType)
+                },
+                setting, coin, gapped
+            )
+        }
     }
     val failures = visit.failures
+
+    // "Add Taproot wallet": offered for the public wallet from the Public layer; the wallet list is read off the main thread
+    var added by remember { mutableStateOf(0) }
+    val hint by produceState(false, home, added) {
+        // hidden until judged again (after an add it goes at once)
+        value = false
+        val public = family.public
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val wallets = repo.listWallets()
+                CollectiblesModel.companionHint(wallets.firstOrNull { it.name == walletFileName(public.name) },
+                    public.data.mnemonic.isNotBlank(), public.data.seedType, wallets, home.layer)
+            }.getOrDefault(false)
+        }
+    }
+    val prompt = remember { PasswordPromptState() }
+    val scope = rememberCoroutineScope()
+    PasswordPrompt(prompt, title = CollectiblesModel.ADD_TAPROOT, confirm = "Add",
+        text = "Enter the password of \"${family.public.name}\".",
+        onConfirm = { typed ->
+            // leaving the screen cancels the wait (the wallet itself is still made); a refusal keeps the dialog open
+            scope.launch {
+                when(val outcome = withContext(Dispatchers.Default) { addTaproot(typed) }) {
+                    is AddTaprootOutcome.Refused -> prompt.refused(outcome.text)
+                    is AddTaprootOutcome.Added -> {
+                        prompt.done()
+                        added++
+                        onAdded(outcome.next)
+                    }
+                }
+            }
+        })
 
     // one lazy grid holds the whole screen, so nothing scrolls inside anything else
     LazyVerticalGrid(
@@ -108,20 +170,34 @@ internal fun CollectiblesScreen(repo: WalletRepository, data: VaultData, visit: 
                 Text(view.header, fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if(hint) {
+                full("taproot-hint") {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(CollectiblesModel.TAPROOT_HINT, style = MaterialTheme.typography.bodyMedium)
+                        OutlinedButton(onClick = { prompt.show() }, modifier = Modifier.fillMaxWidth()) {
+                            Text(CollectiblesModel.ADD_TAPROOT)
+                        }
+                    }
+                }
+            }
             if(view.empty) {
                 full("empty") { Text(CollectiblesModel.EMPTY, style = MaterialTheme.typography.bodyMedium) }
             }
             items(view.tiles, key = { "tile/${it.key}" }, contentType = { "tile" }) { tile ->
-                CollectibleTileCard(repo, data, tile, gapped, failures, onClick = { onTile(tile) })
+                CollectibleTileCard(repo, CollectiblesModel.holder(family, home.layer, tile.layer)?.data, tile, gapped, failures,
+                    onClick = { onTile(tile) })
             }
             if(!view.runes.isNullOrEmpty() || view.runesNote != null) {
                 full("runes") { RunesCard(view) }
             }
             if(view.unchecked.isNotEmpty()) {
                 full("unchecked/title") { Text("Coins not yet checked", style = MaterialTheme.typography.titleSmall) }
-                items(view.unchecked, key = { "unchecked/${it.outpoint}" }, span = { GridItemSpan(maxLineSpan) },
+                items(view.unchecked, key = { "unchecked/${it.layer.name}/${it.outpoint}" }, span = { GridItemSpan(maxLineSpan) },
                     contentType = { "unchecked" }) { row ->
-                    UncheckedCard(row, coin, gapped, onCheckDeeper = { repo.requestDeeperCheck(data, row.outpoint) })
+                    UncheckedCard(row, coin, gapped, onCheckDeeper = {
+                        // queued on the wallet holding the coin, never on the other's results
+                        CollectiblesModel.holder(family, home.layer, row.layer)?.let { repo.requestDeeperCheck(it.data, row.outpoint) }
+                    })
                 }
             }
         }
@@ -132,14 +208,17 @@ internal fun CollectiblesScreen(repo: WalletRepository, data: VaultData, visit: 
 private fun LazyGridScope.full(key: String, content: @Composable () -> Unit) =
     item(key = key, span = { GridItemSpan(maxLineSpan) }) { content() }
 
-/** One tile: its preview, loaded while it is on screen (leaving the screen cancels the load), and its label. */
+/**
+ * One tile: its preview, loaded through the wallet holding it ([data], null when none is shown: no load) while it is on
+ * screen (leaving the screen cancels the load), its label and its tag.
+ */
 @Composable
-private fun CollectibleTileCard(repo: WalletRepository, data: VaultData, tile: CollectibleTile, gapped: Boolean,
+private fun CollectibleTileCard(repo: WalletRepository, data: VaultData?, tile: CollectibleTile, gapped: Boolean,
                                 failures: PreviewFailures, onClick: () -> Unit) {
     var content by remember(tile.key) { mutableStateOf<InscriptionContent?>(null) }
-    var failed by remember(tile.key) { mutableStateOf(tile.key in failures) }
+    var failed by remember(tile.key) { mutableStateOf(tile.key in failures || data == null) }
     LaunchedEffect(tile.key) {
-        if(!InscriptionPreview.shouldLoad(tile, gapped, failures)) return@LaunchedEffect
+        if(data == null || !InscriptionPreview.shouldLoad(tile, gapped, failures)) return@LaunchedEffect
         val loaded = repo.inscriptionContent(data, tile.inscriptionId, tile.mintTxid)
         if(loaded == null) {
             failures.add(tile.key)
@@ -155,6 +234,7 @@ private fun CollectibleTileCard(repo: WalletRepository, data: VaultData, tile: C
                 onDecodeFailed = { failures.add(tile.key); failed = true },
                 modifier = Modifier.fillMaxWidth().aspectRatio(1f))
             Text(tile.label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            tile.tag?.let { WalletTag(it) }
             content?.let {
                 Text(InscriptionPreview.typeText(it.contentType), style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -230,6 +310,12 @@ private fun decodeStill(image: InscriptionPreview.Shown.Image, target: Int): Bit
     }
 }
 
+/** The wallet an item belongs to, as words (never colour alone). */
+@Composable
+private fun WalletTag(text: String) {
+    Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, maxLines = 1)
+}
+
 @Composable
 private fun RunesCard(view: CollectiblesView) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -253,6 +339,7 @@ private fun RunesCard(view: CollectiblesView) {
 private fun UncheckedCard(row: UncheckedRow, coin: com.sparrowwallet.mobile.crypto.Coin, gapped: Boolean, onCheckDeeper: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            row.tag?.let { WalletTag(it) }
             Text(row.outpoint, fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall)
             row.value?.let { Text(formatAmount(coin, it), fontFamily = MonoFont, style = MaterialTheme.typography.bodySmall) }
             Text(row.reason, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -272,18 +359,23 @@ private fun UncheckedCard(row: UncheckedRow, coin: com.sparrowwallet.mobile.cryp
     }
 }
 
-/** One inscription: its preview, the facts [InscriptionDetail] lists, and Copy for the id and the outpoint. */
+/**
+ * One inscription: its preview, the facts [InscriptionDetail] lists, and Copy for the id and the outpoint. Its content and
+ * address come from the wallet holding it ([CollectiblesModel.holder]); with none shown there, neither is read.
+ */
 @Composable
-internal fun InscriptionScreen(repo: WalletRepository, data: VaultData, tile: CollectibleTile, visit: CollectiblesVisit,
+internal fun InscriptionScreen(repo: WalletRepository, home: Screen.Home, tile: CollectibleTile, visit: CollectiblesVisit,
                                 onBack: () -> Unit) {
     val clipboard = LocalClipboardManager.current
-    val coin = remember(data) { repo.coin(data) }
+    val holder = remember(home.family, home.layer, tile.layer) { CollectiblesModel.holder(home.family, home.layer, tile.layer) }
+    val data = holder?.data
+    val coin = remember(home.data) { repo.coin(home.data) }
     val gapped = NetworkPolicy.blocked
     var content by remember(tile.key) { mutableStateOf<InscriptionContent?>(null) }
-    var failed by remember(tile.key) { mutableStateOf(tile.key in visit.failures) }
+    var failed by remember(tile.key) { mutableStateOf(tile.key in visit.failures || data == null) }
     var copied by remember(tile.key) { mutableStateOf<String?>(null) }
     LaunchedEffect(tile.key) {
-        if(!InscriptionPreview.shouldLoad(tile, gapped, visit.failures)) return@LaunchedEffect
+        if(data == null || !InscriptionPreview.shouldLoad(tile, gapped, visit.failures)) return@LaunchedEffect
         val loaded = repo.inscriptionContent(data, tile.inscriptionId, tile.mintTxid)
         if(loaded == null) {
             visit.failures.add(tile.key)
@@ -292,10 +384,11 @@ internal fun InscriptionScreen(repo: WalletRepository, data: VaultData, tile: Co
             content = loaded
         }
     }
-    // the address is derived from the wallet's keys: off the main thread
-    val address by produceState<String?>(null, tile.key) {
+    // the address is derived from the holding wallet's keys: off the main thread
+    val address by produceState<String?>(null, tile.key, data) {
         val position = InscriptionDetail.position(tile) ?: return@produceState
-        value = withContext(Dispatchers.Default) { runCatching { repo.addressAt(data, position.first, position.second) }.getOrNull() }
+        val from = data ?: return@produceState
+        value = withContext(Dispatchers.Default) { runCatching { repo.addressAt(from, position.first, position.second) }.getOrNull() }
     }
     val shown = remember(tile, gapped, failed, content) { InscriptionPreview.shown(tile, gapped, failed, content) }
     ScreenColumn {
@@ -306,7 +399,7 @@ internal fun InscriptionScreen(repo: WalletRepository, data: VaultData, tile: Co
         InscriptionDetail.carries(tile)?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                for(line in InscriptionDetail.lines(tile, coin, content?.let { InscriptionPreview.contentLine(it) }, address)) {
+                for(line in InscriptionDetail.lines(tile, coin, content?.let { InscriptionPreview.contentLine(it) }, address, holder?.name)) {
                     Column {
                         Text(line.label, fontFamily = MonoFont, style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)

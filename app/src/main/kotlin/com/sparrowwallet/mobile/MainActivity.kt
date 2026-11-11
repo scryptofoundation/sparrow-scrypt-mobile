@@ -363,10 +363,13 @@ private fun App(repo: WalletRepository) {
             is Screen.PsbtSign -> PsbtSignScreen(repo, s.home, s.unsigned, onBack = { screen = s.home })
             is Screen.SignPsbt -> SignPsbtScreen(repo, s.home, onBack = { screen = s.home })
             is Screen.ExportToDesktop -> ExportToDesktopScreen(repo, s.home.data, onBack = { screen = s.home })
-            is Screen.Collectibles -> CollectiblesScreen(repo, s.home.data, visit ?: remember { CollectiblesVisit() },
+            is Screen.Collectibles -> CollectiblesScreen(repo, s.home, visit ?: remember { CollectiblesVisit() },
                 onTile = { tile -> screen = Screen.Inscription(s.home, tile) },
-                onBack = { screen = s.home })
-            is Screen.Inscription -> InscriptionScreen(repo, s.home.data, s.tile, visit ?: remember { CollectiblesVisit() },
+                onBack = { screen = s.home },
+                // the typed password only adds the wallet; the family reopens with the session's (see addTaprootAndReopen)
+                addTaproot = { typed -> addTaprootAndReopen(s.home, typed, repo::addTaprootCompanion, ::homeFor) },
+                onAdded = { screen = it })
+            is Screen.Inscription -> InscriptionScreen(repo, s.home, s.tile, visit ?: remember { CollectiblesVisit() },
                 onBack = { screen = Screen.Collectibles(s.home) })
             is Screen.Server -> ServerScreen(repo, s.home.data, onBack = { screen = s.home })
             is Screen.Details -> DetailsScreen(repo, s.home.name, s.home.data,

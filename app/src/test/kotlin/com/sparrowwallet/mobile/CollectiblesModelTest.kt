@@ -43,7 +43,7 @@ class CollectiblesModelTest {
         checks: Map<String, InscriptionCheck>? = emptyMap(), status: CheckStatus? = null,
         setting: InscriptionSetting = InscriptionSetting.BuiltIn, coin: Coin = Coin.LITECOIN, queued: Set<String> = emptySet(),
         airGapped: Boolean = false
-    ) = CollectiblesModel.build(checks, status, setting, coin, queued, airGapped)
+    ) = CollectiblesModel.build(listOf(WalletChecks(Layer.PUBLIC, checks, status, queued, "P2WPKH")), setting, coin, airGapped)
 
     @Test fun headerStates() {
         assertEquals("Not checked yet", view(null).header)
@@ -701,5 +701,223 @@ class CollectiblesModelTest {
         for(coin in listOf(Coin.LITECOIN, Coin.DOGECOIN, Coin.PEPECOIN, Coin.JUNKCOIN)) {
             assertFalse(view(rows, coin = coin).unchecked.single().canCheckDeeper, coin.toString())
         }
+    }
+
+    // ---- a wallet and its Taproot wallet on one screen ----
+
+    private fun checks(layer: Layer, checks: Map<String, InscriptionCheck>? = emptyMap(), status: CheckStatus? = null,
+                       queued: Set<String> = emptySet()) =
+        WalletChecks(layer, checks, status, queued, if(layer == Layer.TAPROOT) "P2TR" else "P2WPKH")
+
+    private fun both(
+        public: Map<String, InscriptionCheck>? = emptyMap(), taproot: Map<String, InscriptionCheck>? = emptyMap(),
+        publicStatus: CheckStatus? = null, taprootStatus: CheckStatus? = null, setting: InscriptionSetting = InscriptionSetting.BuiltIn,
+        coin: Coin = Coin.LITECOIN, publicQueued: Set<String> = emptySet(), taprootQueued: Set<String> = emptySet(),
+        airGapped: Boolean = false
+    ) = CollectiblesModel.build(
+        listOf(checks(Layer.PUBLIC, public, publicStatus, publicQueued), checks(Layer.TAPROOT, taproot, taprootStatus, taprootQueued)),
+        setting, coin, airGapped
+    )
+
+    /** One wallet gives exactly the view it gave before Taproot wallets: nothing tagged, every item on its own layer. */
+    @Test fun oneWalletGivesTodaysView() {
+        val rows = map(
+            row(0, Verdict.INSCRIBED, listOf(found("${"1".repeat(64)}i0", number = 5), found("${"2".repeat(64)}i0"))),
+            row(1, Verdict.UNCHECKED, reason = InscriptionTracer.BUDGET_USED, block = null),
+            row(2, runes = true, runeList = mapOf("A" to RuneBalance("100", 2, null))),
+            row(3, block = null)
+        )
+        val v = view(rows, CheckStatus(4, 4, false, false), InscriptionSetting.Public, queued = setOf("$txid:1"))
+        assertEquals(2, v.tiles.size)
+        assertTrue(v.tiles.all { it.tag == null && it.layer == Layer.PUBLIC })
+        assertEquals(2, v.unchecked.size)
+        assertTrue(v.unchecked.all { it.tag == null && it.layer == Layer.PUBLIC })
+        assertTrue(v.unchecked.single { it.outpoint == "$txid:1" }.queued)
+        assertEquals(listOf(RuneRow("A", null, "1.00")), v.runes)
+        assertEquals("Up to date", v.header)
+        assertFalse(v.empty)
+        //A Taproot wallet shown alone is one wallet too: its items keep their layer for routing, untagged
+        val alone = CollectiblesModel.build(listOf(checks(Layer.TAPROOT, rows, CheckStatus(4, 4, false, false), setOf("$txid:1"))),
+            InscriptionSetting.Public, Coin.LITECOIN)
+        assertTrue(alone.tiles.all { it.tag == null && it.layer == Layer.TAPROOT })
+        assertTrue(alone.unchecked.all { it.tag == null && it.layer == Layer.TAPROOT })
+        assertEquals(v.tiles.map { it.inscriptionId }, alone.tiles.map { it.inscriptionId })
+        assertEquals(v.unchecked.map { it.copy(layer = Layer.TAPROOT) }, alone.unchecked)
+        assertEquals(v.runes, alone.runes)
+        assertEquals(v.header, alone.header)
+    }
+
+    @Test fun tilesFromTheCompanionAreTagged() {
+        val mine = found("${"1".repeat(64)}i0", number = 1, height = 300)
+        val its = found("${"2".repeat(64)}i0", number = 2, height = 200)
+        val v = both(map(row(0, Verdict.INSCRIBED, listOf(mine))), map(row(1, Verdict.INSCRIBED, listOf(its))))
+        assertEquals(listOf(mine.inscriptionId, its.inscriptionId), v.tiles.map { it.inscriptionId })
+        val (public, taproot) = v.tiles
+        assertEquals(Layer.PUBLIC, public.layer)
+        assertNull(public.tag)
+        assertEquals(Layer.TAPROOT, taproot.layer)
+        assertEquals("Taproot", taproot.tag)
+        assertEquals(CollectiblesModel.TAPROOT_TAG, Layer.TAPROOT.label)
+    }
+
+    @Test fun sameInscriptionIdInBothWalletsKeepsTwoTiles() {
+        val f = found("${"1".repeat(64)}i0", number = 1)
+        val v = both(map(row(0, Verdict.INSCRIBED, listOf(f))), map(row(0, Verdict.INSCRIBED, listOf(f))))
+        assertEquals(2, v.tiles.size)
+        assertEquals(2, v.tiles.map { it.key }.toSet().size)
+        assertEquals(listOf(Layer.PUBLIC, Layer.TAPROOT), v.tiles.map { it.layer })
+        assertTrue(v.tiles.all { Layer.PUBLIC.name in it.key || Layer.TAPROOT.name in it.key })
+    }
+
+    @Test fun runesAreSummedAcrossBothWallets() {
+        val p = map(row(0, runeList = mapOf("UNCOMMON•GOODS" to RuneBalance("1000", 2, "*"))))
+        val t = map(row(1, runeList = mapOf("UNCOMMON•GOODS" to RuneBalance("250", 2, "*"), "ZED" to RuneBalance("7", 0, null))))
+        val v = both(p, t, setting = InscriptionSetting.Public)
+        assertEquals(listOf(RuneRow("UNCOMMON•GOODS", "*", "12.50"), RuneRow("ZED", null, "7")), v.runes)
+        assertNull(v.runesNote)
+        //The Built-in note and the unreadable note behave as for one wallet
+        assertNull(both(p, t).runes)
+        assertEquals(CollectiblesModel.RUNES_NOTE, both(p, t).runesNote)
+        val bad = map(row(2, runeList = mapOf("BAD" to RuneBalance("1x", 0, null))))
+        assertEquals(CollectiblesModel.RUNES_UNREADABLE, both(p, bad, setting = InscriptionSetting.Public).runesNote)
+        //Litecoin only
+        assertNull(both(p, t, setting = InscriptionSetting.Public, coin = Coin.BELLSCOIN).runes)
+        //First seen across wallets is by outpoint, then the public wallet before the Taproot one
+        val dupP = map(row(5, runeList = mapOf("DUP" to RuneBalance("100", 2, "P"))))
+        val dupT = map(row(5, runeList = mapOf("DUP" to RuneBalance("100", 0, "T"))))
+        assertEquals(listOf(RuneRow("DUP", "P", "1.00")), both(dupP, dupT, setting = InscriptionSetting.Public).runes)
+        //A balance in one wallet never stands for a held coin of the other
+        val held = map(row(0, runes = true))
+        val heldRows = both(p, held, setting = InscriptionSetting.Public).unchecked
+        assertEquals(listOf(Layer.TAPROOT), heldRows.filter { it.reason == CollectiblesModel.HELD }.map { it.layer })
+    }
+
+    @Test fun headerCombinesBothWallets() {
+        val one = map(row(0))
+        assertEquals("Not checked yet", both(null, null).header)
+        assertEquals("Up to date", both(one, null).header)
+        assertEquals("Up to date", both(null, one).header)
+        assertEquals("Up to date", both(one, one).header)
+        //Running if either runs, both wallets' counts summed
+        assertEquals("Checked 3 of 50 coins", both(one, one, CheckStatus(3, 40, false, true), CheckStatus(0, 10, false, true)).header)
+        assertEquals("Checked 13 of 50 coins", both(one, one, CheckStatus(3, 40, false, true), CheckStatus(10, 10, false, false)).header)
+        assertEquals("Checked 0 of 10 coins", both(null, null, null, CheckStatus(0, 10, false, true)).header)
+        //Unreachable if either wallet's last run was
+        val unreachable = CheckStatus(10, 10, true, false)
+        val fine = CheckStatus(40, 40, false, false)
+        assertEquals("Public indexer unreachable, checking on-chain",
+            both(one, one, fine, unreachable, InscriptionSetting.Public).header)
+        assertEquals("Your indexer unreachable, checking on-chain",
+            both(one, one, unreachable, fine, InscriptionSetting.YourOwn(own)).header)
+        assertEquals("Up to date", both(one, one, unreachable, unreachable, InscriptionSetting.BuiltIn).header)
+        assertEquals("Up to date", both(one, one, fine, fine, InscriptionSetting.Public).header)
+        //Air-gapped as for one wallet
+        assertEquals(CollectiblesModel.CHECKS_OFF, both(one, one, CheckStatus(3, 40, false, true), unreachable, airGapped = true).header)
+    }
+
+    @Test fun emptyNeedsBothEmpty() {
+        assertFalse(both(null, null).empty)
+        assertTrue(both(emptyMap(), emptyMap()).empty)
+        assertTrue(both(map(row(0)), null).empty)
+        assertTrue(both(map(row(0)), map(row(1))).empty)
+        val tile = map(row(0, Verdict.INSCRIBED, listOf(found("${"1".repeat(64)}i0"))))
+        val unchecked = map(row(0, Verdict.UNCHECKED, reason = "x", block = null))
+        assertFalse(both(map(row(0)), tile).empty)
+        assertFalse(both(tile, map(row(0))).empty)
+        assertFalse(both(emptyMap(), unchecked).empty)
+        assertFalse(both(unchecked, null).empty)
+    }
+
+    @Test fun uncheckedRowsNameTheirWallet() {
+        val p = map(row(0, Verdict.UNCHECKED, reason = InscriptionTracer.BUDGET_USED, block = null))
+        val t = map(row(0, Verdict.UNCHECKED, reason = InscriptionTracer.BUDGET_USED, block = null), row(1, block = null))
+        //Queued on the public wallet: the Taproot wallet's row for the same outpoint is not
+        val v = both(p, t, publicQueued = setOf("$txid:0"))
+        assertEquals(3, v.unchecked.size)
+        val public = v.unchecked.single { it.layer == Layer.PUBLIC }
+        assertNull(public.tag)
+        assertTrue(public.queued)
+        val taproot = v.unchecked.filter { it.layer == Layer.TAPROOT }
+        assertEquals(listOf("Taproot", "Taproot"), taproot.map { it.tag })
+        assertFalse(taproot.first { it.outpoint == "$txid:0" }.queued)
+        assertTrue(taproot.first { it.outpoint == "$txid:0" }.canCheckDeeper)
+        //and the other way round
+        val w = both(p, t, taprootQueued = setOf("$txid:0"))
+        assertFalse(w.unchecked.single { it.layer == Layer.PUBLIC }.queued)
+        assertTrue(w.unchecked.first { it.layer == Layer.TAPROOT && it.outpoint == "$txid:0" }.queued)
+    }
+
+    /** An MWEB wallet never adds anything to the screen. */
+    @Test fun anMwebWalletIsNeverShown() {
+        val inscribed = map(row(0, Verdict.INSCRIBED, listOf(found("${"1".repeat(64)}i0"))))
+        val v = CollectiblesModel.build(listOf(checks(Layer.PUBLIC, map(row(1))), WalletChecks(Layer.PRIVATE, inscribed, null, emptySet(), "MWEB")),
+            InscriptionSetting.BuiltIn, Coin.LITECOIN)
+        assertTrue(v.tiles.isEmpty())
+        assertTrue(v.empty)
+    }
+
+    // ---- which wallets the screen shows, and where each item's actions go ----
+
+    private val publicMember = Member("w", com.sparrowwallet.mobile.storage.VaultData(mnemonic = "abandon"))
+    private val privateMember = Member("w Private", com.sparrowwallet.mobile.storage.VaultData(mnemonic = "abandon", scriptType = "MWEB"))
+    private val taprootMember = Member("w Taproot", com.sparrowwallet.mobile.storage.VaultData(mnemonic = "abandon", scriptType = "P2TR"))
+    private val fullFamily = WalletFamily(publicMember, privateMember, taprootMember)
+
+    @Test fun thePublicLayerShowsThePublicAndTaprootWalletsAndNeverThePrivateOne() {
+        assertEquals(listOf(Layer.PUBLIC, Layer.TAPROOT), CollectiblesModel.shownLayers(fullFamily, Layer.PUBLIC))
+        assertEquals(listOf(Layer.TAPROOT), CollectiblesModel.shownLayers(fullFamily, Layer.TAPROOT))
+        assertEquals(listOf(Layer.PUBLIC), CollectiblesModel.shownLayers(WalletFamily(publicMember, privateMember), Layer.PUBLIC))
+        assertEquals(listOf(Layer.PUBLIC), CollectiblesModel.shownLayers(WalletFamily(publicMember), Layer.PUBLIC))
+        assertEquals(listOf(Layer.PUBLIC, Layer.TAPROOT),
+            CollectiblesModel.shownLayers(WalletFamily(publicMember, taproot = taprootMember), Layer.PUBLIC))
+        for(layer in fullFamily.layers) assertFalse(Layer.PRIVATE in CollectiblesModel.shownLayers(fullFamily, layer) && layer != Layer.PRIVATE)
+    }
+
+    @Test fun eachItemGoesToTheWalletThatHoldsIt() {
+        assertSame(publicMember, CollectiblesModel.holder(fullFamily, Layer.PUBLIC, Layer.PUBLIC))
+        assertSame(taprootMember, CollectiblesModel.holder(fullFamily, Layer.PUBLIC, Layer.TAPROOT))
+        assertSame(taprootMember, CollectiblesModel.holder(fullFamily, Layer.TAPROOT, Layer.TAPROOT))
+        //Never another wallet in its place: no wallet, no address and no request
+        assertNull(CollectiblesModel.holder(fullFamily, Layer.PUBLIC, Layer.PRIVATE))
+        assertNull(CollectiblesModel.holder(fullFamily, Layer.TAPROOT, Layer.PUBLIC))
+        assertNull(CollectiblesModel.holder(WalletFamily(publicMember), Layer.PUBLIC, Layer.TAPROOT))
+    }
+
+    @Test fun theDetailNamesTheWalletOfATaggedTile() {
+        val tagged = tile().copy(layer = Layer.TAPROOT, tag = "Taproot")
+        val lines = InscriptionDetail.lines(tagged, Coin.LITECOIN, null, "ltc1paddress", wallet = "w Taproot")
+        assertEquals("w Taproot", lines.single { it.label == "Wallet" }.value)
+        assertFalse(lines.single { it.label == "Wallet" }.copy)
+        //An untagged tile (one wallet shown, or the public wallet's) has no wallet line
+        assertFalse(InscriptionDetail.lines(tile(), Coin.LITECOIN, null, null, wallet = "w").any { it.label == "Wallet" })
+        assertFalse(InscriptionDetail.lines(tile().copy(layer = Layer.TAPROOT), Coin.LITECOIN, null, null, wallet = "w Taproot")
+            .any { it.label == "Wallet" })
+    }
+
+    private fun info(name: String = "w", coin: Coin = Coin.LITECOIN, network: Network = Network.MAINNET,
+                     scriptType: String = "P2WPKH", links: WalletLinks = WalletLinks()) =
+        WalletRepository.WalletInfo(name, network, scriptType, links, coin)
+
+    @Test fun hintShowsOnlyWhereACompanionIsOffered() {
+        val w = info()
+        assertTrue(CollectiblesModel.companionHint(w, true, "BIP39", listOf(w), Layer.PUBLIC))
+        //Only from the Public layer
+        assertFalse(CollectiblesModel.companionHint(w, true, "BIP39", listOf(w), Layer.TAPROOT))
+        assertFalse(CollectiblesModel.companionHint(w, true, "BIP39", listOf(w), Layer.PRIVATE))
+        //Only where a Taproot wallet can be added
+        assertFalse(CollectiblesModel.companionHint(null, true, "BIP39", listOf(w), Layer.PUBLIC))
+        assertFalse(CollectiblesModel.companionHint(w, false, null, listOf(w), Layer.PUBLIC))
+        assertFalse(CollectiblesModel.companionHint(info(coin = Coin.DOGECOIN, scriptType = "P2PKH"), true, "BIP39", listOf(w), Layer.PUBLIC))
+        assertFalse(CollectiblesModel.companionHint(info(coin = Coin.BELLSCOIN, network = Network.TESTNET), true, "BIP39", listOf(w), Layer.PUBLIC))
+        assertTrue(CollectiblesModel.companionHint(info(coin = Coin.BELLSCOIN), true, "BIP39", listOf(w), Layer.PUBLIC))
+        assertFalse(CollectiblesModel.companionHint(info(scriptType = "P2TR"), true, "BIP39", listOf(w), Layer.PUBLIC))
+        //Linked both ways: gone. A half-finished link counts as none, so the button shows and finishes it
+        val linked = info(links = WalletLinks(taproot = "w Taproot"))
+        val tap = info("w Taproot", scriptType = "P2TR", links = WalletLinks(parent = "w"))
+        assertFalse(CollectiblesModel.companionHint(linked, true, "BIP39", listOf(linked, tap), Layer.PUBLIC))
+        assertTrue(CollectiblesModel.companionHint(linked, true, "BIP39", listOf(linked), Layer.PUBLIC))
+        assertTrue(CollectiblesModel.companionHint(linked, true, "BIP39", listOf(linked, tap.copy(links = WalletLinks())), Layer.PUBLIC))
+        assertEquals("Inscriptions sent to this seed's Taproot addresses are kept in its Taproot wallet.", CollectiblesModel.TAPROOT_HINT)
+        assertEquals("Add Taproot wallet", CollectiblesModel.ADD_TAPROOT)
     }
 }
