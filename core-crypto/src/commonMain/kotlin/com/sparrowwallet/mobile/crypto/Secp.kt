@@ -11,6 +11,12 @@ package com.sparrowwallet.mobile.crypto
 /** Compressed (33-byte) public key for a 32-byte private key. */
 expect fun secpPublicKeyCreate(privKey: ByteArray): ByteArray
 
+/**
+ * Uncompressed (65-byte, 0x04 prefix) public key for a 32-byte private key, in the library's own serialisation. Only
+ * for an EVM account address (evm/EvmAccount), which hashes the uncompressed point.
+ */
+internal expect fun secpPublicKeyUncompressed(privKey: ByteArray): ByteArray
+
 /** (privKey + tweak) mod n, as 32 bytes. Throws if the result is zero or inputs invalid. */
 expect fun secpPrivKeyTweakAdd(privKey: ByteArray, tweak: ByteArray): ByteArray
 

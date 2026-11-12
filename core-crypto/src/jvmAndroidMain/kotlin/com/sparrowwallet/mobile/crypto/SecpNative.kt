@@ -44,6 +44,14 @@ actual fun secpPublicKeyCreate(privKey: ByteArray): ByteArray {
     return secp { pubKeyCompress(pubkeyCreate(privKey.copyOf())) }
 }
 
+//pubkeyCreate gives the library's uncompressed serialisation (0x04, x, y)
+internal actual fun secpPublicKeyUncompressed(privKey: ByteArray): ByteArray {
+    require(privKey.size == 32) { "Private key must be 32 bytes" }
+    val pub = secp { pubkeyCreate(privKey.copyOf()) }
+    check(pub.size == 65 && pub[0].toInt() == 4) { "Not an uncompressed public key" }
+    return pub
+}
+
 actual fun secpPrivKeyTweakAdd(privKey: ByteArray, tweak: ByteArray): ByteArray {
     require(privKey.size == 32 && tweak.size == 32) { "Keys must be 32 bytes" }
     return secp { privKeyTweakAdd(privKey.copyOf(), tweak.copyOf()) }
