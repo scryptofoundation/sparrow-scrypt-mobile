@@ -43,7 +43,13 @@ class HttpEndpoint(
      * Asked before each request and before a GET is retried on a new connection: false refuses it. An indexer reader
      * passes its closed flag, so a reader closed mid-request (a settings change) never sends that request again.
      */
-    private val usable: () -> Boolean = { true }
+    private val usable: () -> Boolean = { true },
+    /**
+     * True only for an endpoint whose POSTs are read-only queries that are safe to send twice (JSON-RPC eth_call):
+     * they then ride the kept connection like a GET, and a kept connection that died before any answer byte is retried
+     * once on a new one. False (Esplora's broadcast, the indexers) keeps a POST on a fresh connection, never resent.
+     */
+    private val reusePosts: Boolean = false
 ) {
     /** [headers] are keyed by lowercase name; [bytes] is the body as sent, [body] as text. */
     class Response(val status: Int, val bytes: ByteArray, val headers: Map<String, String> = emptyMap()) {
@@ -68,8 +74,8 @@ class HttpEndpoint(
     suspend fun get(path: String, accept: String = "*/*"): Response = request("GET", path, null, accept)
 
     /** [contentType] is sent as the body's Content-Type (ord's /outputs reads a JSON array only as application/json). */
-    suspend fun post(path: String, body: String, contentType: String = "text/plain", accept: String = "*/*"): Response =
-        request("POST", path, body, accept, contentType)
+    suspend fun post(path: String, body: String, contentType: String = "text/plain", accept: String = "*/*", timeoutMs: Int? = null): Response =
+        request("POST", path, body, accept, contentType, timeoutMs)
 
     private class Conn(val raw: Socket, val socket: Socket, val input: InputStream, val release: () -> Unit) {
         fun close() {
@@ -99,18 +105,23 @@ class HttpEndpoint(
         if(conn === c) conn = null
     }
 
-    private suspend fun request(method: String, path: String, body: String?, accept: String = "*/*", contentType: String = "text/plain"): Response = lock.withLock {
+    /**
+     * [limitMs], when given, cuts this request's connect timeout, read timeout and whole-request deadline to that many
+     * milliseconds (never above the endpoint's own); a caller with a deadline passes the time it has left.
+     */
+    private suspend fun request(method: String, path: String, body: String?, accept: String = "*/*", contentType: String = "text/plain",
+                                limitMs: Int? = null): Response = lock.withLock {
         withContext(Dispatchers.IO) {
             NetworkPolicy.check(label)
             refuseUnusable()
             //a broadcast goes on a fresh connection: a kept one may have died while idle, and a POST is never retried
-            if(method != "GET") close()
+            if(method != "GET" && !reusePosts) close()
             try {
-                exchange(method, path, body, accept, contentType)
+                exchange(method, path, body, accept, contentType, limitMs)
             } catch(e: StaleConnection) {
                 NetworkPolicy.check(label)
                 refuseUnusable()
-                exchange(method, path, body, accept, contentType)
+                exchange(method, path, body, accept, contentType, limitMs)
             }
         }
     }
@@ -119,7 +130,7 @@ class HttpEndpoint(
      * Connects (and handshakes) on [raw]. Air-gapped mode is watched from before the connect, so a
      * connect or handshake in progress is cut too.
      */
-    private fun open(raw: Socket): Conn {
+    private fun open(raw: Socket, connectTimeoutMs: Int): Conn {
         var made: Conn? = null
         val release = NetworkPolicy.whileOpen {
             runCatching { raw.close() }
@@ -127,8 +138,8 @@ class HttpEndpoint(
         }
         try {
             val endpoint = if(proxy != null) InetSocketAddress.createUnresolved(host, port) else InetSocketAddress(host, port)
-            raw.connect(endpoint, timeoutMs)
-            raw.soTimeout = timeoutMs
+            raw.connect(endpoint, connectTimeoutMs)
+            raw.soTimeout = connectTimeoutMs
             val socket = if(tls) {
                 ((SSLSocketFactory.getDefault() as SSLSocketFactory).createSocket(raw, host, port, true) as SSLSocket).also { s ->
                     s.sslParameters = s.sslParameters.apply { endpointIdentificationAlgorithm = "HTTPS" }
@@ -143,19 +154,24 @@ class HttpEndpoint(
         }
     }
 
-    private fun exchange(method: String, path: String, body: String?, accept: String, contentType: String): Response {
+    private fun exchange(method: String, path: String, body: String?, accept: String, contentType: String, limitMs: Int?): Response {
         val started = System.nanoTime()
+        //At least 1 ms: a socket timeout of 0 would wait forever
+        val readTimeoutMs = if(limitMs == null) timeoutMs else limitMs.coerceIn(1, timeoutMs)
+        val wholeMs = if(limitMs == null) deadlineMs else minOf(deadlineMs, readTimeoutMs.toLong())
         val kept = conn
         val raw = kept?.raw ?: if(proxy != null) Socket(Proxy(Proxy.Type.SOCKS, InetSocketAddress(proxy.host, proxy.port))) else Socket()
         //the deadline covers connect and handshake too, however slowly the server trickles
         val expired = AtomicBoolean(false)
-        val deadline = DEADLINES.schedule({ expired.set(true); runCatching { raw.close() } }, deadlineMs, TimeUnit.MILLISECONDS)
+        val deadline = DEADLINES.schedule({ expired.set(true); runCatching { raw.close() } }, wholeMs, TimeUnit.MILLISECONDS)
         var c: Conn? = kept
         var opened = started
         var answered = false
         var status = -1
         try {
-            if(c == null) c = open(raw).also { conn = it }
+            if(c == null) c = open(raw, readTimeoutMs).also { conn = it }
+            //A kept connection may carry an earlier request's timeout
+            c.socket.soTimeout = readTimeoutMs
             opened = System.nanoTime()
             val payload = body?.encodeToByteArray()
             val hostHeader = if((tls && port == 443) || (!tls && port == 80)) host else "$host:$port"
