@@ -417,7 +417,9 @@ object LitVmReader {
                 problem = LitVmRead.Problem.RATE_LIMITED
             }
         }
-        val stopped = problem == null && results.any { it.status == LitVmCollection.Status.NOT_REACHED }
+        //Stopped: a collection was not reached, or the refresh's time ran out with a collection not read in full
+        val stopped = problem == null && (results.any { it.status == LitVmCollection.Status.NOT_REACHED } ||
+            (calls.clock() - start >= LitVmModel.REFRESH_MS && results.any { it.status == LitVmCollection.Status.FAILED || it.failed > 0 }))
         val pictures = HashMap<String, LitVmPicture>()
         for(nft in LitVmModel.shownTokens(results).first) {
             currentCoroutineContext().ensureActive()

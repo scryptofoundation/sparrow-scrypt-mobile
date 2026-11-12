@@ -474,6 +474,26 @@ class LitVmModelTest {
     }
 
     @Test
+    fun theRefreshRunningOutInsideTheLastCollectionIsStoppedButAMinuteRunningOutIsNot(): Unit = runBlocking {
+        //verify 0-50, balance 50-100, the collection from 100: two requests, then the minute is up at 200 and so are the three
+        val spent = FakeChain()
+        spent.step = 50_000
+        spent.badges[badge] = FakeBadge(held = setOf(1))
+        val read = LitVmReader.read(spent.root, spent::verify, owner, 120.0, 240.0)
+        assertEquals(LitVmCollection.Status.FAILED, read.collections.single().status)
+        assertTrue(read.stopped)
+        assertEquals(LitVmModel.STOPPED, LitVmModel.build(owner, read, false).status)
+        //verify 0-40, balance 40-80, the collection's minute ends at 140, with the refresh's time left: not stopped
+        val minute = FakeChain()
+        minute.step = 40_000
+        minute.badges[badge] = FakeBadge(held = setOf(1))
+        val cut = LitVmReader.read(minute.root, minute::verify, owner, 120.0, 240.0)
+        assertEquals(LitVmCollection.Status.FAILED, cut.collections.single().status)
+        assertFalse(cut.stopped)
+        assertEquals(listOf(LitVmNote("0x3eEd...51B3", LitVmModel.COULD_NOT_BE_READ)), LitVmModel.build(owner, cut, false).notes)
+    }
+
+    @Test
     fun aRateLimitStopsEveryRequestAfterIt(): Unit = runBlocking {
         val chain = FakeChain()
         val other = EvmAddress.parse("0x00000000000000000000000000000000000c0ffe")!!
