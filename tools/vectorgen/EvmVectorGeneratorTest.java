@@ -53,7 +53,10 @@ public class EvmVectorGeneratorTest {
     private static final String BUILT = "An input given as \"<key>Parts\" instead of \"<key>\" is the concatenation of its parts: a string is itself; "
             + "{\"repeat\": s, \"times\": n} is s repeated n times; {\"base64\": [parts]} is the standard padded base64 of the UTF-8 bytes of its "
             + "parts. \"<key>Length\" is the built text's length in UTF-16 units and \"<key>Sha256\" the SHA-256 of its UTF-8 bytes. ABI results "
-            + "are hex text. A long decoded value is given as valueLength (UTF-16 units) and valueSha256 (of its UTF-8 bytes).";
+            + "are hex text. A long decoded value is given as valueLength (UTF-16 units) and valueSha256 (of its UTF-8 bytes). "
+            + "A json case's \"canonical\" is the parsed value written compactly: objects in the reader's key order, numbers as "
+            + "BigDecimal.toPlainString, strings with \\\" \\\\ \\n \\t \\r and \\uXXXX (lower-case hex) for every other UTF-16 unit "
+            + "outside U+0020..U+007E.";
 
     @Test
     public void generate() throws Exception {
@@ -68,6 +71,7 @@ public class EvmVectorGeneratorTest {
                 "addresses", addresses(),
                 "eip55", eip55(),
                 "abi", abi(),
+                "json", json(),
                 "metadata", metadata(),
                 "clean", clean(),
                 "tokenIds", tokenIds());
@@ -177,13 +181,121 @@ public class EvmVectorGeneratorTest {
 
         List<Object> cases = new ArrayList<>();
         for(Map.Entry<String, String> input : inputs.entrySet()) {
-            Map<String, Object> entry = map("label", input.getValue(), "input", input.getKey(), "valid", EvmAddress.isValid(input.getKey()));
-            if(EvmAddress.isValid(input.getKey())) {
+            boolean valid = EvmAddress.isValid(input.getKey());
+            //The phone accepts only "0x" and 40 hex digits (mixed case passing EIP-55): on that shape it must agree with the
+            //desktop; any other form the desktop accepts is its leniency, which the phone refuses
+            String kind = canonicalShape(input.getKey()) ? "canonical" : valid ? "desktopLeniency" : "notAnAddress";
+            Map<String, Object> entry = map("label", input.getValue(), "input", input.getKey(), "kind", kind, "valid", valid,
+                    "phoneValid", valid && kind.equals("canonical"));
+            if(valid) {
                 entry.put("address", EvmAddress.fromString(input.getKey()).toString());
             }
             cases.add(entry);
         }
         return cases;
+    }
+
+    private static boolean canonicalShape(String text) {
+        if(text.length() != 42 || !text.startsWith("0x")) {
+            return false;
+        }
+        for(int i = 2; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if(!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** What MiniJson, the strict reader metadata goes through, accepts (written back canonically) and refuses. */
+    private static List<Object> json() {
+        List<Object[]> inputs = new ArrayList<>();
+        //Whitespace
+        inputs.add(new Object[] {"space, tab, line feed and carriage return everywhere", " \t\r\n{ \t\r\n\"a\" \t\r\n: \t\r\n1 \t\r\n} \t\r\n"});
+        for(String space : List.of("\u2003", "\u00a0", "\u000b", "\u000c", "\u001c", "\u0085", "\u3000", "\ufeff")) {
+            String code = String.format(Locale.ROOT, "U+%04X", (int)space.charAt(0));
+            inputs.add(new Object[] {code + " inside", "{" + space + "\"a\":1}"});
+            inputs.add(new Object[] {code + " before", space + "{\"a\":1}"});
+        }
+        //Escapes
+        inputs.add(new Object[] {"every short escape", "\"\\\" \\\\ \\/ \\b \\f \\n \\r \\t\""});
+        inputs.add(new Object[] {"unicode escapes, both cases", "\"\\u0041\\u004a\\u00e9\\u00E9\""});
+        inputs.add(new Object[] {"an escaped pair", "\"\\ud83d\\ude00\""});
+        inputs.add(new Object[] {"an escaped lone surrogate", "\"a\\ud800b\""});
+        for(String escape : List.of("\\u+041", "\\u-041", "\\u\u0660\u0660\u0664\u0661", "\\u\uff10\uff10\uff14\uff21", "\\u041\"", "\\u004g", "\\uZZZZ", "\\x41",
+                "\\u00")) {
+            inputs.add(new Object[] {"escape " + escape, "\"" + escape + "\""});
+        }
+        //Numbers
+        for(String number : List.of("0", "-0", "5", "-5", "0.5", "-0.5", "1.50", "1e5", "1E+5", "1e-5", "1.25e2", "-0.0", "1e-100", "1e100", "1e-101", "1e101",
+                "+5", ".5", "5.", "007", "-01", "01.5", "-.5", "1e", "1e+", "1.e5", "-", "--1", "1.2.3", "0x10", "1ee5", "Infinity", "NaN", "1".repeat(80),
+                "1".repeat(81))) {
+            inputs.add(new Object[] {"number " + (number.length() > 20 ? number.length() + " digits" : number), "[" + number + "]"});
+        }
+        //Strings
+        for(int c : new int[] {0x00, 0x01, 0x09, 0x0A, 0x0D, 0x1F, 0x7F, 0x85}) {
+            inputs.add(new Object[] {String.format(Locale.ROOT, "raw U+%04X in a string", c), "\"a" + (char)c + "b\""});
+        }
+        inputs.add(new Object[] {"unterminated string", "\"abc"});
+        inputs.add(new Object[] {"raw non-ASCII", "\"\u00e9\u20ac\ud83d\ude00\""});
+        //Structure
+        inputs.add(new Object[] {"duplicate keys keep the last value in the first place", "{\"a\":1,\"b\":2,\"a\":3}"});
+        inputs.add(new Object[] {"literals", "[true,false,null]"});
+        inputs.add(new Object[] {"a word that only starts like true", "[trueish]"});
+        inputs.add(new Object[] {"trailing comma", "[1,]"});
+        inputs.add(new Object[] {"trailing characters", "{} x"});
+        inputs.add(new Object[] {"empty input", ""});
+        inputs.add(new Object[] {"a bare string at the top", "\"x\""});
+        inputs.add(new Object[] {"nested 64 deep", "[".repeat(64) + "]".repeat(64)});
+        inputs.add(new Object[] {"nested 65 deep", "[".repeat(65) + "]".repeat(65)});
+        inputs.add(new Object[] {"objects count toward the depth", "{\"a\":" + "[".repeat(63) + "]".repeat(63) + "}"});
+        inputs.add(new Object[] {"objects count toward the depth, one too many", "{\"a\":" + "[".repeat(64) + "]".repeat(64) + "}"});
+        inputs.add(new Object[] {"an unquoted key", "{a:1}"});
+        inputs.add(new Object[] {"single quotes", "['a']"});
+
+        List<Object> cases = new ArrayList<>();
+        for(Object[] input : inputs) {
+            Map<String, Object> entry = map("label", input[0], "input", input[1]);
+            try {
+                entry.put("canonical", canonical(MiniJson.parse((String)input[1])));
+            } catch(IllegalArgumentException e) {
+                entry.put("refused", true);
+            }
+            cases.add(entry);
+        }
+        return cases;
+    }
+
+    /**
+     * A parsed value written back compactly: objects in their map's order, strings quoted as this file quotes them,
+     * numbers as BigDecimal.toPlainString.
+     */
+    private static String canonical(Object value) {
+        if(value == null) {
+            return "null";
+        }
+        if(value instanceof String text) {
+            return quote(text);
+        }
+        if(value instanceof Boolean flag) {
+            return flag.toString();
+        }
+        if(value instanceof java.math.BigDecimal number) {
+            return number.toPlainString();
+        }
+        if(value instanceof Map<?, ?> map) {
+            List<String> fields = new ArrayList<>();
+            for(Map.Entry<?, ?> field : map.entrySet()) {
+                fields.add(quote((String)field.getKey()) + ":" + canonical(field.getValue()));
+            }
+            return "{" + String.join(",", fields) + "}";
+        }
+        List<String> items = new ArrayList<>();
+        for(Object item : (List<?>)value) {
+            items.add(canonical(item));
+        }
+        return "[" + String.join(",", items) + "]";
     }
 
     private static String flipLastLetter(String address) {
@@ -546,7 +658,8 @@ public class EvmVectorGeneratorTest {
         meta(uris, "21 attributes", twentyOne.append("]}").toString());
 
         //Text is cleaned and capped
-        String hostile = "\u202eRight\u200bto\u2066left\u2028\u0007\\n";
+        meta(uris, "a raw bell in a string", "{\"name\":\"a\u0007b\"}");
+        String hostile = "\u202eRight\u200bto\u2066left\u2028\\u0007\\n";
         meta(uris, "hostile name", List.of("{\"name\":\"" + hostile, rep("x", 5_000), "\",\"description\":\"short\"}"));
         meta(uris, "hostile description", List.of("{\"description\":\"" + hostile, rep("x", 5_000), "\"}"));
         meta(uris, "hostile attribute", List.of("{\"attributes\":[{\"trait_type\":\"" + hostile, rep("x", 5_000), "\",\"value\":\"" + hostile,
@@ -558,6 +671,31 @@ public class EvmVectorGeneratorTest {
         meta(uris, "a space left at the cap", "{\"name\":\"" + "x".repeat(63) + " y\"}");
         meta(uris, "spaces around the name", "{\"name\":\"  padded  \"}");
         meta(uris, "variation selector and a tag", "{\"name\":\"\u2764\ufe0f\udb40\udc61\"}");
+        meta(uris, "the table, not the platform: U+2065, U+FE0F and U+E0100", "{\"name\":\"a\u2065b\ufe0fc\\udb40\\udd00d\",\"description\":\"a\u2065b\ufe00c\\udb40\\uddefd\","
+                + "\"attributes\":[{\"trait_type\":\"T\u2065\",\"value\":\"\u2764\ufe0f\"}]}");
+        meta(uris, "an escaped lone low surrogate", "{\"name\":\"a\\udc00b\"}");
+        meta(uris, "a name of 64 code points with a pair at the end", "{\"name\":\"" + "x".repeat(63) + "\ud83d\ude00\"}");
+        meta(uris, "a pair cut off at 64 code points", "{\"name\":\"" + "x".repeat(64) + "\ud83d\ude00\"}");
+        meta(uris, "one line: tab, line feed and carriage return separate words",
+                "{\"name\":\"  Vault\\tBadge\\r\\n World 1 \",\"attributes\":[{\"trait_type\":\" a\\n b \",\"value\":\"c\\t\\td\"}]}");
+        meta(uris, "a description keeps single line breaks", "{\"description\":\"\\nFirst line.\\r\\n\\r\\n  Second line. \\n\\rThird\\rFourth\"}");
+        StringBuilder lines = new StringBuilder("{\"description\":\"");
+        for(int i = 1; i <= 25; i++) {
+            lines.append("L").append(i).append("\\n");
+        }
+        meta(uris, "a description of 25 lines", lines.append("\"}").toString());
+        meta(uris, "a description cut at a line break", "{\"description\":\"" + "x".repeat(499) + "\\ny\"}");
+        meta(uris, "a description of 500 code points with a pair at the end", "{\"description\":\"" + "x".repeat(499) + "\ud83d\ude00\"}");
+        meta(uris, "a scheme with a long s", imageJson("http\u017f://example.com/a.png"));
+        meta(uris, "IPFS with a long s", imageJson("ipf\u017f://x"));
+        meta(uris, "mixed-case scheme", imageJson("HtTpS://example.com/a.png"));
+        meta(uris, "image_data of ASCII whitespace", "{\"image_data\":\" \\t\\n\"}");
+        meta(uris, "image_data of an em space", "{\"image_data\":\"\u2003\"}");
+        //The two inputs NftMetadataTest.nothingThrows adds to the fixtures
+        meta(uris, "nothingThrows: percent-encoded with a hosted image",
+                "data:application/json,%7B%22name%22%3A%22C%20D%22%2C%22image%22%3A%22https%3A%2F%2Fa.example%2Fx%22%7D");
+        meta(uris, "nothingThrows: a short PNG and an escaped pair in an attribute",
+                "{\"image\":\"data:image/png;base64,iVBORw0KGgo=\",\"attributes\":[{\"trait_type\":\"a\",\"value\":\"\\ud83d\\ude00\"}]}");
 
         //Base64
         String good = base64("{\"name\":\"ok\"}");
@@ -580,6 +718,8 @@ public class EvmVectorGeneratorTest {
         image(images, "an SVG of 100,000 two-byte characters, base64", List.of("data:image/svg+xml;base64,", b64("<svg>", rep("\u00e9", NftMetadata.MAX_SVG_CHARS - 11), "</svg>")));
         image(images, "an SVG of 33,333 three-byte characters, plain", List.of("data:image/svg+xml,<svg>", rep("%E2%82%AC", 33_333), "</svg>"));
         image(images, "a blank SVG", "data:image/svg+xml,%20%20");
+        image(images, "an SVG of an em space", "data:image/svg+xml,%E2%80%83");
+        image(images, "an SVG of ASCII whitespace", "data:image/svg+xml,%20%09%0A%0D");
 
         return map("tokenUris", uris, "images", images);
     }
@@ -631,17 +771,10 @@ public class EvmVectorGeneratorTest {
     }
 
     private static Map<String, Object> clean() {
-        IntPredicate svgTable = SvgSubset::stripped;
-        IntPredicate metadata = c -> {
-            String kept = "a" + new String(Character.toChars(c)) + "b";
-            return NftMetadata.clean(kept, Integer.MAX_VALUE).equals("ab");
-        };
-
-        //The fixed table as ranges, read from SvgSubset itself
-        List<int[]> table = ranges(svgTable);
+        //The fixed table as ranges, read from TextRules itself
         List<Object> tableJson = new ArrayList<>();
-        Set<Integer> boundaries = new TreeSet<>();
-        for(int[] range : table) {
+        Set<Integer> boundaries = new TreeSet<>(List.of(0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20, 0xA0, 0x2003, 0xD7FF, 0xD800, 0xDBFF, 0xDC00, 0xDFFF, 0xE000));
+        for(int[] range : ranges(TextRules::stripped)) {
             tableJson.add(List.of(range[0], range[1]));
             for(int c : new int[] {range[0] - 1, range[0], range[1], range[1] + 1}) {
                 if(c >= 0 && c <= Character.MAX_CODE_POINT) {
@@ -649,19 +782,35 @@ public class EvmVectorGeneratorTest {
                 }
             }
         }
+        //Each code point between two letters, through every rule
         List<Object> codePoints = new ArrayList<>();
         for(int c : boundaries) {
-            codePoints.add(map("codePoint", c, "svgTable", svgTable.test(c), "metadata", metadata.test(c)));
-        }
-        //Where the metadata rule (the JVM's own Unicode data) and the fixed table disagree, over every code point
-        List<Object> differences = new ArrayList<>();
-        for(int[] range : ranges(c -> svgTable.test(c) != metadata.test(c))) {
-            differences.add(map("from", range[0], "to", range[1], "svgTable", svgTable.test(range[0]), "metadata", metadata.test(range[0])));
+            String text = "a" + new String(Character.toChars(c)) + "b";
+            Map<String, Object> entry = map("codePoint", c, "inTable", TextRules.stripped(c), "singleLine", TextRules.singleLine(text, 64),
+                    "description", TextRules.description(text, 500));
+            try {
+                entry.put("svg", SvgSubset.clean(text));
+            } catch(SvgSubset.Refused e) {
+                throw new IllegalStateException(e);
+            }
+            codePoints.add(entry);
         }
 
         List<Object> texts = new ArrayList<>();
         String emoji = "\ud83d\ude00";
         cleanCase(texts, "plain", "Vault Badge");
+        cleanCase(texts, "line breaks of every kind", "\r\n line one \r\n\r\n \t line two  \n\rthree\rfour\n");
+        StringBuilder lines = new StringBuilder();
+        for(int i = 1; i <= 25; i++) {
+            lines.append("L").append(i).append('\n');
+        }
+        cleanCase(texts, "25 lines", lines.toString());
+        cleanCase(texts, "15 then a line break then more", "x".repeat(15) + "\ny");
+        cleanCase(texts, "63 then a line break then more", "x".repeat(63) + "\ny");
+        cleanCase(texts, "499 then a line break then more", "x".repeat(499) + "\ny");
+        cleanCase(texts, "499 then a pair", "x".repeat(499) + emoji);
+        cleanCase(texts, "64 then a pair", "x".repeat(64) + emoji);
+        cleanCase(texts, "stripped characters do not count", "\u200b".repeat(50) + "x".repeat(16));
         cleanCase(texts, "spaces around and inside", "  two  words  ");
         cleanCase(texts, "tab, line feed and carriage return", "a\tb\nc\rd");
         cleanCase(texts, "whitespace runs", "a \t\n\r b");
@@ -690,19 +839,27 @@ public class EvmVectorGeneratorTest {
         cleanCase(texts, "101 one-letter words: 201 code points, the spaces counted", "x ".repeat(100) + "x");
         cleanCase(texts, "500 then more", "y".repeat(501));
 
-        return map("jdkFeatureVersion", Runtime.version().feature(), "svgTable", tableJson, "codePoints", codePoints, "differences", differences,
+        return map("rule", "One rule for all contract and metadata text (TextRules): the fixed table below is stripped, as are lone surrogates; "
+                        + "tab, line feed, carriage return and space separate words. singleLine: a run of separators between kept characters is one "
+                        + "space, none at the ends. description: a run holding a line feed or carriage return is one line feed, at most "
+                        + TextRules.MAX_LINES + " lines (later runs are a space). Caps count code points after cleaning and never leave a "
+                        + "separator at the end. svg: SvgSubset's text, which collapses every separator to a space and refuses more than "
+                        + SvgSubset.MAX_TEXT + " code points.",
+                "unicodeVersion", TextRules.UNICODE_VERSION, "maxLines", TextRules.MAX_LINES, "table", tableJson, "codePoints", codePoints,
                 "texts", texts);
     }
 
     private static void cleanCase(List<Object> cases, String label, String text) {
         Map<String, Object> entry = map("label", label);
         put(entry, "input", text);
+        entry.put("singleLine16", TextRules.singleLine(text, 16));
+        entry.put("singleLine64", TextRules.singleLine(text, 64));
+        entry.put("description500", TextRules.description(text, 500));
         try {
             entry.put("svg", map("value", SvgSubset.clean(text)));
         } catch(SvgSubset.Refused e) {
             entry.put("svg", map("refused", true));
         }
-        entry.put("metadata", map("16", NftMetadata.clean(text, 16), "64", NftMetadata.clean(text, 64), "500", NftMetadata.clean(text, 500)));
         cases.add(entry);
     }
 

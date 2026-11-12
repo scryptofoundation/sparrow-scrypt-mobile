@@ -1,6 +1,6 @@
 {
   "description": "EVM vectors written by drongo EvmVectorGeneratorTest for the phone's read-only LitVM port. Do not edit by hand.",
-  "built": "An input given as \"<key>Parts\" instead of \"<key>\" is the concatenation of its parts: a string is itself; {\"repeat\": s, \"times\": n} is s repeated n times; {\"base64\": [parts]} is the standard padded base64 of the UTF-8 bytes of its parts. \"<key>Length\" is the built text's length in UTF-16 units and \"<key>Sha256\" the SHA-256 of its UTF-8 bytes. ABI results are hex text. A long decoded value is given as valueLength (UTF-16 units) and valueSha256 (of its UTF-8 bytes).",
+  "built": "An input given as \"<key>Parts\" instead of \"<key>\" is the concatenation of its parts: a string is itself; {\"repeat\": s, \"times\": n} is s repeated n times; {\"base64\": [parts]} is the standard padded base64 of the UTF-8 bytes of its parts. \"<key>Length\" is the built text's length in UTF-16 units and \"<key>Sha256\" the SHA-256 of its UTF-8 bytes. ABI results are hex text. A long decoded value is given as valueLength (UTF-16 units) and valueSha256 (of its UTF-8 bytes). A json case's \"canonical\" is the parsed value written compactly: objects in the reader's key order, numbers as BigDecimal.toPlainString, strings with \\\" \\\\ \\n \\t \\r and \\uXXXX (lower-case hex) for every other UTF-16 unit outside U+0020..U+007E.",
   "constants": {
     "nftMaxUriChars": 100000,
     "nftMaxJsonChars": 20000,
@@ -198,343 +198,463 @@
     {
       "label": "as in EIP-55",
       "input": "0x52908400098527886E0F7030069857D2E4169EE7",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x52908400098527886E0F7030069857D2E4169EE7"
     },
     {
       "label": "all lower case",
       "input": "0x52908400098527886e0f7030069857d2e4169ee7",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x52908400098527886E0F7030069857D2E4169EE7"
     },
     {
       "label": "one letter's case flipped",
       "input": "0x52908400098527886E0F7030069857D2E4169Ee7",
-      "valid": false
+      "kind": "canonical",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "no 0x prefix",
       "input": "52908400098527886E0F7030069857D2E4169EE7",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x52908400098527886E0F7030069857D2E4169EE7"
     },
     {
       "label": "0X prefix",
       "input": "0X52908400098527886E0F7030069857D2E4169EE7",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x52908400098527886E0F7030069857D2E4169EE7"
     },
     {
       "label": "as in EIP-55",
       "input": "0x8617E340B3D01FA5F11F306F4090FD50E238070D",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x8617E340B3D01FA5F11F306F4090FD50E238070D"
     },
     {
       "label": "all lower case",
       "input": "0x8617e340b3d01fa5f11f306f4090fd50e238070d",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x8617E340B3D01FA5F11F306F4090FD50E238070D"
     },
     {
       "label": "one letter's case flipped",
       "input": "0x8617E340B3D01FA5F11F306F4090FD50E238070d",
-      "valid": false
+      "kind": "canonical",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "no 0x prefix",
       "input": "8617E340B3D01FA5F11F306F4090FD50E238070D",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x8617E340B3D01FA5F11F306F4090FD50E238070D"
     },
     {
       "label": "0X prefix",
       "input": "0X8617E340B3D01FA5F11F306F4090FD50E238070D",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x8617E340B3D01FA5F11F306F4090FD50E238070D"
     },
     {
       "label": "as in EIP-55",
       "input": "0xde709f2102306220921060314715629080e2fb77",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xde709f2102306220921060314715629080e2fb77"
     },
     {
       "label": "all upper case",
       "input": "0xDE709F2102306220921060314715629080E2FB77",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xde709f2102306220921060314715629080e2fb77"
     },
     {
       "label": "one letter's case flipped",
       "input": "0xde709f2102306220921060314715629080e2fB77",
-      "valid": false
+      "kind": "canonical",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "no 0x prefix",
       "input": "de709f2102306220921060314715629080e2fb77",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0xde709f2102306220921060314715629080e2fb77"
     },
     {
       "label": "0X prefix",
       "input": "0Xde709f2102306220921060314715629080e2fb77",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0xde709f2102306220921060314715629080e2fb77"
     },
     {
       "label": "as in EIP-55",
       "input": "0x27b1fdb04752bbc536007a920d24acb045561c26",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x27b1fdb04752bbc536007a920d24acb045561c26"
     },
     {
       "label": "all upper case",
       "input": "0x27B1FDB04752BBC536007A920D24ACB045561C26",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x27b1fdb04752bbc536007a920d24acb045561c26"
     },
     {
       "label": "one letter's case flipped",
       "input": "0x27b1fdb04752bbc536007a920d24acb045561C26",
-      "valid": false
+      "kind": "canonical",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "no 0x prefix",
       "input": "27b1fdb04752bbc536007a920d24acb045561c26",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x27b1fdb04752bbc536007a920d24acb045561c26"
     },
     {
       "label": "0X prefix",
       "input": "0X27b1fdb04752bbc536007a920d24acb045561c26",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x27b1fdb04752bbc536007a920d24acb045561c26"
     },
     {
       "label": "as in EIP-55",
       "input": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
     },
     {
       "label": "all lower case",
       "input": "0x5aaeb6053f3e94c9b9a09f33669435e7ef1beaed",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
     },
     {
       "label": "all upper case",
       "input": "0x5AAEB6053F3E94C9B9A09F33669435E7EF1BEAED",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
     },
     {
       "label": "one letter's case flipped",
       "input": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD",
-      "valid": false
+      "kind": "canonical",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "no 0x prefix",
       "input": "5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
     },
     {
       "label": "0X prefix",
       "input": "0X5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
     },
     {
       "label": "as in EIP-55",
       "input": "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"
     },
     {
       "label": "all lower case",
       "input": "0xfb6916095ca1df60bb79ce92ce3ea74c37c5d359",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"
     },
     {
       "label": "all upper case",
       "input": "0xFB6916095CA1DF60BB79CE92CE3EA74C37C5D359",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"
     },
     {
       "label": "one letter's case flipped",
       "input": "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5D359",
-      "valid": false
+      "kind": "canonical",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "no 0x prefix",
       "input": "fB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"
     },
     {
       "label": "0X prefix",
       "input": "0XfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359"
     },
     {
       "label": "as in EIP-55",
       "input": "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB"
     },
     {
       "label": "all lower case",
       "input": "0xdbf03b407c01e7cd3cbea99509d93f8dddc8c6fb",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB"
     },
     {
       "label": "all upper case",
       "input": "0xDBF03B407C01E7CD3CBEA99509D93F8DDDC8C6FB",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB"
     },
     {
       "label": "one letter's case flipped",
       "input": "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6Fb",
-      "valid": false
+      "kind": "canonical",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "no 0x prefix",
       "input": "dbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB"
     },
     {
       "label": "0X prefix",
       "input": "0XdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB"
     },
     {
       "label": "as in EIP-55",
       "input": "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"
     },
     {
       "label": "all lower case",
       "input": "0xd1220a0cf47c7b9be7a2e6ba89f429762e7b9adb",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"
     },
     {
       "label": "all upper case",
       "input": "0xD1220A0CF47C7B9BE7A2E6BA89F429762E7B9ADB",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"
     },
     {
       "label": "one letter's case flipped",
       "input": "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDB",
-      "valid": false
+      "kind": "canonical",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "no 0x prefix",
       "input": "D1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"
     },
     {
       "label": "0X prefix",
       "input": "0XD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"
     },
     {
       "label": "spaces around",
       "input": " 0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed ",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
     },
     {
       "label": "tab before, line feed after",
       "input": "\t0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed\n",
+      "kind": "desktopLeniency",
       "valid": true,
+      "phoneValid": false,
       "address": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
     },
     {
       "label": "no-break space before",
       "input": "\u00a00x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "39 digits",
       "input": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAe",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "41 digits",
       "input": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeda",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "a non-hex digit",
       "input": "0xgaAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "prefix twice",
       "input": "0x0xAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "empty",
       "input": "",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "prefix only",
       "input": "0x",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "too short",
       "input": "0x1234",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "a Litecoin address",
       "input": "ltc1qxyz",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "the dead address, checksummed",
       "input": "0x000000000000000000000000000000000000dEaD",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x000000000000000000000000000000000000dEaD"
     },
     {
       "label": "the dead address, lower case",
       "input": "0x000000000000000000000000000000000000dead",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x000000000000000000000000000000000000dEaD"
     },
     {
       "label": "the dead address, upper case",
       "input": "0x000000000000000000000000000000000000DEAD",
+      "kind": "canonical",
       "valid": true,
+      "phoneValid": true,
       "address": "0x000000000000000000000000000000000000dEaD"
     },
     {
       "label": "the dead address, wrong mixed case",
       "input": "0x000000000000000000000000000000000000DeAD",
-      "valid": false
+      "kind": "canonical",
+      "valid": false,
+      "phoneValid": false
     },
     {
       "label": "fullwidth digits",
       "input": "0x\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10",
-      "valid": false
+      "kind": "notAnAddress",
+      "valid": false,
+      "phoneValid": false
     }
   ],
   "abi": {
@@ -1456,6 +1576,448 @@
       }
     ]
   },
+  "json": [
+    {
+      "label": "space, tab, line feed and carriage return everywhere",
+      "input": " \t\r\n{ \t\r\n\"a\" \t\r\n: \t\r\n1 \t\r\n} \t\r\n",
+      "canonical": "{\"a\":1}"
+    },
+    {
+      "label": "U+2003 inside",
+      "input": "{\u2003\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+2003 before",
+      "input": "\u2003{\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+00A0 inside",
+      "input": "{\u00a0\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+00A0 before",
+      "input": "\u00a0{\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+000B inside",
+      "input": "{\u000b\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+000B before",
+      "input": "\u000b{\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+000C inside",
+      "input": "{\u000c\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+000C before",
+      "input": "\u000c{\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+001C inside",
+      "input": "{\u001c\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+001C before",
+      "input": "\u001c{\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+0085 inside",
+      "input": "{\u0085\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+0085 before",
+      "input": "\u0085{\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+3000 inside",
+      "input": "{\u3000\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+3000 before",
+      "input": "\u3000{\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+FEFF inside",
+      "input": "{\ufeff\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "U+FEFF before",
+      "input": "\ufeff{\"a\":1}",
+      "refused": true
+    },
+    {
+      "label": "every short escape",
+      "input": "\"\\\" \\\\ \\/ \\b \\f \\n \\r \\t\"",
+      "canonical": "\"\\\" \\\\ / \\u0008 \\u000c \\n \\r \\t\""
+    },
+    {
+      "label": "unicode escapes, both cases",
+      "input": "\"\\u0041\\u004a\\u00e9\\u00E9\"",
+      "canonical": "\"AJ\\u00e9\\u00e9\""
+    },
+    {
+      "label": "an escaped pair",
+      "input": "\"\\ud83d\\ude00\"",
+      "canonical": "\"\\ud83d\\ude00\""
+    },
+    {
+      "label": "an escaped lone surrogate",
+      "input": "\"a\\ud800b\"",
+      "canonical": "\"a\\ud800b\""
+    },
+    {
+      "label": "escape \\u+041",
+      "input": "\"\\u+041\"",
+      "refused": true
+    },
+    {
+      "label": "escape \\u-041",
+      "input": "\"\\u-041\"",
+      "refused": true
+    },
+    {
+      "label": "escape \\u\u0660\u0660\u0664\u0661",
+      "input": "\"\\u\u0660\u0660\u0664\u0661\"",
+      "refused": true
+    },
+    {
+      "label": "escape \\u\uff10\uff10\uff14\uff21",
+      "input": "\"\\u\uff10\uff10\uff14\uff21\"",
+      "refused": true
+    },
+    {
+      "label": "escape \\u041\"",
+      "input": "\"\\u041\"\"",
+      "refused": true
+    },
+    {
+      "label": "escape \\u004g",
+      "input": "\"\\u004g\"",
+      "refused": true
+    },
+    {
+      "label": "escape \\uZZZZ",
+      "input": "\"\\uZZZZ\"",
+      "refused": true
+    },
+    {
+      "label": "escape \\x41",
+      "input": "\"\\x41\"",
+      "refused": true
+    },
+    {
+      "label": "escape \\u00",
+      "input": "\"\\u00\"",
+      "refused": true
+    },
+    {
+      "label": "number 0",
+      "input": "[0]",
+      "canonical": "[0]"
+    },
+    {
+      "label": "number -0",
+      "input": "[-0]",
+      "canonical": "[0]"
+    },
+    {
+      "label": "number 5",
+      "input": "[5]",
+      "canonical": "[5]"
+    },
+    {
+      "label": "number -5",
+      "input": "[-5]",
+      "canonical": "[-5]"
+    },
+    {
+      "label": "number 0.5",
+      "input": "[0.5]",
+      "canonical": "[0.5]"
+    },
+    {
+      "label": "number -0.5",
+      "input": "[-0.5]",
+      "canonical": "[-0.5]"
+    },
+    {
+      "label": "number 1.50",
+      "input": "[1.50]",
+      "canonical": "[1.50]"
+    },
+    {
+      "label": "number 1e5",
+      "input": "[1e5]",
+      "canonical": "[100000]"
+    },
+    {
+      "label": "number 1E+5",
+      "input": "[1E+5]",
+      "canonical": "[100000]"
+    },
+    {
+      "label": "number 1e-5",
+      "input": "[1e-5]",
+      "canonical": "[0.00001]"
+    },
+    {
+      "label": "number 1.25e2",
+      "input": "[1.25e2]",
+      "canonical": "[125]"
+    },
+    {
+      "label": "number -0.0",
+      "input": "[-0.0]",
+      "canonical": "[0.0]"
+    },
+    {
+      "label": "number 1e-100",
+      "input": "[1e-100]",
+      "canonical": "[0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001]"
+    },
+    {
+      "label": "number 1e100",
+      "input": "[1e100]",
+      "canonical": "[10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000]"
+    },
+    {
+      "label": "number 1e-101",
+      "input": "[1e-101]",
+      "refused": true
+    },
+    {
+      "label": "number 1e101",
+      "input": "[1e101]",
+      "refused": true
+    },
+    {
+      "label": "number +5",
+      "input": "[+5]",
+      "refused": true
+    },
+    {
+      "label": "number .5",
+      "input": "[.5]",
+      "refused": true
+    },
+    {
+      "label": "number 5.",
+      "input": "[5.]",
+      "refused": true
+    },
+    {
+      "label": "number 007",
+      "input": "[007]",
+      "refused": true
+    },
+    {
+      "label": "number -01",
+      "input": "[-01]",
+      "refused": true
+    },
+    {
+      "label": "number 01.5",
+      "input": "[01.5]",
+      "refused": true
+    },
+    {
+      "label": "number -.5",
+      "input": "[-.5]",
+      "refused": true
+    },
+    {
+      "label": "number 1e",
+      "input": "[1e]",
+      "refused": true
+    },
+    {
+      "label": "number 1e+",
+      "input": "[1e+]",
+      "refused": true
+    },
+    {
+      "label": "number 1.e5",
+      "input": "[1.e5]",
+      "refused": true
+    },
+    {
+      "label": "number -",
+      "input": "[-]",
+      "refused": true
+    },
+    {
+      "label": "number --1",
+      "input": "[--1]",
+      "refused": true
+    },
+    {
+      "label": "number 1.2.3",
+      "input": "[1.2.3]",
+      "refused": true
+    },
+    {
+      "label": "number 0x10",
+      "input": "[0x10]",
+      "refused": true
+    },
+    {
+      "label": "number 1ee5",
+      "input": "[1ee5]",
+      "refused": true
+    },
+    {
+      "label": "number Infinity",
+      "input": "[Infinity]",
+      "refused": true
+    },
+    {
+      "label": "number NaN",
+      "input": "[NaN]",
+      "refused": true
+    },
+    {
+      "label": "number 80 digits",
+      "input": "[11111111111111111111111111111111111111111111111111111111111111111111111111111111]",
+      "canonical": "[11111111111111111111111111111111111111111111111111111111111111111111111111111111]"
+    },
+    {
+      "label": "number 81 digits",
+      "input": "[111111111111111111111111111111111111111111111111111111111111111111111111111111111]",
+      "refused": true
+    },
+    {
+      "label": "raw U+0000 in a string",
+      "input": "\"a\u0000b\"",
+      "refused": true
+    },
+    {
+      "label": "raw U+0001 in a string",
+      "input": "\"a\u0001b\"",
+      "refused": true
+    },
+    {
+      "label": "raw U+0009 in a string",
+      "input": "\"a\tb\"",
+      "refused": true
+    },
+    {
+      "label": "raw U+000A in a string",
+      "input": "\"a\nb\"",
+      "refused": true
+    },
+    {
+      "label": "raw U+000D in a string",
+      "input": "\"a\rb\"",
+      "refused": true
+    },
+    {
+      "label": "raw U+001F in a string",
+      "input": "\"a\u001fb\"",
+      "refused": true
+    },
+    {
+      "label": "raw U+007F in a string",
+      "input": "\"a\u007fb\"",
+      "canonical": "\"a\\u007fb\""
+    },
+    {
+      "label": "raw U+0085 in a string",
+      "input": "\"a\u0085b\"",
+      "canonical": "\"a\\u0085b\""
+    },
+    {
+      "label": "unterminated string",
+      "input": "\"abc",
+      "refused": true
+    },
+    {
+      "label": "raw non-ASCII",
+      "input": "\"\u00e9\u20ac\ud83d\ude00\"",
+      "canonical": "\"\\u00e9\\u20ac\\ud83d\\ude00\""
+    },
+    {
+      "label": "duplicate keys keep the last value in the first place",
+      "input": "{\"a\":1,\"b\":2,\"a\":3}",
+      "canonical": "{\"a\":3,\"b\":2}"
+    },
+    {
+      "label": "literals",
+      "input": "[true,false,null]",
+      "canonical": "[true,false,null]"
+    },
+    {
+      "label": "a word that only starts like true",
+      "input": "[trueish]",
+      "refused": true
+    },
+    {
+      "label": "trailing comma",
+      "input": "[1,]",
+      "refused": true
+    },
+    {
+      "label": "trailing characters",
+      "input": "{} x",
+      "refused": true
+    },
+    {
+      "label": "empty input",
+      "input": "",
+      "refused": true
+    },
+    {
+      "label": "a bare string at the top",
+      "input": "\"x\"",
+      "canonical": "\"x\""
+    },
+    {
+      "label": "nested 64 deep",
+      "input": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "canonical": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
+    },
+    {
+      "label": "nested 65 deep",
+      "input": "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "refused": true
+    },
+    {
+      "label": "objects count toward the depth",
+      "input": "{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "canonical": "{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}"
+    },
+    {
+      "label": "objects count toward the depth, one too many",
+      "input": "{\"a\":[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}",
+      "refused": true
+    },
+    {
+      "label": "an unquoted key",
+      "input": "{a:1}",
+      "refused": true
+    },
+    {
+      "label": "single quotes",
+      "input": "['a']",
+      "refused": true
+    }
+  ],
   "metadata": {
     "tokenUris": [
       {
@@ -2609,56 +3171,28 @@
       {
         "label": "unicode escape with a plus sign",
         "input": "{\"name\":\"\\u+041\"}",
-        "metadata": {
-          "name": "A",
-          "description": "",
-          "attributes": [],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "unicode escape with a minus sign",
         "input": "{\"name\":\"\\u-041\"}",
-        "metadata": {
-          "name": "\uffbf",
-          "description": "",
-          "attributes": [],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "unicode escape with Arabic-Indic digits",
         "input": "{\"name\":\"\\u\u0660\u0660\u0664\u0661\"}",
-        "metadata": {
-          "name": "A",
-          "description": "",
-          "attributes": [],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "unicode escape with fullwidth digits",
         "input": "{\"name\":\"\\u\uff10\uff10\uff14\uff21\"}",
-        "metadata": {
-          "name": "J",
-          "description": "",
-          "attributes": [],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "escaped solidus and controls",
         "input": "{\"name\":\"a\\/b\\tc\\nd\\be\\ff\\rg\"}",
         "metadata": {
-          "name": "a/bcdefg",
+          "name": "a/b c def g",
           "description": "",
           "attributes": [],
           "image": {
@@ -2674,38 +3208,17 @@
       {
         "label": "raw control character in a string",
         "input": "{\"name\":\"a\u0001b\"}",
-        "metadata": {
-          "name": "ab",
-          "description": "",
-          "attributes": [],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "raw tab and line feed in a string",
         "input": "{\"name\":\"a\tb\nc\"}",
-        "metadata": {
-          "name": "abc",
-          "description": "",
-          "attributes": [],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "em space between tokens",
         "input": "{\u2003\"name\"\u2003:\u2003\"A\"\u2003}",
-        "metadata": {
-          "name": "A",
-          "description": "",
-          "attributes": [],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "no-break space between tokens",
@@ -2715,26 +3228,12 @@
       {
         "label": "em space before the brace",
         "input": "\u2003{\"name\":\"A\"}",
-        "metadata": {
-          "name": "A",
-          "description": "",
-          "attributes": [],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "information separator before the brace",
         "input": "\u001c{\"name\":\"A\"}",
-        "metadata": {
-          "name": "A",
-          "description": "",
-          "attributes": [],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "byte order mark before the brace",
@@ -2840,63 +3339,7 @@
       {
         "label": "number forms",
         "input": "{\"name\":\"x\",\"attributes\":[{\"trait_type\":\"+5\",\"value\":+5},{\"trait_type\":\".5\",\"value\":.5},{\"trait_type\":\"5.\",\"value\":5.},{\"trait_type\":\"007\",\"value\":007},{\"trait_type\":\"-0\",\"value\":-0},{\"trait_type\":\"-0.0\",\"value\":-0.0},{\"trait_type\":\"1e2\",\"value\":1e2},{\"trait_type\":\"1E+2\",\"value\":1E+2},{\"trait_type\":\"1.0e-2\",\"value\":1.0e-2},{\"trait_type\":\"1e-100\",\"value\":1e-100},{\"trait_type\":\"1e100\",\"value\":1e100},{\"trait_type\":\"-1.25\",\"value\":-1.25},{\"trait_type\":\"0.000\",\"value\":0.000},{\"trait_type\":\"12345678901234567890\",\"value\":12345678901234567890}]}",
-        "metadata": {
-          "name": "x",
-          "description": "",
-          "attributes": [
-            {
-              "name": "+5",
-              "value": "5"
-            },
-            {
-              "name": ".5",
-              "value": "0.5"
-            },
-            {
-              "name": "5.",
-              "value": "5"
-            },
-            {
-              "name": "007",
-              "value": "7"
-            },
-            {
-              "name": "-0",
-              "value": "0"
-            },
-            {
-              "name": "-0.0",
-              "value": "0.0"
-            },
-            {
-              "name": "1e2",
-              "value": "100"
-            },
-            {
-              "name": "1E+2",
-              "value": "100"
-            },
-            {
-              "name": "1.0e-2",
-              "value": "0.010"
-            },
-            {
-              "name": "-1.25",
-              "value": "-1.25"
-            },
-            {
-              "name": "0.000",
-              "value": "0.000"
-            },
-            {
-              "name": "12345678901234567890",
-              "value": "12345678901234567890"
-            }
-          ],
-          "image": {
-            "kind": "none"
-          }
-        }
+        "refused": true
       },
       {
         "label": "scale 101",
@@ -3218,19 +3661,24 @@
         }
       },
       {
+        "label": "a raw bell in a string",
+        "input": "{\"name\":\"a\u0007b\"}",
+        "refused": true
+      },
+      {
         "label": "hostile name",
         "inputParts": [
-          "{\"name\":\"\u202eRight\u200bto\u2066left\u2028\u0007\\n",
+          "{\"name\":\"\u202eRight\u200bto\u2066left\u2028\\u0007\\n",
           {
             "repeat": "x",
             "times": 5000
           },
           "\",\"description\":\"short\"}"
         ],
-        "inputLength": 5051,
-        "inputSha256": "c00a1296d6b9892219944a930f70f01fb65bca634ffb452931982d3a7da45547",
+        "inputLength": 5056,
+        "inputSha256": "f128f2d4eb375335739d63dd33d70b8b9eebae2a3d889fe951471d80c333193f",
         "metadata": {
-          "name": "Righttoleftxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "name": "Righttoleft xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "description": "short",
           "attributes": [],
           "image": {
@@ -3241,18 +3689,18 @@
       {
         "label": "hostile description",
         "inputParts": [
-          "{\"description\":\"\u202eRight\u200bto\u2066left\u2028\u0007\\n",
+          "{\"description\":\"\u202eRight\u200bto\u2066left\u2028\\u0007\\n",
           {
             "repeat": "x",
             "times": 5000
           },
           "\"}"
         ],
-        "inputLength": 5036,
-        "inputSha256": "4f81cc689f461213a9dae29984dd391dae05b0f86a529706c549e7195840a0f9",
+        "inputLength": 5041,
+        "inputSha256": "39d3442155535e8383e09057c3eec94bb793a4e3aeb9add7d2f07ceb721117b2",
         "metadata": {
           "name": "",
-          "description": "Righttoleftxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "description": "Righttoleft\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "attributes": [],
           "image": {
             "kind": "none"
@@ -3262,27 +3710,27 @@
       {
         "label": "hostile attribute",
         "inputParts": [
-          "{\"attributes\":[{\"trait_type\":\"\u202eRight\u200bto\u2066left\u2028\u0007\\n",
+          "{\"attributes\":[{\"trait_type\":\"\u202eRight\u200bto\u2066left\u2028\\u0007\\n",
           {
             "repeat": "x",
             "times": 5000
           },
-          "\",\"value\":\"\u202eRight\u200bto\u2066left\u2028\u0007\\n",
+          "\",\"value\":\"\u202eRight\u200bto\u2066left\u2028\\u0007\\n",
           {
             "repeat": "x",
             "times": 5000
           },
           "\"}]}"
         ],
-        "inputLength": 10081,
-        "inputSha256": "3b52d59fe0b1cac45ea50f9c349454d240b779a853fd8957514f192e8f4d493e",
+        "inputLength": 10091,
+        "inputSha256": "207bcfa05140876e7f9168e44933ae5bea82ee68a4c73ce2987591fb9832513e",
         "metadata": {
           "name": "",
           "description": "",
           "attributes": [
             {
-              "name": "Righttoleftxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-              "value": "Righttoleftxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              "name": "Righttoleft xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+              "value": "Righttoleft xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
             }
           ],
           "image": {
@@ -3318,7 +3766,7 @@
         "label": "a pair that would be split at the cap",
         "input": "{\"name\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00\"}",
         "metadata": {
-          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
           "description": "",
           "attributes": [],
           "image": {
@@ -3330,7 +3778,7 @@
         "label": "a pair that fits the cap",
         "input": "{\"name\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00y\"}",
         "metadata": {
-          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00y",
           "description": "",
           "attributes": [],
           "image": {
@@ -3342,7 +3790,7 @@
         "label": "a space left at the cap",
         "input": "{\"name\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y\"}",
         "metadata": {
-          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ",
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
           "description": "",
           "attributes": [],
           "image": {
@@ -3366,11 +3814,223 @@
         "label": "variation selector and a tag",
         "input": "{\"name\":\"\u2764\ufe0f\udb40\udc61\"}",
         "metadata": {
-          "name": "\u2764\ufe0f",
+          "name": "\u2764",
           "description": "",
           "attributes": [],
           "image": {
             "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "the table, not the platform: U+2065, U+FE0F and U+E0100",
+        "input": "{\"name\":\"a\u2065b\ufe0fc\\udb40\\udd00d\",\"description\":\"a\u2065b\ufe00c\\udb40\\uddefd\",\"attributes\":[{\"trait_type\":\"T\u2065\",\"value\":\"\u2764\ufe0f\"}]}",
+        "metadata": {
+          "name": "abcd",
+          "description": "abcd",
+          "attributes": [
+            {
+              "name": "T",
+              "value": "\u2764"
+            }
+          ],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "an escaped lone low surrogate",
+        "input": "{\"name\":\"a\\udc00b\"}",
+        "metadata": {
+          "name": "ab",
+          "description": "",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "a name of 64 code points with a pair at the end",
+        "input": "{\"name\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00\"}",
+        "metadata": {
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+          "description": "",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "a pair cut off at 64 code points",
+        "input": "{\"name\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00\"}",
+        "metadata": {
+          "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "description": "",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "one line: tab, line feed and carriage return separate words",
+        "input": "{\"name\":\"  Vault\\tBadge\\r\\n World 1 \",\"attributes\":[{\"trait_type\":\" a\\n b \",\"value\":\"c\\t\\td\"}]}",
+        "metadata": {
+          "name": "Vault Badge World 1",
+          "description": "",
+          "attributes": [
+            {
+              "name": "a b",
+              "value": "c d"
+            }
+          ],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "a description keeps single line breaks",
+        "input": "{\"description\":\"\\nFirst line.\\r\\n\\r\\n  Second line. \\n\\rThird\\rFourth\"}",
+        "metadata": {
+          "name": "",
+          "description": "First line.\nSecond line.\nThird\nFourth",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "a description of 25 lines",
+        "input": "{\"description\":\"L1\\nL2\\nL3\\nL4\\nL5\\nL6\\nL7\\nL8\\nL9\\nL10\\nL11\\nL12\\nL13\\nL14\\nL15\\nL16\\nL17\\nL18\\nL19\\nL20\\nL21\\nL22\\nL23\\nL24\\nL25\\n\"}",
+        "metadata": {
+          "name": "",
+          "description": "L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nL10\nL11\nL12\nL13\nL14\nL15\nL16\nL17\nL18\nL19\nL20 L21 L22 L23 L24 L25",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "a description cut at a line break",
+        "input": "{\"description\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\ny\"}",
+        "metadata": {
+          "name": "",
+          "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "a description of 500 code points with a pair at the end",
+        "input": "{\"description\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00\"}",
+        "metadata": {
+          "name": "",
+          "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "a scheme with a long s",
+        "input": "{\"name\":\"x\",\"image\":\"http\u017f://example.com/a.png\"}",
+        "metadata": {
+          "name": "x",
+          "description": "",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "IPFS with a long s",
+        "input": "{\"name\":\"x\",\"image\":\"ipf\u017f://x\"}",
+        "metadata": {
+          "name": "x",
+          "description": "",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "mixed-case scheme",
+        "input": "{\"name\":\"x\",\"image\":\"HtTpS://example.com/a.png\"}",
+        "metadata": {
+          "name": "x",
+          "description": "",
+          "attributes": [],
+          "image": {
+            "kind": "hosted",
+            "host": "example.com"
+          }
+        }
+      },
+      {
+        "label": "image_data of ASCII whitespace",
+        "input": "{\"image_data\":\" \\t\\n\"}",
+        "metadata": {
+          "name": "",
+          "description": "",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "image_data of an em space",
+        "input": "{\"image_data\":\"\u2003\"}",
+        "metadata": {
+          "name": "",
+          "description": "",
+          "attributes": [],
+          "image": {
+            "kind": "none"
+          }
+        }
+      },
+      {
+        "label": "nothingThrows: percent-encoded with a hosted image",
+        "input": "data:application/json,%7B%22name%22%3A%22C%20D%22%2C%22image%22%3A%22https%3A%2F%2Fa.example%2Fx%22%7D",
+        "metadata": {
+          "name": "C D",
+          "description": "",
+          "attributes": [],
+          "image": {
+            "kind": "hosted",
+            "host": "a.example"
+          }
+        }
+      },
+      {
+        "label": "nothingThrows: a short PNG and an escaped pair in an attribute",
+        "input": "{\"image\":\"data:image/png;base64,iVBORw0KGgo=\",\"attributes\":[{\"trait_type\":\"a\",\"value\":\"\\ud83d\\ude00\"}]}",
+        "metadata": {
+          "name": "",
+          "description": "",
+          "attributes": [
+            {
+              "name": "a",
+              "value": "\ud83d\ude00"
+            }
+          ],
+          "image": {
+            "kind": "raster",
+            "mediaType": "image/png",
+            "byteLength": 8,
+            "sha256": "4c4b6a3be1314ab86138bef4314dde022e600960d8689a2c8f8631802d20dab6"
           }
         }
       },
@@ -3628,12 +4288,31 @@
         "image": {
           "kind": "none"
         }
+      },
+      {
+        "label": "an SVG of an em space",
+        "input": "data:image/svg+xml,%E2%80%83",
+        "image": {
+          "kind": "svg",
+          "sourceLength": 1,
+          "sourceSha256": "0a846272232b2dd88c85db1952c3eb47b198e7311c81a54a754478d87cedc6f8",
+          "source": "\u2003"
+        }
+      },
+      {
+        "label": "an SVG of ASCII whitespace",
+        "input": "data:image/svg+xml,%20%09%0A%0D",
+        "image": {
+          "kind": "none"
+        }
       }
     ]
   },
   "clean": {
-    "jdkFeatureVersion": 25,
-    "svgTable": [
+    "rule": "One rule for all contract and metadata text (TextRules): the fixed table below is stripped, as are lone surrogates; tab, line feed, carriage return and space separate words. singleLine: a run of separators between kept characters is one space, none at the ends. description: a run holding a line feed or carriage return is one line feed, at most 20 lines (later runs are a space). Caps count code points after cleaning and never leave a separator at the end. svg: SvgSubset's text, which collapses every separator to a space and refuses more than 200 code points.",
+    "unicodeVersion": "15.1",
+    "maxLines": 20,
+    "table": [
       [0, 31],
       [127, 159],
       [173, 173],
@@ -3662,791 +4341,1043 @@
     "codePoints": [
       {
         "codePoint": 0,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
+      },
+      {
+        "codePoint": 9,
+        "inTable": true,
+        "singleLine": "a b",
+        "description": "a b",
+        "svg": "a b"
+      },
+      {
+        "codePoint": 10,
+        "inTable": true,
+        "singleLine": "a b",
+        "description": "a\nb",
+        "svg": "a b"
+      },
+      {
+        "codePoint": 11,
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
+      },
+      {
+        "codePoint": 12,
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
+      },
+      {
+        "codePoint": 13,
+        "inTable": true,
+        "singleLine": "a b",
+        "description": "a\nb",
+        "svg": "a b"
       },
       {
         "codePoint": 31,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 32,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a b",
+        "description": "a b",
+        "svg": "a b"
       },
       {
         "codePoint": 126,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a~b",
+        "description": "a~b",
+        "svg": "a~b"
       },
       {
         "codePoint": 127,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 159,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 160,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u00a0b",
+        "description": "a\u00a0b",
+        "svg": "a\u00a0b"
       },
       {
         "codePoint": 172,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u00acb",
+        "description": "a\u00acb",
+        "svg": "a\u00acb"
       },
       {
         "codePoint": 173,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 174,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u00aeb",
+        "description": "a\u00aeb",
+        "svg": "a\u00aeb"
       },
       {
         "codePoint": 1535,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u05ffb",
+        "description": "a\u05ffb",
+        "svg": "a\u05ffb"
       },
       {
         "codePoint": 1536,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 1541,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 1542,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u0606b",
+        "description": "a\u0606b",
+        "svg": "a\u0606b"
       },
       {
         "codePoint": 1563,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u061bb",
+        "description": "a\u061bb",
+        "svg": "a\u061bb"
       },
       {
         "codePoint": 1564,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 1565,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u061db",
+        "description": "a\u061db",
+        "svg": "a\u061db"
       },
       {
         "codePoint": 1756,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u06dcb",
+        "description": "a\u06dcb",
+        "svg": "a\u06dcb"
       },
       {
         "codePoint": 1757,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 1758,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u06deb",
+        "description": "a\u06deb",
+        "svg": "a\u06deb"
       },
       {
         "codePoint": 1806,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u070eb",
+        "description": "a\u070eb",
+        "svg": "a\u070eb"
       },
       {
         "codePoint": 1807,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 1808,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u0710b",
+        "description": "a\u0710b",
+        "svg": "a\u0710b"
       },
       {
         "codePoint": 2191,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u088fb",
+        "description": "a\u088fb",
+        "svg": "a\u088fb"
       },
       {
         "codePoint": 2192,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 2193,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 2194,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u0892b",
+        "description": "a\u0892b",
+        "svg": "a\u0892b"
       },
       {
         "codePoint": 2273,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u08e1b",
+        "description": "a\u08e1b",
+        "svg": "a\u08e1b"
       },
       {
         "codePoint": 2274,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 2275,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u08e3b",
+        "description": "a\u08e3b",
+        "svg": "a\u08e3b"
       },
       {
         "codePoint": 6157,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u180db",
+        "description": "a\u180db",
+        "svg": "a\u180db"
       },
       {
         "codePoint": 6158,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 6159,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u180fb",
+        "description": "a\u180fb",
+        "svg": "a\u180fb"
+      },
+      {
+        "codePoint": 8195,
+        "inTable": false,
+        "singleLine": "a\u2003b",
+        "description": "a\u2003b",
+        "svg": "a\u2003b"
       },
       {
         "codePoint": 8202,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u200ab",
+        "description": "a\u200ab",
+        "svg": "a\u200ab"
       },
       {
         "codePoint": 8203,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 8207,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 8208,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u2010b",
+        "description": "a\u2010b",
+        "svg": "a\u2010b"
       },
       {
         "codePoint": 8231,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u2027b",
+        "description": "a\u2027b",
+        "svg": "a\u2027b"
       },
       {
         "codePoint": 8232,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 8238,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 8239,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u202fb",
+        "description": "a\u202fb",
+        "svg": "a\u202fb"
       },
       {
         "codePoint": 8287,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u205fb",
+        "description": "a\u205fb",
+        "svg": "a\u205fb"
       },
       {
         "codePoint": 8288,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 8303,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 8304,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\u2070b",
+        "description": "a\u2070b",
+        "svg": "a\u2070b"
+      },
+      {
+        "codePoint": 55295,
+        "inTable": false,
+        "singleLine": "a\ud7ffb",
+        "description": "a\ud7ffb",
+        "svg": "a\ud7ffb"
+      },
+      {
+        "codePoint": 55296,
+        "inTable": false,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "a\ud800b"
+      },
+      {
+        "codePoint": 56319,
+        "inTable": false,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "a\udbffb"
+      },
+      {
+        "codePoint": 56320,
+        "inTable": false,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "a\udc00b"
+      },
+      {
+        "codePoint": 57343,
+        "inTable": false,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "a\udfffb"
+      },
+      {
+        "codePoint": 57344,
+        "inTable": false,
+        "singleLine": "a\ue000b",
+        "description": "a\ue000b",
+        "svg": "a\ue000b"
       },
       {
         "codePoint": 65023,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ufdffb",
+        "description": "a\ufdffb",
+        "svg": "a\ufdffb"
       },
       {
         "codePoint": 65024,
-        "svgTable": true,
-        "metadata": false
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 65039,
-        "svgTable": true,
-        "metadata": false
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 65040,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ufe10b",
+        "description": "a\ufe10b",
+        "svg": "a\ufe10b"
       },
       {
         "codePoint": 65278,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ufefeb",
+        "description": "a\ufefeb",
+        "svg": "a\ufefeb"
       },
       {
         "codePoint": 65279,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 65280,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\uff00b",
+        "description": "a\uff00b",
+        "svg": "a\uff00b"
       },
       {
         "codePoint": 65528,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ufff8b",
+        "description": "a\ufff8b",
+        "svg": "a\ufff8b"
       },
       {
         "codePoint": 65529,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 65531,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 65532,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ufffcb",
+        "description": "a\ufffcb",
+        "svg": "a\ufffcb"
       },
       {
         "codePoint": 69820,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud804\udcbcb",
+        "description": "a\ud804\udcbcb",
+        "svg": "a\ud804\udcbcb"
       },
       {
         "codePoint": 69821,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 69822,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud804\udcbeb",
+        "description": "a\ud804\udcbeb",
+        "svg": "a\ud804\udcbeb"
       },
       {
         "codePoint": 69836,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud804\udcccb",
+        "description": "a\ud804\udcccb",
+        "svg": "a\ud804\udcccb"
       },
       {
         "codePoint": 69837,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 69838,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud804\udcceb",
+        "description": "a\ud804\udcceb",
+        "svg": "a\ud804\udcceb"
       },
       {
         "codePoint": 78895,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud80d\udc2fb",
+        "description": "a\ud80d\udc2fb",
+        "svg": "a\ud80d\udc2fb"
       },
       {
         "codePoint": 78896,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 78911,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 78912,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud80d\udc40b",
+        "description": "a\ud80d\udc40b",
+        "svg": "a\ud80d\udc40b"
       },
       {
         "codePoint": 113823,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud82f\udc9fb",
+        "description": "a\ud82f\udc9fb",
+        "svg": "a\ud82f\udc9fb"
       },
       {
         "codePoint": 113824,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 113827,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 113828,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud82f\udca4b",
+        "description": "a\ud82f\udca4b",
+        "svg": "a\ud82f\udca4b"
       },
       {
         "codePoint": 119154,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud834\udd72b",
+        "description": "a\ud834\udd72b",
+        "svg": "a\ud834\udd72b"
       },
       {
         "codePoint": 119155,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 119162,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 119163,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\ud834\udd7bb",
+        "description": "a\ud834\udd7bb",
+        "svg": "a\ud834\udd7bb"
       },
       {
         "codePoint": 917504,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\udb40\udc00b",
+        "description": "a\udb40\udc00b",
+        "svg": "a\udb40\udc00b"
       },
       {
         "codePoint": 917505,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 917506,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\udb40\udc02b",
+        "description": "a\udb40\udc02b",
+        "svg": "a\udb40\udc02b"
       },
       {
         "codePoint": 917535,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\udb40\udc1fb",
+        "description": "a\udb40\udc1fb",
+        "svg": "a\udb40\udc1fb"
       },
       {
         "codePoint": 917536,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 917631,
-        "svgTable": true,
-        "metadata": true
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 917632,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\udb40\udc80b",
+        "description": "a\udb40\udc80b",
+        "svg": "a\udb40\udc80b"
       },
       {
         "codePoint": 917759,
-        "svgTable": false,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\udb40\udcffb",
+        "description": "a\udb40\udcffb",
+        "svg": "a\udb40\udcffb"
       },
       {
         "codePoint": 917760,
-        "svgTable": true,
-        "metadata": false
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 917999,
-        "svgTable": true,
-        "metadata": false
+        "inTable": true,
+        "singleLine": "ab",
+        "description": "ab",
+        "svg": "ab"
       },
       {
         "codePoint": 918000,
-        "svgTable": false,
-        "metadata": false
-      }
-    ],
-    "differences": [
-      {
-        "from": 8293,
-        "to": 8293,
-        "svgTable": true,
-        "metadata": false
-      },
-      {
-        "from": 55296,
-        "to": 57343,
-        "svgTable": false,
-        "metadata": true
-      },
-      {
-        "from": 65024,
-        "to": 65039,
-        "svgTable": true,
-        "metadata": false
-      },
-      {
-        "from": 917760,
-        "to": 917999,
-        "svgTable": true,
-        "metadata": false
+        "inTable": false,
+        "singleLine": "a\udb40\uddf0b",
+        "description": "a\udb40\uddf0b",
+        "svg": "a\udb40\uddf0b"
       }
     ],
     "texts": [
       {
         "label": "plain",
         "input": "Vault Badge",
+        "singleLine16": "Vault Badge",
+        "singleLine64": "Vault Badge",
+        "description500": "Vault Badge",
         "svg": {
           "value": "Vault Badge"
-        },
-        "metadata": {
-          "16": "Vault Badge",
-          "64": "Vault Badge",
-          "500": "Vault Badge"
+        }
+      },
+      {
+        "label": "line breaks of every kind",
+        "input": "\r\n line one \r\n\r\n \t line two  \n\rthree\rfour\n",
+        "singleLine16": "line one line tw",
+        "singleLine64": "line one line two three four",
+        "description500": "line one\nline two\nthree\nfour",
+        "svg": {
+          "value": "line one line two three four"
+        }
+      },
+      {
+        "label": "25 lines",
+        "input": "L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nL10\nL11\nL12\nL13\nL14\nL15\nL16\nL17\nL18\nL19\nL20\nL21\nL22\nL23\nL24\nL25\n",
+        "singleLine16": "L1 L2 L3 L4 L5 L",
+        "singleLine64": "L1 L2 L3 L4 L5 L6 L7 L8 L9 L10 L11 L12 L13 L14 L15 L16 L17 L18 L",
+        "description500": "L1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\nL10\nL11\nL12\nL13\nL14\nL15\nL16\nL17\nL18\nL19\nL20 L21 L22 L23 L24 L25",
+        "svg": {
+          "value": "L1 L2 L3 L4 L5 L6 L7 L8 L9 L10 L11 L12 L13 L14 L15 L16 L17 L18 L19 L20 L21 L22 L23 L24 L25"
+        }
+      },
+      {
+        "label": "15 then a line break then more",
+        "input": "xxxxxxxxxxxxxxx\ny",
+        "singleLine16": "xxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxx y",
+        "description500": "xxxxxxxxxxxxxxx\ny",
+        "svg": {
+          "value": "xxxxxxxxxxxxxxx y"
+        }
+      },
+      {
+        "label": "63 then a line break then more",
+        "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ny",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ny",
+        "svg": {
+          "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y"
+        }
+      },
+      {
+        "label": "499 then a line break then more",
+        "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ny",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "svg": {
+          "refused": true
+        }
+      },
+      {
+        "label": "499 then a pair",
+        "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+        "svg": {
+          "refused": true
+        }
+      },
+      {
+        "label": "64 then a pair",
+        "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+        "svg": {
+          "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00"
+        }
+      },
+      {
+        "label": "stripped characters do not count",
+        "input": "\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200b\u200bxxxxxxxxxxxxxxxx",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxx",
+        "svg": {
+          "value": "xxxxxxxxxxxxxxxx"
         }
       },
       {
         "label": "spaces around and inside",
         "input": "  two  words  ",
+        "singleLine16": "two words",
+        "singleLine64": "two words",
+        "description500": "two words",
         "svg": {
           "value": "two words"
-        },
-        "metadata": {
-          "16": "two  words",
-          "64": "two  words",
-          "500": "two  words"
         }
       },
       {
         "label": "tab, line feed and carriage return",
         "input": "a\tb\nc\rd",
+        "singleLine16": "a b c d",
+        "singleLine64": "a b c d",
+        "description500": "a b\nc\nd",
         "svg": {
           "value": "a b c d"
-        },
-        "metadata": {
-          "16": "abcd",
-          "64": "abcd",
-          "500": "abcd"
         }
       },
       {
         "label": "whitespace runs",
         "input": "a \t\n\r b",
+        "singleLine16": "a b",
+        "singleLine64": "a b",
+        "description500": "a\nb",
         "svg": {
           "value": "a b"
-        },
-        "metadata": {
-          "16": "a  b",
-          "64": "a  b",
-          "500": "a  b"
         }
       },
       {
         "label": "only whitespace",
         "input": " \t\n ",
+        "singleLine16": "",
+        "singleLine64": "",
+        "description500": "",
         "svg": {
           "value": ""
-        },
-        "metadata": {
-          "16": "",
-          "64": "",
-          "500": ""
         }
       },
       {
         "label": "a stripped character between spaces",
         "input": "a \u200b b",
+        "singleLine16": "a b",
+        "singleLine64": "a b",
+        "description500": "a b",
         "svg": {
           "value": "a b"
-        },
-        "metadata": {
-          "16": "a  b",
-          "64": "a  b",
-          "500": "a  b"
         }
       },
       {
         "label": "only stripped characters",
         "input": "\u200b\u200e\u00ad",
+        "singleLine16": "",
+        "singleLine64": "",
+        "description500": "",
         "svg": {
           "value": ""
-        },
-        "metadata": {
-          "16": "",
-          "64": "",
-          "500": ""
         }
       },
       {
         "label": "the hostile text from the tests",
         "input": "\u202eRight\u200bto\u2066left\u2028\u0007\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "singleLine16": "Righttoleft xxxx",
+        "singleLine64": "Righttoleft xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "Righttoleft\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "svg": {
           "value": "Righttoleft xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-        },
-        "metadata": {
-          "16": "Righttoleftxxxxx",
-          "64": "Righttoleftxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "500": "Righttoleftxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         }
       },
       {
         "label": "C0, DEL and C1",
         "input": "a\u0000b\u001fc\u007fd\u0080e\u009ff",
+        "singleLine16": "abcdef",
+        "singleLine64": "abcdef",
+        "description500": "abcdef",
         "svg": {
           "value": "abcdef"
-        },
-        "metadata": {
-          "16": "abcdef",
-          "64": "abcdef",
-          "500": "abcdef"
         }
       },
       {
         "label": "no-break, em and ideographic spaces",
         "input": "a\u00a0b\u2003c\u3000d",
+        "singleLine16": "a\u00a0b\u2003c\u3000d",
+        "singleLine64": "a\u00a0b\u2003c\u3000d",
+        "description500": "a\u00a0b\u2003c\u3000d",
         "svg": {
           "value": "a\u00a0b\u2003c\u3000d"
-        },
-        "metadata": {
-          "16": "a\u00a0b\u2003c\u3000d",
-          "64": "a\u00a0b\u2003c\u3000d",
-          "500": "a\u00a0b\u2003c\u3000d"
         }
       },
       {
         "label": "next line",
         "input": "a\u0085b",
+        "singleLine16": "ab",
+        "singleLine64": "ab",
+        "description500": "ab",
         "svg": {
           "value": "ab"
-        },
-        "metadata": {
-          "16": "ab",
-          "64": "ab",
-          "500": "ab"
         }
       },
       {
         "label": "variation selectors",
         "input": "\u2764\ufe0f \u8fbb\udb40\udd00",
+        "singleLine16": "\u2764 \u8fbb",
+        "singleLine64": "\u2764 \u8fbb",
+        "description500": "\u2764 \u8fbb",
         "svg": {
           "value": "\u2764 \u8fbb"
-        },
-        "metadata": {
-          "16": "\u2764\ufe0f \u8fbb\udb40\udd00",
-          "64": "\u2764\ufe0f \u8fbb\udb40\udd00",
-          "500": "\u2764\ufe0f \u8fbb\udb40\udd00"
         }
       },
       {
         "label": "tags",
         "input": "\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc7f",
+        "singleLine16": "\ud83c\udff4",
+        "singleLine64": "\ud83c\udff4",
+        "description500": "\ud83c\udff4",
         "svg": {
           "value": "\ud83c\udff4"
-        },
-        "metadata": {
-          "16": "\ud83c\udff4",
-          "64": "\ud83c\udff4",
-          "500": "\ud83c\udff4"
         }
       },
       {
         "label": "an unpaired high surrogate",
         "input": "a\ud800b",
+        "singleLine16": "ab",
+        "singleLine64": "ab",
+        "description500": "ab",
         "svg": {
           "value": "a\ud800b"
-        },
-        "metadata": {
-          "16": "ab",
-          "64": "ab",
-          "500": "ab"
         }
       },
       {
         "label": "an unpaired low surrogate",
         "input": "a\udc00b",
+        "singleLine16": "ab",
+        "singleLine64": "ab",
+        "description500": "ab",
         "svg": {
           "value": "a\udc00b"
-        },
-        "metadata": {
-          "16": "ab",
-          "64": "ab",
-          "500": "ab"
         }
       },
       {
         "label": "noncharacters",
         "input": "a\ufffe\uffffb",
+        "singleLine16": "a\ufffe\uffffb",
+        "singleLine64": "a\ufffe\uffffb",
+        "description500": "a\ufffe\uffffb",
         "svg": {
           "value": "a\ufffe\uffffb"
-        },
-        "metadata": {
-          "16": "a\ufffe\uffffb",
-          "64": "a\ufffe\uffffb",
-          "500": "a\ufffe\uffffb"
         }
       },
       {
         "label": "combining marks",
         "input": "e\u0301\u0302",
+        "singleLine16": "e\u0301\u0302",
+        "singleLine64": "e\u0301\u0302",
+        "description500": "e\u0301\u0302",
         "svg": {
           "value": "e\u0301\u0302"
-        },
-        "metadata": {
-          "16": "e\u0301\u0302",
-          "64": "e\u0301\u0302",
-          "500": "e\u0301\u0302"
         }
       },
       {
         "label": "15 then a pair",
         "input": "xxxxxxxxxxxxxxx\ud83d\ude00",
+        "singleLine16": "xxxxxxxxxxxxxxx\ud83d\ude00",
+        "singleLine64": "xxxxxxxxxxxxxxx\ud83d\ude00",
+        "description500": "xxxxxxxxxxxxxxx\ud83d\ude00",
         "svg": {
           "value": "xxxxxxxxxxxxxxx\ud83d\ude00"
-        },
-        "metadata": {
-          "16": "xxxxxxxxxxxxxxx",
-          "64": "xxxxxxxxxxxxxxx\ud83d\ude00",
-          "500": "xxxxxxxxxxxxxxx\ud83d\ude00"
         }
       },
       {
         "label": "63 then a pair",
         "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
         "svg": {
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00"
-        },
-        "metadata": {
-          "16": "xxxxxxxxxxxxxxxx",
-          "64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00"
         }
       },
       {
         "label": "62 then a pair then one more",
         "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00y",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00y",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00y",
         "svg": {
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00y"
-        },
-        "metadata": {
-          "16": "xxxxxxxxxxxxxxxx",
-          "64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
-          "500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00y"
         }
       },
       {
         "label": "63 then a space then one more",
         "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y",
         "svg": {
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y"
-        },
-        "metadata": {
-          "16": "xxxxxxxxxxxxxxxx",
-          "64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx ",
-          "500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y"
         }
       },
       {
         "label": "200 code points",
         "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "svg": {
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-        },
-        "metadata": {
-          "16": "xxxxxxxxxxxxxxxx",
-          "64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         }
       },
       {
         "label": "201 code points",
         "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "svg": {
           "refused": true
-        },
-        "metadata": {
-          "16": "xxxxxxxxxxxxxxxx",
-          "64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         }
       },
       {
         "label": "199 then a pair: 200 code points, 201 units",
         "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00",
         "svg": {
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00"
-        },
-        "metadata": {
-          "16": "xxxxxxxxxxxxxxxx",
-          "64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ud83d\ude00"
         }
       },
       {
         "label": "200 pairs",
         "input": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+        "singleLine16": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+        "singleLine64": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+        "description500": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
         "svg": {
           "value": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
-        },
-        "metadata": {
-          "16": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
-          "64": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
-          "500": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
         }
       },
       {
         "label": "201 with one stripped",
         "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\u200b",
+        "singleLine16": "xxxxxxxxxxxxxxxx",
+        "singleLine64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "description500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "svg": {
           "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-        },
-        "metadata": {
-          "16": "xxxxxxxxxxxxxxxx",
-          "64": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-          "500": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
         }
       },
       {
         "label": "101 one-letter words: 201 code points, the spaces counted",
         "input": "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x",
+        "singleLine16": "x x x x x x x x",
+        "singleLine64": "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x",
+        "description500": "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x",
         "svg": {
           "refused": true
-        },
-        "metadata": {
-          "16": "x x x x x x x x ",
-          "64": "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x ",
-          "500": "x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x x"
         }
       },
       {
         "label": "500 then more",
         "input": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "singleLine16": "yyyyyyyyyyyyyyyy",
+        "singleLine64": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "description500": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
         "svg": {
           "refused": true
-        },
-        "metadata": {
-          "16": "yyyyyyyyyyyyyyyy",
-          "64": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
-          "500": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
         }
       }
     ]
