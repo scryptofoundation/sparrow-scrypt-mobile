@@ -590,7 +590,7 @@ class SvgSubsetVectorTest {
 
     @Test
     fun noRegexOrRecursionHelpersInTheReader() {
-        for(name in listOf("SvgSubset.kt")) {
+        for(name in listOf("SvgSubset.kt", "NftPicturePlan.kt")) {
             val text = File("src/commonMain/kotlin/com/sparrowwallet/mobile/crypto/evm/$name").readText()
             for(banned in listOf("Regex", "toRegex", ".split(", ".matches(", ".replace(", "Thread", "lowercase", "uppercase", ".toDoubleOrNull(")) {
                 assertFalse(banned in text, "$name uses $banned")
