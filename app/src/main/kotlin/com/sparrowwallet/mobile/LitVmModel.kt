@@ -9,6 +9,7 @@ import com.sparrowwallet.mobile.crypto.evm.NftMetadata
 import com.sparrowwallet.mobile.crypto.evm.NftPicturePlan
 import com.sparrowwallet.mobile.crypto.evm.SvgSubset
 import com.sparrowwallet.mobile.crypto.evm.UInt256
+import com.sparrowwallet.mobile.electrum.HttpEndpoint
 import com.sparrowwallet.mobile.electrum.RateLimitedException
 import com.sparrowwallet.mobile.electrum.litvm.Erc721
 import com.sparrowwallet.mobile.electrum.litvm.Erc721Collection
@@ -23,6 +24,7 @@ import com.sparrowwallet.mobile.storage.VaultData
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
@@ -80,8 +82,12 @@ class LitVmRead(val address: EvmAddress, val balance: UInt256?, val problem: Pro
 
 /** A token's picture as the screen may show it, decided off the main thread in the read. */
 sealed interface LitVmPicture {
-    /** An SVG in the subset, laid out for the tile and for the detail; [source] is a hash of its text, for the cache key. */
-    class Drawn(val tile: NftPicturePlan.Plan, val detail: NftPicturePlan.Plan, val source: Long) : LitVmPicture
+    /**
+     * An SVG in the subset: its [svg] text (inside the metadata JSON, so at most 20,000 characters), [source] a hash of
+     * it for the cache key, and the [tile] plan laid out in the read (null once the read is released; any other size,
+     * the detail's included, is planned from the text when it is drawn, see [LitVmPictures.plan]).
+     */
+    class Drawn(val svg: String, val source: Long, val tile: NftPicturePlan.Plan?) : LitVmPicture
 
     /** PNG, JPEG, GIF or WebP bytes [PreviewRules] cleared, with the size their header declares; [source] hashes the bytes. */
     class Raster(bytes: ByteArray, val width: Int, val height: Int, val source: Long) : LitVmPicture {
@@ -283,6 +289,20 @@ object LitVmModel {
     fun unreachable(address: EvmAddress): LitVmRead =
         LitVmRead(address, null, LitVmRead.Problem.CHAIN, LitVmRead.Reason.UNREACHABLE, emptyList(), false, emptyMap())
 
+    /** The read without its picture plans, kept while a Refresh works: its tiles stay listed, their pictures planned again if needed. */
+    fun released(read: LitVmRead): LitVmRead = LitVmRead(read.address, read.balance, read.problem, read.reason, read.collections, read.stopped,
+        read.pictures.mapValues { (_, picture) -> LitVmPictures.released(picture) })
+
+    /**
+     * The collections' facts (name, symbol, enumerable, soulbound) kept for the visit after [read] (null: none yet), so a
+     * Refresh does not ask the contract again: a failed chain check drops them all.
+     */
+    fun keptFacts(kept: Map<EvmAddress, Erc721Collection>, read: LitVmRead?): Map<EvmAddress, Erc721Collection> = when {
+        read == null -> kept
+        read.problem == LitVmRead.Problem.CHAIN -> emptyMap()
+        else -> kept + read.collections.mapNotNull { c -> c.collection?.let { c.contract to it } }
+    }
+
     /** The name each collection gave in this read, to name it later when it cannot be read. */
     fun names(read: LitVmRead): Map<EvmAddress, String> =
         read.collections.mapNotNull { c -> c.collection?.let { c.contract to collectionLabel(it) } }.toMap()
@@ -358,15 +378,78 @@ object LitVmModel {
 
 /** Pictures as the read prepares them, off the main thread: the media type label is ignored, the bytes decide. */
 object LitVmPictures {
-    fun prepare(metadata: NftMetadata?, tilePixels: Double, detailPixels: Double): LitVmPicture = when(val image = metadata?.image) {
+    /**
+     * The path commands one read's picture plans may hold in all. A plan costs about 60 bytes a command on the JVM, so
+     * with one more picture over it (at most 50,000) a read holds about 15 MB of plans at worst.
+     */
+    const val READ_BUDGET = 200_000L
+
+    /**
+     * The pictures of [tokens], in order, each planned at [tilePixels] until the plans kept pass [READ_BUDGET] commands;
+     * every token after that has no picture (it is still listed). Off the main thread.
+     */
+    suspend fun prepareAll(tokens: List<Nft>, tilePixels: Double): Map<String, LitVmPicture> {
+        val pictures = LinkedHashMap<String, LitVmPicture>()
+        val prepared = budgeted(tokens, READ_BUDGET, prepare = { prepare(it.metadata, tilePixels) }, cost = { cost(it) }, none = { LitVmPicture.None })
+        for((i, nft) in tokens.withIndex()) {
+            currentCoroutineContext().ensureActive()
+            pictures[LitVmModel.tileKey(nft)] = prepared[i]
+        }
+        return pictures
+    }
+
+    /**
+     * [items] prepared in order while the cost kept is under [budget]; once it is reached, the rest are [none] and are
+     * not prepared at all. The total kept is at most the budget plus one item's cost.
+     */
+    fun <T, P> budgeted(items: List<T>, budget: Long, prepare: (T) -> P, cost: (P) -> Int, none: (T) -> P): List<P> {
+        var spent = 0L
+        return items.map { item ->
+            if(spent >= budget) {
+                none(item)
+            } else {
+                prepare(item).also { spent += cost(it) }
+            }
+        }
+    }
+
+    /** The path commands a picture's kept plan holds. */
+    fun cost(picture: LitVmPicture): Int = (picture as? LitVmPicture.Drawn)?.tile?.cost ?: 0
+
+    /** The picture without its plan. */
+    fun released(picture: LitVmPicture): LitVmPicture =
+        if(picture is LitVmPicture.Drawn && picture.tile != null) LitVmPicture.Drawn(picture.svg, picture.source, null) else picture
+
+    /** The plan to draw [picture] at [pixels]: the kept tile plan when it is that size, else planned now from its text. Off the main thread. */
+    fun plan(picture: LitVmPicture.Drawn, pixels: Double): NftPicturePlan.Plan? {
+        picture.tile?.let { if(it.size == pixels) return it }
+        return try {
+            SvgSubset.parse(picture.svg)?.let { NftPicturePlan.prepare(it, pixels) }
+        } catch(e: CancellationException) {
+            throw e
+        } catch(t: Throwable) {
+            null
+        }
+    }
+
+    /** [block]'s picture, or no picture when anything at all is thrown (out of memory included); cancellation goes on. */
+    fun guard(block: () -> LitVmPicture): LitVmPicture = try {
+        block()
+    } catch(e: CancellationException) {
+        throw e
+    } catch(t: Throwable) {
+        LitVmPicture.None
+    }
+
+    fun prepare(metadata: NftMetadata?, tilePixels: Double): LitVmPicture = guard { unguarded(metadata, tilePixels) }
+
+    private fun unguarded(metadata: NftMetadata?, tilePixels: Double): LitVmPicture = when(val image = metadata?.image) {
         null, NftMetadata.Image.None -> LitVmPicture.None
         is NftMetadata.Image.Hosted -> LitVmPicture.Hosted(image.host)
         is NftMetadata.Image.Svg -> {
-            val drawing = SvgSubset.parse(image.source)
-            val tile = drawing?.let { NftPicturePlan.prepare(it, tilePixels) }
-            val detail = drawing?.let { NftPicturePlan.prepare(it, detailPixels) }
-            if(tile == null || detail == null) LitVmPicture.None
-            else LitVmPicture.Drawn(tile, detail, LitVmModel.sourceHash(image.source.encodeToByteArray()))
+            val tile = SvgSubset.parse(image.source)?.let { NftPicturePlan.prepare(it, tilePixels) }
+            if(tile == null) LitVmPicture.None
+            else LitVmPicture.Drawn(image.source, LitVmModel.sourceHash(image.source.encodeToByteArray()), tile)
         }
         is NftMetadata.Image.Raster -> {
             val bytes = image.bytes
@@ -419,8 +502,9 @@ object LitVmDrawing {
  * Cancellation is rethrown.
  */
 object LitVmReader {
-    suspend fun read(calls: LitVmCalls, verifyChain: suspend (LitVmCalls) -> Unit, owner: EvmAddress, tilePixels: Double, detailPixels: Double,
-                     collections: List<EvmAddress> = KnownCollections.on(calls.network)): LitVmRead {
+    suspend fun read(calls: LitVmCalls, verifyChain: suspend (LitVmCalls) -> Unit, owner: EvmAddress, tilePixels: Double,
+                     collections: List<EvmAddress> = KnownCollections.on(calls.network),
+                     known: Map<EvmAddress, Erc721Collection> = emptyMap()): LitVmRead {
         val start = calls.clock()
         val refresh = calls.until(start + LitVmModel.REFRESH_MS)
         try {
@@ -453,7 +537,8 @@ object LitVmReader {
             val bounded = refresh.until(now + LitVmModel.COLLECTION_MS)
             var collection: Erc721Collection? = null
             val result = try {
-                collection = Erc721.read(bounded, contract)
+                //Facts kept from this visit's earlier read are not asked again
+                collection = known[contract] ?: Erc721.read(bounded, contract)
                 //A built-in contract that does not answer as a collection is unread, never an empty one
                 val read = collection
                 if(read == null) {
@@ -478,11 +563,7 @@ object LitVmReader {
         }
         //Stopped: the refresh's three minutes left a collection unreached, or ended the one being read
         val stopped = problem == null && (cut || results.any { it.status == LitVmCollection.Status.NOT_REACHED })
-        val pictures = HashMap<String, LitVmPicture>()
-        for(nft in LitVmModel.shownTokens(results).first) {
-            currentCoroutineContext().ensureActive()
-            pictures[LitVmModel.tileKey(nft)] = LitVmPictures.prepare(nft.metadata, tilePixels, detailPixels)
-        }
+        val pictures = LitVmPictures.prepareAll(LitVmModel.shownTokens(results).first, tilePixels)
         return LitVmRead(owner, balance, problem, null, results, stopped, pictures)
     }
 
@@ -509,7 +590,7 @@ object LitVmReader {
      */
     internal fun reason(e: Exception): LitVmRead.Reason = when(e) {
         is RateLimitedException -> LitVmRead.Reason.RATE_LIMITED
-        is TimedOut -> LitVmRead.Reason.TIMED_OUT
+        is TimedOut, is HttpEndpoint.TookTooLong, is HttpEndpoint.DeadlinePassed, is java.net.SocketTimeoutException -> LitVmRead.Reason.TIMED_OUT
         is LitVmException -> if(e.message == LitVmModel.WRONG_CHAIN) LitVmRead.Reason.WRONG_CHAIN else LitVmRead.Reason.UNREACHABLE
         else -> LitVmRead.Reason.UNREACHABLE
     }
@@ -544,32 +625,40 @@ object LitVmClients {
 
 /**
  * One run at a time per key: a caller asking while one runs shares its answer (or its failure). A run cancelled by its own
- * caller is not handed on: the next waiting caller runs it again.
+ * caller is not handed on: the next waiting caller runs it again, and a caller arriving after the cancel (the screen
+ * opened again after it was left) runs at once rather than wait for the cancelled run to wind down.
  */
 class Coalescer<K : Any, V> {
     private class Done<V>(val value: V?, val error: Throwable?)
 
-    private val inflight = java.util.concurrent.ConcurrentHashMap<K, CompletableDeferred<Done<V>?>>()
+    private class Entry<V>(val owner: Job?, val done: CompletableDeferred<Done<V>?>)
+
+    private val inflight = java.util.concurrent.ConcurrentHashMap<K, Entry<V>>()
 
     @Suppress("UNCHECKED_CAST")
     suspend fun run(key: K, block: suspend () -> V): V {
         while(true) {
-            val mine = CompletableDeferred<Done<V>?>()
+            val mine = Entry<V>(currentCoroutineContext()[Job], CompletableDeferred())
             val other = inflight.putIfAbsent(key, mine)
             if(other != null) {
-                val done = other.await() ?: continue
-                done.error?.let { throw it }
-                return done.value as V
+                if(other.owner?.isCancelled == true) {
+                    //A run whose caller left: never joined; this caller takes the key, or tries again if another did
+                    if(!inflight.replace(key, other, mine)) continue
+                } else {
+                    val done = other.done.await() ?: continue
+                    done.error?.let { throw it }
+                    return done.value as V
+                }
             }
             try {
                 val value = block()
-                mine.complete(Done(value, null))
+                mine.done.complete(Done(value, null))
                 return value
             } catch(e: CancellationException) {
-                mine.complete(null)
+                mine.done.complete(null)
                 throw e
             } catch(e: Throwable) {
-                mine.complete(Done(null, e))
+                mine.done.complete(Done(null, e))
                 throw e
             } finally {
                 inflight.remove(key, mine)

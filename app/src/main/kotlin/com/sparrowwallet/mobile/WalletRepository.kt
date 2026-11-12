@@ -650,10 +650,10 @@ class WalletRepository(context: Context) {
     /**
      * Reads [address]'s LitVM account (see [LitVmReader]) through the coin's proxy, on a new client each time (a client
      * remembers a wrong chain) closed when the read ends or is cancelled. Null, with no request, while air-gapped. Only
-     * the LitVM screen calls this, while it is open.
+     * the LitVM screen calls this, during its visit. [known]: the collections' facts kept from the visit's earlier read.
      */
     suspend fun readLitVm(data: VaultData, address: com.sparrowwallet.mobile.crypto.evm.EvmAddress, tilePixels: Double,
-                          detailPixels: Double): LitVmRead? {
+                          known: Map<com.sparrowwallet.mobile.crypto.evm.EvmAddress, com.sparrowwallet.mobile.electrum.litvm.Erc721Collection>): LitVmRead? {
         if(NetworkPolicy.blocked) return null
         val proxy = indexerProxy(serverSettings(coin(data), network(data)))
         return litVmReads.run(address.toString()) {
@@ -661,7 +661,7 @@ class WalletRepository(context: Context) {
                 LitVmClients.use(NetworkPolicy.blocked,
                     open = { com.sparrowwallet.mobile.electrum.litvm.LitVmRpc(com.sparrowwallet.mobile.electrum.litvm.LitVmNetwork.LITEFORGE_TESTNET, proxy) },
                     close = { it.close() }) { rpc ->
-                    LitVmReader.read(rpc, { (it as com.sparrowwallet.mobile.electrum.litvm.LitVmRpc).verifyChain() }, address, tilePixels, detailPixels)
+                    LitVmReader.read(rpc, { (it as com.sparrowwallet.mobile.electrum.litvm.LitVmRpc).verifyChain() }, address, tilePixels, known = known)
                 }
             }
         }

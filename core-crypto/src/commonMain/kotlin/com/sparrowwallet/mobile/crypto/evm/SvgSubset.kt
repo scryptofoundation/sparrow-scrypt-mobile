@@ -172,7 +172,7 @@ object SvgSubset {
 
     data object Close : Segment
 
-    /** A list no caller can change (not a MutableList, so a cast cannot reach the storage). Also used by NftPicturePlan. */
+    /** A list no caller can change (not a MutableList, so a cast cannot reach the storage). Also used by NftPicturePlan and EvmJson. */
     internal class ReadOnlyList<T>(items: List<T>) : AbstractList<T>() {
         private val items: Array<Any?> = items.toTypedArray<Any?>()
 

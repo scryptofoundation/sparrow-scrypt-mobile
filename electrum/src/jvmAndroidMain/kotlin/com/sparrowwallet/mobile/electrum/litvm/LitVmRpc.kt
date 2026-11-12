@@ -98,7 +98,11 @@ class LitVmRpc private constructor(private val shared: Shared, private val deadl
 
         fun monotonicMillis(): Long = System.nanoTime() / 1_000_000
 
-        /** A client of another URL and clock, for tests against a local server. */
+        /**
+         * A client of another URL and clock, for this module's tests against a local server only. Internal (no other
+         * module, the app included, can call it; this module has no androidx annotations for @VisibleForTesting): the app
+         * builds a client only through the public constructor, at the network's fixed URL.
+         */
         fun forTest(network: LitVmNetwork, proxy: SocksProxy?, deadline: () -> Long?, clock: () -> Long, rpcUrl: String): LitVmRpc =
             LitVmRpc(Shared(network, rpcUrl, proxy, clock), deadline)
     }

@@ -98,6 +98,9 @@ class HttpEndpoint(
     /** Not sent: the request's [Deadline] had passed. */
     class DeadlinePassed : IOException("Timed out")
 
+    /** Sent, but the whole request ran past its time (connect and handshake included) and was cut. */
+    class TookTooLong(cause: IOException) : IOException("Request took too long", cause)
+
     private class Conn(val raw: Socket, val socket: Socket, val input: InputStream, val release: () -> Unit) {
         fun close() {
             runCatching { socket.close() }
@@ -111,13 +114,16 @@ class HttpEndpoint(
 
     private val lock = Mutex()
     @Volatile private var conn: Conn? = null
+    //The socket a request is connecting or handshaking on, so close() can cut it as air-gapped mode does
+    @Volatile private var connecting: Socket? = null
 
     private fun refuseUnusable() {
         if(!usable()) throw IOException("$url is closed")
     }
 
-    /** Closes the kept connection, if any. */
+    /** Closes the kept connection, if any, and cuts a connect or handshake in progress. */
     fun close() {
+        connecting?.let { runCatching { it.close() } }
         conn?.let { drop(it) }
     }
 
@@ -195,7 +201,12 @@ class HttpEndpoint(
         var status = -1
         try {
             if(c == null) {
-                val made = open(raw, readTimeoutMs)
+                connecting = raw
+                val made = try {
+                    open(raw, readTimeoutMs)
+                } finally {
+                    connecting = null
+                }
                 c = made
                 conn = made
                 //Closed while connecting: the new connection is dropped, never used or kept
@@ -230,7 +241,7 @@ class HttpEndpoint(
         } catch(e: IOException) {
             c?.let { drop(it) } ?: runCatching { raw.close() }
             if(NetworkPolicy.blocked) throw AirGappedException(label)
-            if(expired.get()) throw IOException("Request took too long", e)
+            if(expired.get()) throw TookTooLong(e)
             //a dead kept socket ends or resets at once; a slow server times out and must not get the GET twice
             if(kept != null && !answered && e !is java.net.SocketTimeoutException) throw StaleConnection(e)
             throw e

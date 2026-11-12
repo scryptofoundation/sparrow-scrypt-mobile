@@ -120,7 +120,7 @@ class LitVmModelTest {
     private fun read(vararg collections: LitVmCollection, problem: LitVmRead.Problem? = null, detail: LitVmRead.Reason? = null,
                      balance: UInt256? = wei("34600000000000000")): LitVmRead {
         val all = collections.toList()
-        val pictures = LitVmModel.shownTokens(all).first.associate { LitVmModel.tileKey(it) to LitVmPictures.prepare(it.metadata, 120.0, 240.0) }
+        val pictures = LitVmModel.shownTokens(all).first.associate { LitVmModel.tileKey(it) to LitVmPictures.prepare(it.metadata, 120.0) }
         return LitVmRead(owner, balance, problem, detail, all, stopped = false, pictures = pictures)
     }
 
@@ -146,8 +146,11 @@ class LitVmModelTest {
         assertEquals(LitVmModel.BUILT_IN, tile.marker)
         assertEquals("$badge/${KnownCollections.vaultBadgeTokenId(owner, 1)}", tile.key)
         val drawn = assertIs<LitVmPicture.Drawn>(tile.picture)
-        assertEquals(120.0, drawn.tile.size)
-        assertEquals(240.0, drawn.detail.size)
+        assertEquals(120.0, drawn.tile!!.size)
+        assertEquals(svg, drawn.svg)
+        //Only the tile's plan is made in the read; the detail's is made when the detail opens
+        assertEquals(240.0, LitVmPictures.plan(drawn, 240.0)!!.size)
+        assertEquals(120.0, LitVmPictures.plan(drawn, 120.0)!!.size)
         assertNull(LitVmModel.placeholder(tile.picture))
     }
 
@@ -371,18 +374,18 @@ class LitVmModelTest {
 
     @Test
     fun aRasterIsDecidedByItsBytesNotItsLabel() {
-        val raster = LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Raster("image/jpeg", png(64, 32))), 120.0, 240.0)
+        val raster = LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Raster("image/jpeg", png(64, 32))), 120.0)
         val shown = assertIs<LitVmPicture.Raster>(raster)
         assertEquals(64, shown.width)
         assertEquals(32, shown.height)
         assertContentEquals(png(64, 32), shown.bytes)
         assertEquals(LitVmPicture.None, LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Raster("image/png",
-            "<svg/>".encodeToByteArray())), 120.0, 240.0))
+            "<svg/>".encodeToByteArray())), 120.0))
         assertEquals(LitVmPicture.None, LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Raster("image/png", png(5000, 10))),
-            120.0, 240.0))
-        assertEquals(LitVmPicture.None, LitVmPictures.prepare(null, 120.0, 240.0))
-        assertEquals(LitVmPicture.None, LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.None), 120.0, 240.0))
-        assertEquals(LitVmPicture.Hosted("IPFS"), LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Hosted("IPFS")), 120.0, 240.0))
+            120.0))
+        assertEquals(LitVmPicture.None, LitVmPictures.prepare(null, 120.0))
+        assertEquals(LitVmPicture.None, LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.None), 120.0))
+        assertEquals(LitVmPicture.Hosted("IPFS"), LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Hosted("IPFS")), 120.0))
     }
 
     @Test
@@ -431,21 +434,107 @@ class LitVmModelTest {
     @Test
     fun aChangedPictureGetsANewKey() {
         val other = svg.replace("#345d9d", "#9d5d34")
-        val before = assertIs<LitVmPicture.Drawn>(LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Svg(svg)), 120.0, 240.0))
-        val after = assertIs<LitVmPicture.Drawn>(LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Svg(other)), 120.0, 240.0))
-        val again = assertIs<LitVmPicture.Drawn>(LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Svg(svg)), 120.0, 240.0))
+        val before = assertIs<LitVmPicture.Drawn>(LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Svg(svg)), 120.0))
+        val after = assertIs<LitVmPicture.Drawn>(LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Svg(other)), 120.0))
+        val again = assertIs<LitVmPicture.Drawn>(LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Svg(svg)), 120.0))
         val id = UInt256.of(1)
         assertTrue(LitVmModel.pictureKey(LitVmNetwork.LITEFORGE_TESTNET, badge, id, before.source, 120.0) !=
             LitVmModel.pictureKey(LitVmNetwork.LITEFORGE_TESTNET, badge, id, after.source, 120.0))
         assertEquals(before.source, again.source)
         val r1 = assertIs<LitVmPicture.Raster>(LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Raster("image/png", png(8, 8))),
-            120.0, 240.0))
+            120.0))
         val r2 = assertIs<LitVmPicture.Raster>(LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Raster("image/png", png(8, 9))),
-            120.0, 240.0))
+            120.0))
         assertTrue(r1.source != r2.source)
     }
 
+    // ---- what one read may hold ----
+
+    /** The reviewer's heavy picture: about 48,000 commands from 19,000 characters, under the per-picture cap. */
+    private val heavySvg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><path transform=\"scale(1000000)\" d=\"M0 0" +
+        " S999999 999999 1 1".repeat(950) + "\"/></svg>"
+
+    @Test
+    fun theBudgetStopsPreparingOnceItIsSpent() {
+        val costs = listOf(90, 90, 90, 90, 5, 90)
+        var prepared = 0
+        val kept = LitVmPictures.budgeted(costs, 200, prepare = { prepared++; it }, cost = { it }, none = { 0 })
+        assertEquals(listOf(90, 90, 90, 0, 0, 0), kept)
+        assertEquals(3, prepared, "nothing is prepared once the budget is spent")
+        assertTrue(kept.sum() <= 200 + 90)
+        assertEquals(List(3) { 1 }, LitVmPictures.budgeted(listOf(1, 1, 1), 200, prepare = { it }, cost = { it }, none = { 0 }))
+    }
+
+    @Test
+    fun heavyPicturesStopAtTheReadsBudgetAndTheRestAreListedWithoutAPicture(): Unit = runBlocking {
+        val one = assertIs<LitVmPicture.Drawn>(LitVmPictures.prepare(NftMetadata("", "", emptyList(), NftMetadata.Image.Svg(heavySvg)), 120.0))
+        val cost = one.tile!!.cost
+        assertTrue(cost > 10_000, "heavy: $cost")
+        assertTrue(heavySvg.length < NftMetadata.MAX_JSON_CHARS)
+        val tokens = (1..64).map { nft(it, NftMetadata("WORLD $it", "", emptyList(), NftMetadata.Image.Svg(heavySvg))) }
+        val pictures = LitVmPictures.prepareAll(tokens, 120.0)
+        val kept = pictures.values.sumOf { LitVmPictures.cost(it) }
+        assertTrue(kept <= LitVmPictures.READ_BUDGET + cost, "kept $kept")
+        assertTrue(pictures.values.count { it == LitVmPicture.None } > 0)
+        val view = LitVmModel.build(owner, LitVmRead(owner, UInt256.ZERO, null, null, listOf(listed(*tokens.toTypedArray())), false, pictures), false)
+        assertEquals(64, view.tiles.size)
+        assertEquals("WORLD 64", view.tiles.last().label)
+        assertEquals(LitVmModel.NO_PICTURE, LitVmModel.placeholder(view.tiles.last().picture)!!.text)
+    }
+
+    @Test
+    fun anyThrowableWhilePreparingIsNoPictureButCancellationGoesOn() {
+        assertEquals(LitVmPicture.None, LitVmPictures.guard { throw OutOfMemoryError("test") })
+        assertEquals(LitVmPicture.None, LitVmPictures.guard { throw IllegalStateException("test") })
+        kotlin.test.assertFailsWith<kotlinx.coroutines.CancellationException> { LitVmPictures.guard { throw kotlinx.coroutines.CancellationException("x") } }
+    }
+
+    /** Before a Refresh's work the last read's plans are let go; its tiles stay listed, and a picture is planned again from its source. */
+    @Test
+    fun aReleasedReadHoldsNoPlansButStillShowsItsTiles() {
+        val read = read(listed(nft(1), nft(2)))
+        val released = LitVmModel.released(read)
+        assertTrue(released.pictures.values.all { it is LitVmPicture.Drawn && it.tile == null })
+        assertEquals(LitVmModel.build(owner, read, false).tiles.map { it.key }, LitVmModel.build(owner, released, false).tiles.map { it.key })
+        val again = released.pictures.values.first() as LitVmPicture.Drawn
+        assertEquals(120.0, LitVmPictures.plan(again, 120.0)!!.size)
+        assertEquals((read.pictures.values.first() as LitVmPicture.Drawn).source, again.source)
+    }
+
+    @Test
+    fun aTimeoutMidRequestIsSaidAsTooLong() {
+        assertEquals(LitVmRead.Reason.TIMED_OUT, LitVmReader.reason(java.net.SocketTimeoutException("read timed out")))
+        assertEquals(LitVmRead.Reason.TIMED_OUT, LitVmReader.reason(com.sparrowwallet.mobile.electrum.HttpEndpoint.TookTooLong(IOException("x"))))
+        assertEquals(LitVmRead.Reason.TIMED_OUT, LitVmReader.reason(com.sparrowwallet.mobile.electrum.HttpEndpoint.DeadlinePassed()))
+        assertEquals(LitVmRead.Reason.TIMED_OUT, LitVmReader.reason(TimedOut()))
+        assertEquals(LitVmRead.Reason.UNREACHABLE, LitVmReader.reason(IOException("Request took too long")))
+    }
+
     // ---- the read ----
+
+    /** A collection's facts are kept for the visit: a Refresh reads only the account's tokens, not the contract again. */
+    @Test
+    fun aSecondReadReusesTheCollectionsFacts(): Unit = runBlocking {
+        val chain = FakeChain()
+        chain.badges[badge] = FakeBadge(held = setOf(1, 2))
+        val first = LitVmReader.read(chain.root, chain::verify, owner, 120.0)
+        val firstCount = chain.log.size
+        val facts = LitVmModel.keptFacts(emptyMap(), first)
+        assertEquals(setOf(badge), facts.keys)
+        chain.log.clear()
+        val second = LitVmReader.read(chain.root, chain::verify, owner, 120.0, known = facts)
+        assertEquals(firstCount - 8, chain.log.size, "${chain.log}")
+        assertTrue(chain.log.none { it.startsWith("code ") || it.contains(" 01ffc9a7") || it.contains(" 06fdde03") || it.contains(" 95d89b41") })
+        assertEquals(listOf("verify", "balance"), chain.log.take(2))
+        assertEquals(first.collections.single().tokens.map { it.tokenId }, second.collections.single().tokens.map { it.tokenId })
+        assertTrue(second.collections.single().collection!!.soulbound)
+        //A failed chain check drops what was kept
+        val failed = LitVmRead(owner, null, LitVmRead.Problem.CHAIN, LitVmRead.Reason.WRONG_CHAIN, emptyList(), false, emptyMap())
+        assertTrue(LitVmModel.keptFacts(facts, failed).isEmpty())
+        assertEquals(facts, LitVmModel.keptFacts(facts, null))
+        val balanceFailed = LitVmRead(owner, null, LitVmRead.Problem.BALANCE, LitVmRead.Reason.UNREACHABLE, emptyList(), false, emptyMap())
+        assertEquals(facts, LitVmModel.keptFacts(facts, balanceFailed))
+    }
 
     /** The read belongs to the visit: opening a detail does not stop it, and coming back never starts one by itself. */
     @Test
@@ -517,7 +606,7 @@ class LitVmModelTest {
     fun theChainIsCheckedFirstThenTheBalanceThenTheCollection(): Unit = runBlocking {
         val chain = FakeChain()
         chain.badges[badge] = FakeBadge(held = setOf(1, 2))
-        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0)
+        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0)
         assertEquals(listOf("verify", "balance"), chain.log.take(2))
         assertTrue(chain.log.drop(2).all { it.startsWith("call ") || it.startsWith("code ") })
         assertNull(read.problem)
@@ -536,7 +625,7 @@ class LitVmModelTest {
     fun aWrongChainStopsBeforeAnythingElse(): Unit = runBlocking {
         val chain = FakeChain()
         chain.verifyFails = LitVmException("This server is for another chain.")
-        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0)
+        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0)
         assertEquals(listOf("verify"), chain.log)
         assertEquals(LitVmRead.Problem.CHAIN, read.problem)
         assertEquals(LitVmRead.Reason.WRONG_CHAIN, read.reason)
@@ -548,7 +637,7 @@ class LitVmModelTest {
     fun anHttpLayerMessageIsNeverShown(): Unit = runBlocking {
         val chain = FakeChain()
         chain.balanceFails = IOException("connect to 10.0.0.1:443 failed: secret detail")
-        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0)
+        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0)
         assertEquals(LitVmRead.Problem.BALANCE, read.problem)
         assertEquals(LitVmRead.Reason.UNREACHABLE, read.reason)
         assertEquals(LitVmModel.UNREACHABLE, LitVmModel.build(owner, read, false).statusDetail)
@@ -576,21 +665,21 @@ class LitVmModelTest {
     fun aServersErrorTextNeverReachesTheScreen(): Unit = runBlocking {
         val chain = FakeChain()
         chain.verifyFails = LitVmException(hostile)
-        val onChain = LitVmModel.build(owner, LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0), false)
+        val onChain = LitVmModel.build(owner, LitVmReader.read(chain.root, chain::verify, owner, 120.0), false)
         assertEquals(LitVmModel.CHAIN_FAILED, onChain.status)
         assertEquals(LitVmModel.UNREACHABLE, onChain.statusDetail)
         assertOnlyAppWords(onChain, hostile, "evil")
 
         val balance = FakeChain()
         balance.balanceFails = LitVmException(hostile)
-        val onBalance = LitVmModel.build(owner, LitVmReader.read(balance.root, balance::verify, owner, 120.0, 240.0), false)
+        val onBalance = LitVmModel.build(owner, LitVmReader.read(balance.root, balance::verify, owner, 120.0), false)
         assertEquals(LitVmModel.BALANCE_FAILED, onBalance.status)
         assertEquals(LitVmModel.UNREACHABLE, onBalance.statusDetail)
         assertOnlyAppWords(onBalance, hostile, "evil")
 
         val collection = FakeChain()
         collection.badges[badge] = FakeBadge(held = setOf(1), error = hostile)
-        val onCollection = LitVmModel.build(owner, LitVmReader.read(collection.root, collection::verify, owner, 120.0, 240.0), false)
+        val onCollection = LitVmModel.build(owner, LitVmReader.read(collection.root, collection::verify, owner, 120.0), false)
         assertEquals(listOf(LitVmNote(LitVmModel.shortAddress(badge), LitVmModel.COULD_NOT_BE_READ)), onCollection.notes)
         assertNull(onCollection.status)
         assertOnlyAppWords(onCollection, hostile, "evil")
@@ -601,17 +690,17 @@ class LitVmModelTest {
     fun theClientsOwnMessagesNeverReachTheScreen(): Unit = runBlocking {
         val worlds = FakeChain()
         worlds.badges[badge] = FakeBadge(held = setOf(1), worldsAnswer = ByteArray(3))
-        val view = LitVmModel.build(owner, LitVmReader.read(worlds.root, worlds::verify, owner, 120.0, 240.0), false)
+        val view = LitVmModel.build(owner, LitVmReader.read(worlds.root, worlds::verify, owner, 120.0), false)
         assertEquals(listOf(LitVmNote("Super Litecoin Vault Badge", LitVmModel.COULD_NOT_BE_READ)), view.notes)
         assertOnlyAppWords(view, "Invalid", "worlds()")
 
         val http = FakeChain()
         http.verifyFails = LitVmException("The LitVM server answered HTTP 502")
-        assertOnlyAppWords(LitVmModel.build(owner, LitVmReader.read(http.root, http::verify, owner, 120.0, 240.0), false), "HTTP", "502")
+        assertOnlyAppWords(LitVmModel.build(owner, LitVmReader.read(http.root, http::verify, owner, 120.0), false), "HTTP", "502")
 
         val slow = FakeChain()
         slow.verifyFails = TimedOut()
-        val timed = LitVmModel.build(owner, LitVmReader.read(slow.root, slow::verify, owner, 120.0, 240.0), false)
+        val timed = LitVmModel.build(owner, LitVmReader.read(slow.root, slow::verify, owner, 120.0), false)
         assertEquals(LitVmModel.CHAIN_FAILED, timed.status)
         assertEquals("The LitVM server took too long.", timed.statusDetail)
         assertOnlyAppWords(timed, "Timed out")
@@ -631,7 +720,7 @@ class LitVmModelTest {
         chain.step = 30_000
         val contracts = (1..5).map { EvmAddress.parse("0x" + "0".repeat(39) + it)!! }
         for(c in contracts) chain.badges[c] = FakeBadge(held = setOf(1))
-        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0, contracts)
+        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, contracts)
         //verify 0-30, balance 30-60; then each collection gets 60 seconds: two requests
         val starts = chain.times
         assertTrue(starts.all { it < LitVmModel.REFRESH_MS }, "no request starts after three minutes: $starts")
@@ -651,7 +740,7 @@ class LitVmModelTest {
         val spent = FakeChain()
         spent.step = 65_000
         spent.badges[badge] = FakeBadge(held = setOf(1))
-        val read = LitVmReader.read(spent.root, spent::verify, owner, 120.0, 240.0)
+        val read = LitVmReader.read(spent.root, spent::verify, owner, 120.0)
         assertEquals(LitVmCollection.Status.FAILED, read.collections.single().status)
         assertTrue(read.stopped)
         assertEquals(LitVmModel.STOPPED, LitVmModel.build(owner, read, false).status)
@@ -659,7 +748,7 @@ class LitVmModelTest {
         val minute = FakeChain()
         minute.step = 40_000
         minute.badges[badge] = FakeBadge(held = setOf(1))
-        val cut = LitVmReader.read(minute.root, minute::verify, owner, 120.0, 240.0)
+        val cut = LitVmReader.read(minute.root, minute::verify, owner, 120.0)
         assertEquals(LitVmCollection.Status.FAILED, cut.collections.single().status)
         assertFalse(cut.stopped)
         assertEquals(listOf(LitVmNote("0x3eEd...51B3", LitVmModel.COULD_NOT_BE_READ)), LitVmModel.build(owner, cut, false).notes)
@@ -668,7 +757,7 @@ class LitVmModelTest {
         val late = FakeChain()
         late.step = 50_000
         late.badges[badge] = FakeBadge(held = setOf(1))
-        val minuteFirst = LitVmReader.read(late.root, late::verify, owner, 120.0, 240.0)
+        val minuteFirst = LitVmReader.read(late.root, late::verify, owner, 120.0)
         assertEquals(LitVmCollection.Status.FAILED, minuteFirst.collections.single().status)
         assertFalse(minuteFirst.stopped)
     }
@@ -683,7 +772,7 @@ class LitVmModelTest {
         chain.badges[badge] = FakeBadge(held = setOf(1), worlds = 1)
         //The badge's one tokenURI answer takes two minutes: it starts within the minute and ends past three minutes
         chain.slow = { if(it.startsWith("call $badge c87b56dd")) 120_000 else 0 }
-        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0, listOf(first, badge))
+        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, listOf(first, badge))
         assertTrue(chain.root.clock() >= LitVmModel.REFRESH_MS)
         assertEquals(listOf(LitVmCollection.Status.FAILED, LitVmCollection.Status.LISTED), read.collections.map { it.status })
         assertEquals(0, read.collections[1].failed)
@@ -696,7 +785,7 @@ class LitVmModelTest {
     fun malformedOwnershipAnswersAreNotAnEmptyAccount(): Unit = runBlocking {
         val chain = FakeChain()
         chain.badges[badge] = FakeBadge(held = setOf(1, 2), badOwner = true)
-        val view = LitVmModel.build(owner, LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0), false)
+        val view = LitVmModel.build(owner, LitVmReader.read(chain.root, chain::verify, owner, 120.0), false)
         assertFalse(view.empty)
         assertTrue(view.tiles.isEmpty())
         assertTrue(view.notes.any { it.text == LitVmModel.COULD_NOT_BE_READ })
@@ -709,7 +798,7 @@ class LitVmModelTest {
         chain.badges[badge] = FakeBadge(held = setOf(1, 2, 3))
         chain.badges[other] = FakeBadge(held = setOf(1))
         chain.rateLimitOn = { it.startsWith("call $badge 6352211e") }
-        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0, listOf(badge, other))
+        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, listOf(badge, other))
         val at = chain.log.indexOfFirst { it.startsWith("call $badge 6352211e") }
         assertEquals(at, chain.log.size - 1, "nothing after the 429: ${chain.log}")
         assertEquals(LitVmRead.Problem.RATE_LIMITED, read.problem)
@@ -724,7 +813,7 @@ class LitVmModelTest {
     fun aRateLimitOnTheChainCheckIsSaidPlainly(): Unit = runBlocking {
         val chain = FakeChain()
         chain.verifyFails = RateLimitedException("429")
-        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0)
+        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0)
         assertEquals(LitVmRead.Problem.CHAIN, read.problem)
         assertEquals(LitVmRead.Reason.RATE_LIMITED, read.reason)
         assertEquals(LitVmModel.CHAIN_FAILED, LitVmModel.build(owner, read, false).status)
@@ -736,7 +825,7 @@ class LitVmModelTest {
     fun airGappedModeMidReadIsShownNotThrown(): Unit = runBlocking {
         val chain = FakeChain()
         chain.verifyFails = com.sparrowwallet.mobile.crypto.AirGappedException("LitVM")
-        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0)
+        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0)
         assertEquals(LitVmRead.Problem.AIR_GAPPED, read.problem)
         assertEquals(LitVmModel.AIR_GAPPED, LitVmModel.build(owner, read, false).status)
     }
@@ -745,7 +834,7 @@ class LitVmModelTest {
     fun aBuiltInContractThatIsNotACollectionCouldNotBeRead(): Unit = runBlocking {
         val chain = FakeChain()
         chain.badges[badge] = FakeBadge(held = emptySet(), code = false)
-        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0)
+        val read = LitVmReader.read(chain.root, chain::verify, owner, 120.0)
         assertEquals(LitVmCollection.Status.FAILED, read.collections.single().status)
         val view = LitVmModel.build(owner, read, false)
         assertFalse(view.empty)
@@ -756,7 +845,7 @@ class LitVmModelTest {
     fun anAccountHoldingNoBadgeIsEmpty(): Unit = runBlocking {
         val chain = FakeChain()
         chain.badges[badge] = FakeBadge(held = emptySet())
-        val view = LitVmModel.build(owner, LitVmReader.read(chain.root, chain::verify, owner, 120.0, 240.0), false)
+        val view = LitVmModel.build(owner, LitVmReader.read(chain.root, chain::verify, owner, 120.0), false)
         assertTrue(view.empty)
         assertNull(view.status)
     }
@@ -791,6 +880,21 @@ class LitVmModelTest {
         assertEquals("down", first.await().exceptionOrNull()!!.message)
         assertEquals("down", second.await().exceptionOrNull()!!.message)
         assertEquals(1, runs)
+    }
+
+    /** Reopening after leaving: a read whose owner was cancelled is not joined, even while it is still winding down. */
+    @Test
+    fun aCancelledReadIsNotJoined(): Unit = runBlocking {
+        val reads = Coalescer<String, Int>()
+        val stuck = CompletableDeferred<Unit>()
+        val first = async(kotlinx.coroutines.Dispatchers.Default) {
+            reads.run("w") { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { stuck.await() }; 1 }
+        }
+        kotlinx.coroutines.delay(100)
+        first.cancel()
+        assertEquals(2, kotlinx.coroutines.withTimeout(5_000) { reads.run("w") { 2 } })
+        stuck.complete(Unit)
+        kotlin.runCatching { first.await() }
     }
 
     @Test

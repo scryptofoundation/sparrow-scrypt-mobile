@@ -60,8 +60,10 @@ import com.sparrowwallet.mobile.crypto.NetworkPolicy
 import com.sparrowwallet.mobile.crypto.evm.EvmAddress
 import com.sparrowwallet.mobile.crypto.evm.NftPicturePlan
 import com.sparrowwallet.mobile.crypto.evm.SvgSubset
+import com.sparrowwallet.mobile.electrum.litvm.Erc721Collection
 import com.sparrowwallet.mobile.electrum.litvm.LitVmNetwork
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -81,7 +83,11 @@ import kotlinx.coroutines.withContext
  * visit) cancels it, which closes its client.
  */
 internal class LitVmVisit {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    //An unexpected failure of a read (out of memory included) is said as the server not reached, never a crash
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + CoroutineExceptionHandler { _, _ ->
+        address?.let { read = LitVmModel.unreachable(it) }
+        reading = false
+    })
     val grid = LazyGridState()
     var address by mutableStateOf<EvmAddress?>(null)
     var addressFailed by mutableStateOf(false)
@@ -90,6 +96,8 @@ internal class LitVmVisit {
     var requested by mutableIntStateOf(1)
     var done by mutableIntStateOf(0)
     var names by mutableStateOf<Map<EvmAddress, String>>(emptyMap())
+    /** The collections' facts kept for the visit, so a Refresh does not ask the contract again (see [LitVmModel.keptFacts]). */
+    var facts by mutableStateOf<Map<EvmAddress, Erc721Collection>>(emptyMap())
 
     /** Starts [work] as this visit's read; [reading] until it ends. */
     fun start(work: suspend () -> Unit) {
@@ -119,7 +127,6 @@ internal fun LitVmScreen(repo: WalletRepository, home: Screen.Home, visit: LitVm
     val gapped = NetworkPolicy.blocked
     val density = LocalDensity.current.density.toDouble()
     val tilePixels = remember(density) { NftPicturePlan.pixels(NftPicturePlan.TILE_SIZE, density) }
-    val detailPixels = remember(density) { NftPicturePlan.pixels(NftPicturePlan.DETAIL_SIZE, density) }
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
 
@@ -136,9 +143,11 @@ internal fun LitVmScreen(repo: WalletRepository, home: Screen.Home, visit: LitVm
         val from = address ?: return@LaunchedEffect
         val ticket = visit.requested
         if(!LitVmModel.shouldRead(gapped, ticket, visit.done, visit.reading)) return@LaunchedEffect
+        // the last read's plans are let go before this one's work: two reads' plans are never held together
+        visit.read?.let { visit.read = LitVmModel.released(it) }
         visit.start {
             val read = try {
-                repo.readLitVm(data, from, tilePixels, detailPixels)
+                repo.readLitVm(data, from, tilePixels, visit.facts)
             } catch(e: CancellationException) {
                 throw e
             } catch(e: Exception) {
@@ -146,6 +155,7 @@ internal fun LitVmScreen(repo: WalletRepository, home: Screen.Home, visit: LitVm
             }
             if(read != null) {
                 visit.read = read
+                visit.facts = LitVmModel.keptFacts(visit.facts, read)
                 visit.names = visit.names + LitVmModel.names(read)
             }
             visit.done = ticket
@@ -203,7 +213,7 @@ internal fun LitVmScreen(repo: WalletRepository, home: Screen.Home, visit: LitVm
             full("empty") { Text(LitVmModel.EMPTY, style = MaterialTheme.typography.bodyMedium) }
         }
         items(view.tiles, key = { "tile/${it.key}" }, contentType = { "tile" }) { tile ->
-            LitVmTileCard(tile, onClick = { onTile(tile.key) })
+            LitVmTileCard(tile, tilePixels, onClick = { onTile(tile.key) })
         }
         view.notes.forEachIndexed { i, note ->
             full("note/$i") {
@@ -223,18 +233,20 @@ private fun LazyGridScope.full(key: String, content: @Composable () -> Unit) =
 
 /** Contract text: plain, on its own, left to right, cut with an ellipsis after [maxLines]. Never a link or selectable. */
 @Composable
-private fun PlainText(text: String, maxLines: Int, style: TextStyle, modifier: Modifier = Modifier, color: Color = Color.Unspecified) {
-    Text(text, modifier = modifier, style = style.copy(textDirection = TextDirection.Ltr), color = color, maxLines = maxLines,
+private fun PlainText(text: String, maxLines: Int, style: TextStyle, modifier: Modifier = Modifier, color: Color = Color.Unspecified,
+                      minLines: Int = 1) {
+    Text(text, modifier = modifier, style = style.copy(textDirection = TextDirection.Ltr), color = color, maxLines = maxLines, minLines = minLines,
         overflow = TextOverflow.Ellipsis)
 }
 
 @Composable
-private fun LitVmTileCard(tile: LitVmTile, onClick: () -> Unit) {
+private fun LitVmTileCard(tile: LitVmTile, pixels: Double, onClick: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Column(modifier = Modifier.padding(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            LitVmPictureBox(tile, detail = false, modifier = Modifier.fillMaxWidth().aspectRatio(1f))
-            PlainText(tile.label, 1, MaterialTheme.typography.labelMedium)
-            PlainText(tile.collection, 1, MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            LitVmPictureBox(tile, detail = false, pixels, modifier = Modifier.fillMaxWidth().aspectRatio(1f))
+            // as many lines on every tile, so a row's tiles stay one height
+            PlainText(tile.label, 3, MaterialTheme.typography.labelMedium, minLines = 3)
+            PlainText(tile.collection, 2, MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, minLines = 2)
             Text(tile.marker, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
@@ -246,23 +258,23 @@ private fun LitVmTileCard(tile: LitVmTile, onClick: () -> Unit) {
  * never draws. Any failure shows "No picture".
  */
 @Composable
-private fun LitVmPictureBox(tile: LitVmTile, detail: Boolean, modifier: Modifier) {
+private fun LitVmPictureBox(tile: LitVmTile, detail: Boolean, pixels: Double, modifier: Modifier) {
     Box(
         modifier = modifier.clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
     ) {
         val placeholder = LitVmModel.placeholder(tile.picture)
-        if(placeholder != null) Placeholder(placeholder) else LoadedPicture(tile, detail)
+        if(placeholder != null) Placeholder(placeholder) else LoadedPicture(tile, detail, pixels)
     }
 }
 
 /** A picture that is drawn or decoded (see [LitVmPictureBox]), cached by its key; "No picture" when that fails. */
 @Composable
-private fun LoadedPicture(tile: LitVmTile, detail: Boolean) {
+private fun LoadedPicture(tile: LitVmTile, detail: Boolean, drawnPixels: Double) {
     run {
         val picture = tile.picture
         val pixels = when(picture) {
-            is LitVmPicture.Drawn -> if(detail) picture.detail.size else picture.tile.size
+            is LitVmPicture.Drawn -> drawnPixels
             else -> if(detail) InscriptionPreview.DETAIL_TARGET.toDouble() else InscriptionPreview.THUMB_TARGET.toDouble()
         }
         val source = when(picture) {
@@ -280,7 +292,8 @@ private fun LoadedPicture(tile: LitVmTile, detail: Boolean) {
             }
             val made = previewDecodes.run {
                 when(picture) {
-                    is LitVmPicture.Drawn -> drawPlan(if(detail) picture.detail else picture.tile)
+                    // the kept tile plan, or one planned now from the picture's text (the detail's, or after a release)
+                    is LitVmPicture.Drawn -> LitVmPictures.plan(picture, pixels)?.let { drawPlan(it) }
                     is LitVmPicture.Raster -> decodeStill(InscriptionPreview.Shown.Image(picture.bytes, picture.width, picture.height), pixels.toInt())
                     else -> null
                 }
@@ -294,7 +307,7 @@ private fun LoadedPicture(tile: LitVmTile, detail: Boolean) {
         }
         val shown = bitmap
         when {
-            shown != null -> Image(shown.asImageBitmap(), contentDescription = tile.label, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+            shown != null -> Image(shown.asImageBitmap(), contentDescription = "NFT picture", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
             failed -> Placeholder(LitVmPlaceholder(LitVmModel.NO_PICTURE, null))
             else -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         }
@@ -429,6 +442,8 @@ private fun drawText(canvas: Canvas, paint: Paint, item: NftPicturePlan.TextItem
  */
 @Composable
 internal fun LitVmNftScreen(tileKey: String, visit: LitVmVisit, onBack: () -> Unit) {
+    val density = LocalDensity.current.density.toDouble()
+    val detailPixels = remember(density) { NftPicturePlan.pixels(NftPicturePlan.DETAIL_SIZE, density) }
     val gapped = NetworkPolicy.blocked
     val view = remember(visit.address, visit.read, gapped, visit.names) { LitVmModel.build(visit.address, visit.read, gapped, names = visit.names) }
     val tile = view.tiles.firstOrNull { it.key == tileKey }
@@ -438,7 +453,7 @@ internal fun LitVmNftScreen(tileKey: String, visit: LitVmVisit, onBack: () -> Un
         if(tile == null) {
             Text("This collectible is no longer listed.", style = MaterialTheme.typography.bodyMedium)
         } else {
-            LitVmPictureBox(tile, detail = true, modifier = Modifier.fillMaxWidth().aspectRatio(1f))
+            LitVmPictureBox(tile, detail = true, detailPixels, modifier = Modifier.fillMaxWidth().aspectRatio(1f))
             val detail = tile.detail
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

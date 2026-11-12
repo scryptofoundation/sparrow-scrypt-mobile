@@ -404,10 +404,10 @@ private fun App(repo: WalletRepository) {
                 })
             is Screen.Inscription -> InscriptionScreen(repo, s.home, s.tile, visit ?: remember { CollectiblesVisit() },
                 onBack = { screen = Screen.Collectibles(s.home) })
-            is Screen.LitVm -> LitVmScreen(repo, s.home, litVm ?: remember { LitVmVisit() },
+            is Screen.LitVm -> LitVmScreen(repo, s.home, checkNotNull(litVm) { "A LitVM screen has its visit" },
                 onTile = { key -> screen = Screen.LitVmNft(s.home, key) },
                 onBack = { screen = s.home })
-            is Screen.LitVmNft -> LitVmNftScreen(s.tileKey, litVm ?: remember { LitVmVisit() },
+            is Screen.LitVmNft -> LitVmNftScreen(s.tileKey, checkNotNull(litVm) { "A LitVM screen has its visit" },
                 onBack = { screen = Screen.LitVm(s.home) })
             is Screen.Server -> ServerScreen(repo, s.home.data, onBack = { screen = s.home })
             is Screen.Details -> DetailsScreen(repo, s.home.name, s.home.data,
