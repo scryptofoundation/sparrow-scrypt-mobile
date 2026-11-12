@@ -107,6 +107,10 @@ class EvmVectorTest {
         EvmAccount.address(master, 0)
         assertContentEquals(before, master.privKey, "the caller's master key is untouched")
         assertFailsWith<IllegalArgumentException> { EvmAccount.address(master, -1) }
+        //Only the master key gives the account: an account-level key would silently give a wrong address
+        val accountKey = master.derivePath("m/44'/60'/0'")
+        assertFailsWith<IllegalArgumentException> { EvmAccount.address(accountKey, 0) }
+        assertFailsWith<IllegalArgumentException> { EvmAccount.address(master.deriveChild(0), 0) }
         //The object's only public function returns an EvmAddress
         val methods = EvmAccount::class.java.declaredMethods.filter { Modifier.isPublic(it.modifiers) && !it.isSynthetic }
         assertTrue(methods.isNotEmpty())
@@ -178,6 +182,29 @@ class EvmVectorTest {
             }
             assertEquals(case.str("data"), Abi.call(case.str("signature"), *args.toTypedArray()).toHex(), "${case.str("signature")} $args")
         }
+    }
+
+    @Test
+    fun boolAndBytes32Arguments() {
+        //Written out by hand: selector, then each argument as one word
+        val selector = Abi.selector("f(bool,bytes32,bool)").toHex()
+        val bytes32 = ByteArray(32) { (0xA0 + it).toByte() }
+        val expected = selector + "00".repeat(31) + "01" + bytes32.toHex() + "00".repeat(32)
+        assertEquals(expected, Abi.call("f(bool,bytes32,bool)", true, bytes32, false).toHex())
+        //The caller's array is copied, not kept
+        val data = Abi.call("g(bytes32)", bytes32)
+        bytes32.fill(0)
+        assertEquals(Abi.selector("g(bytes32)").toHex() + ByteArray(32) { (0xA0 + it).toByte() }.toHex(), data.toHex())
+    }
+
+    @Test
+    fun everySectionOfTheVectorsIsKnown() {
+        //A new section must get a test before it can be added
+        assertEquals(setOf("description", "built", "constants", "keccak", "addresses", "eip55", "abi", "json", "metadata", "clean", "tokenIds"),
+            EvmVectors.root.keys)
+        assertEquals(setOf("selectors", "calls", "bools", "uints", "addresses", "strings"), EvmVectors.obj("abi").keys)
+        assertEquals(setOf("tokenUris", "images"), EvmVectors.obj("metadata").keys)
+        assertEquals(setOf("rule", "unicodeVersion", "maxLines", "table", "codePoints", "texts"), EvmVectors.obj("clean").keys)
     }
 
     @Test
@@ -283,7 +310,7 @@ class EvmVectorTest {
             }
         }
         assertEquals(UInt256.of(4441), UInt256.parseDecimal("4441"))
-        for(bad in listOf("", "-1", "+1", " 1", "1 ", "1a", "0x10", (max + BigInteger.ONE).toString(), "1".repeat(100), "١")) {
+        for(bad in listOf("", "-1", "+1", " 1", "1 ", "1a", "0x10", (max + BigInteger.ONE).toString(), "1".repeat(100), "\u0661")) {
             assertNull(UInt256.parseDecimal(bad), bad)
         }
         assertEquals("0", UInt256.parseDecimal("000")!!.toString())
@@ -297,19 +324,23 @@ class EvmVectorTest {
     @Test
     fun evmCommonCodeUsesNoPlatformClasses() {
         val dir = File("src/commonMain/kotlin/com/sparrowwallet/mobile/crypto/evm")
-        val files = dir.listFiles { file -> file.name.endsWith(".kt") }!!.toList()
-        assertTrue(files.size >= 5)
+        val files = dir.listFiles { file -> file.name.endsWith(".kt") }!!.sortedBy { it.name }
+        assertTrue(files.map { it.name }.containsAll(listOf("Abi.kt", "EvmAccount.kt", "EvmAddress.kt", "EvmJson.kt", "Keccak.kt", "MiniJson.kt",
+            "NftMetadata.kt", "NftPicturePlan.kt", "SvgSubset.kt", "TextRules.kt", "UInt256.kt", "Utf8.kt")), files.toString())
+        val hits = mutableListOf<String>()
         for(file in files) {
-            val text = file.readText()
-            for(banned in listOf("java.", "javax.", "android.", "Charsets", "codePointAt", "Character.", "String.format", ".lowercase(", ".uppercase(",
-                    ".trim(", "isWhitespace", "isLetter", "isDigit", "Socket", "URL", "URI(", "File(", "\u2014")) {
-                assertTrue(banned !in text, "${file.name} uses $banned")
-            }
-            //Nothing from outside this module: no network, file or platform code
-            for(line in text.lines().filter { it.startsWith("import ") }) {
-                assertTrue(line.startsWith("import com.sparrowwallet.mobile.crypto."), "${file.name}: $line")
+            for((i, line) in file.readLines().withIndex()) {
+                val at = "${file.name}:${i + 1}"
+                BANNED.filter { it in line }.forEach { hits += "$at $it" }
+                PATTERNS.filter { it.containsMatchIn(line) }.forEach { hits += "$at ${it.pattern}" }
+                //Every literal is ASCII, anything else written as an escape
+                if(line.any { it.code > 0x7E || (it.code < 0x20 && it != '\t') }) hits += "$at non-ASCII"
+                //Nothing from outside this module: no network, file or platform code
+                if(line.startsWith("import ") && !line.startsWith("import com.sparrowwallet.mobile.crypto.")) hits += "$at $line"
             }
         }
+        val unexpected = hits.filterNot { hit -> KNOWN_HITS.any { (file, token) -> hit.startsWith("$file:") && hit.endsWith(" $token") } }
+        assertEquals(emptyList(), unexpected)
     }
 
     private fun results(name: String, count: Int) = EvmVectors.obj("abi")[name]!!.jsonArray.map { it.jsonObject }.also { cases ->
@@ -317,5 +348,26 @@ class EvmVectorTest {
         for(case in cases) {
             assertTrue(case.flag("refused") || "value" in case || "limit4096" in case, "neither value nor refused: $case")
         }
+    }
+
+    private companion object {
+        /**
+         * Platform Unicode data, regular expressions, text parsed as a number, platform, network or file classes. A
+         * substring scan cannot tell a String's toInt() from a Byte's, so it bans the forms that only parse text
+         * (the OrNull forms, a radix, a substring converted) and leaves the rest to review.
+         */
+        val BANNED = listOf("java.", "javax.", "android.", "Charsets", "codePointAt", "Character.", "String.format", "Regex", "toRegex", "matches(",
+            "ignoreCase", "lowercase", "uppercase", "lowercaseChar", "uppercaseChar", "trim(", "trimEnd", "trimStart", "isBlank", "isWhitespace",
+            "isLetter", "isDigit", "category", "decodeToString", "toIntOrNull", "toLongOrNull", "toDoubleOrNull", "toFloatOrNull", "digitToInt",
+            "toBigInteger", "toBigDecimal", "Socket", "URL", "URI(", "File(")
+        const val SUBSTRING_TO_NUMBER = """substring\([^()]*(\([^()]*\))?[^()]*\)\.to(Int|Long|Double|Float)\("""
+        val PATTERNS = listOf(Regex(SUBSTRING_TO_NUMBER), Regex("""\.to(Int|Long)\(\s*\d"""))
+
+        /**
+         * Hits in SvgSubset.kt, which this test may not change: its own trim(value), which removes only space, tab, line
+         * feed and carriage return; and one number token converted with toDouble() after it was checked to be ASCII
+         * digits, sign, point and exponent only. Both read and judged safe.
+         */
+        val KNOWN_HITS = listOf("SvgSubset.kt" to "trim(", "SvgSubset.kt" to SUBSTRING_TO_NUMBER)
     }
 }

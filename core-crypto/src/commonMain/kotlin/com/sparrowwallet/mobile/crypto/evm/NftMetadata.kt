@@ -63,7 +63,12 @@ data class NftMetadata(val name: String, val description: String, val attributes
         private const val MAX_BYTES_PER_CHAR = 3
         private val RASTER_TYPES = listOf("image/png", "image/jpeg", "image/gif", "image/webp")
         private val CHARSETS = listOf("charset=utf-8", "charset=utf8", "charset=us-ascii")
-        private const val BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        //The standard alphabet's value of each ASCII character, -1 for the rest
+        private val BASE64 = IntArray(128) { -1 }.also { table ->
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".forEachIndexed { value, c -> table[c.code] = value }
+        }
+
+        private fun base64Value(c: Char): Int = if(c.code < 128) BASE64[c.code] else -1
 
         /** The metadata in this token URI, or null when it is unreadable or not carried in the URI. Never throws. */
         fun parse(tokenUri: String): NftMetadata? = try {
@@ -72,7 +77,8 @@ data class NftMetadata(val name: String, val description: String, val attributes
             null
         }
 
-        private fun read(tokenUri: String): NftMetadata? {
+        /** As [parse], without the catch, so a test can see that nothing in here throws. */
+        internal fun read(tokenUri: String): NftMetadata? {
             if(tokenUri.length > MAX_URI_CHARS) {
                 return null
             }
@@ -127,12 +133,13 @@ data class NftMetadata(val name: String, val description: String, val attributes
             else -> null
         }
 
+        //Inside read, which parse wraps: the image reads here do not catch, so nothingThrows sees them
         private fun image(fields: Map<*, *>): Image {
             val uri = fields["image"]
-            var image = if(uri is String) image(uri) else Image.None
+            var image = if(uri is String) readImage(uri) else Image.None
             val data = fields["image_data"]
             if(image == Image.None && data is String) {
-                image = if(asciiStrip(data).startsWith("<")) svg(data) else image(data)
+                image = if(asciiStrip(data).startsWith("<")) svg(data) else readImage(data)
             }
             return image
         }
@@ -144,7 +151,8 @@ data class NftMetadata(val name: String, val description: String, val attributes
             Image.None
         }
 
-        private fun readImage(uri: String): Image {
+        /** As [image], without the catch, so a test can see that nothing in here throws. */
+        internal fun readImage(uri: String): Image {
             if(uri.length > MAX_IMAGE_URI_CHARS) {
                 return Image.None
             }
@@ -225,10 +233,10 @@ data class NftMetadata(val name: String, val description: String, val attributes
             var i = 0
             while(i < encoded.length) {
                 val last = i + 4 == encoded.length
-                val a = BASE64.indexOf(encoded[i])
-                val b = BASE64.indexOf(encoded[i + 1])
-                val c = if(last && padding == 2) 0 else BASE64.indexOf(encoded[i + 2])
-                val d = if(last && padding >= 1) 0 else BASE64.indexOf(encoded[i + 3])
+                val a = base64Value(encoded[i])
+                val b = base64Value(encoded[i + 1])
+                val c = if(last && padding == 2) 0 else base64Value(encoded[i + 2])
+                val d = if(last && padding >= 1) 0 else base64Value(encoded[i + 3])
                 if(a < 0 || b < 0 || c < 0 || d < 0) {
                     return null
                 }

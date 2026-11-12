@@ -45,6 +45,26 @@ class NftMetadataVectorTest {
     }
 
     @Test
+    fun thePublicJsonEntryReadsAsTheReaderDoes() {
+        val cases = EvmVectors.list("json")
+        for(case in cases) {
+            val input = EvmVectors.input(case, "input")
+            val label = case.str("label")
+            val parsed = EvmJson.parse(input, Int.MAX_VALUE)
+            if(case.flag("refused")) assertEquals(null, parsed, label) else assertEquals(case.str("canonical"), canonical(assertNotNull(parsed, label)), label)
+        }
+        //The caller's character cap is checked before reading
+        assertNotNull(EvmJson.parse("{\"a\":1}", 7))
+        assertEquals(null, EvmJson.parse("{\"a\":1}", 6))
+        val rpc = assertNotNull(EvmJson.parse("{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32000,\"message\":\"x\"},\"result\":null}", 1_000))
+        rpc as JsonValue.Obj
+        assertEquals("7", (rpc["id"] as JsonValue.Num).text)
+        assertEquals("-32000", ((rpc["error"] as JsonValue.Obj)["code"] as JsonValue.Num).text)
+        assertEquals(JsonValue.Null, rpc["result"])
+        assertEquals(null, rpc["missing"])
+    }
+
+    @Test
     fun jsonAsTheDesktopReadsIt() {
         val cases = EvmVectors.list("json")
         assertEquals(88, cases.size)
@@ -154,9 +174,12 @@ class NftMetadataVectorTest {
             for(end in prefixEnds(case, input.length)) {
                 val prefix = input.substring(0, end)
                 try {
-                    NftMetadata.parse(prefix)
-                    NftMetadata.image(prefix)
+                    //The entry points without their catch, so an exception anywhere inside fails this test
+                    NftMetadata.read(prefix)
+                    NftMetadata.readImage(prefix)
+                    //Catches only its own Malformed signal
                     MiniJson.parse(prefix)
+                    EvmJson.parse(prefix, Int.MAX_VALUE)
                 } catch(e: Throwable) {
                     fail("${case.str("label")}: prefix of $end threw $e")
                 }
@@ -207,6 +230,15 @@ class NftMetadataVectorTest {
             "hosted" -> assertEquals(NftMetadata.Image.Hosted(expected.str("host")), image, "$label: image")
             else -> fail("$label: unknown image kind $expected")
         }
+    }
+
+    private fun canonical(value: JsonValue): String = when(value) {
+        JsonValue.Null -> "null"
+        is JsonValue.Str -> quote(value.value)
+        is JsonValue.Bool -> value.value.toString()
+        is JsonValue.Num -> value.text
+        is JsonValue.Obj -> value.fields.entries.joinToString(",", "{", "}") { quote(it.key) + ":" + canonical(it.value) }
+        is JsonValue.Arr -> value.items.joinToString(",", "[", "]") { canonical(it) }
     }
 
     //As the generator writes a parsed value back: compact, in the reader's key order, numbers as toPlainString

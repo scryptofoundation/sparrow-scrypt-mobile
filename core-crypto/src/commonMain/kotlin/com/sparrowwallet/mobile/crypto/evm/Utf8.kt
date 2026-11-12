@@ -5,7 +5,7 @@ package com.sparrowwallet.mobile.crypto.evm
  * platform for every byte sequence.
  */
 internal object Utf8 {
-    private const val REPLACEMENT = '�'
+    private const val REPLACEMENT = '\uFFFD'
 
     /**
      * Lenient decoding exactly as the desktop's JDK decodes `new String(bytes, UTF_8)` (String.decodeUTF8_UTF16): each
