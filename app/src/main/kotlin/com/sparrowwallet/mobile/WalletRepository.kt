@@ -638,6 +638,47 @@ class WalletRepository(context: Context) {
     /** Content loads at once, across screens. */
     private val contentLoads = kotlinx.coroutines.sync.Semaphore(2)
 
+    /**
+     * The wallet's LitVM account address (see [litVmAddressOf]): derived from its master key, which is zeroed after;
+     * only the address comes out. Slow (the seed is stretched): call it off the main thread, when the LitVM screen opens.
+     */
+    fun litVmAddress(data: VaultData): com.sparrowwallet.mobile.crypto.evm.EvmAddress = litVmAddressOf(data)
+
+    /** LitVM reads by account: a second one asked while one runs shares it. */
+    private val litVmReads = Coalescer<String, LitVmRead?>()
+
+    /**
+     * Reads [address]'s LitVM account (see [LitVmReader]) through the coin's proxy, on a new client each time (a client
+     * remembers a wrong chain) closed when the read ends or is cancelled. Null, with no request, while air-gapped. Only
+     * the LitVM screen calls this, while it is open.
+     */
+    suspend fun readLitVm(data: VaultData, address: com.sparrowwallet.mobile.crypto.evm.EvmAddress, tilePixels: Double,
+                          detailPixels: Double): LitVmRead? {
+        if(NetworkPolicy.blocked) return null
+        val proxy = indexerProxy(serverSettings(coin(data), network(data)))
+        return litVmReads.run(address.toString()) {
+            withContext(Dispatchers.IO) {
+                val rpc = com.sparrowwallet.mobile.electrum.litvm.LitVmRpc(com.sparrowwallet.mobile.electrum.litvm.LitVmNetwork.LITEFORGE_TESTNET, proxy)
+                kotlinx.coroutines.coroutineScope {
+                    //A socket read does not see cancellation: closing the client ends it
+                    val closer = async {
+                        try {
+                            kotlinx.coroutines.awaitCancellation()
+                        } finally {
+                            rpc.close()
+                        }
+                    }
+                    try {
+                        LitVmReader.read(rpc, { (it as com.sparrowwallet.mobile.electrum.litvm.LitVmRpc).verifyChain() }, address, tilePixels, detailPixels)
+                    } finally {
+                        closer.cancel()
+                        rpc.close()
+                    }
+                }
+            }
+        }
+    }
+
     fun network(data: VaultData): Network = Network.fromId(data.network)
 
     fun coin(data: VaultData): Coin = Coin.fromId(data.coin)
