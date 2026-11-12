@@ -395,6 +395,16 @@ class LitVmModelTest {
     }
 
     @Test
+    fun aReadThatCouldNotStartSaysTheServerCouldNotBeReached() {
+        val view = LitVmModel.build(owner, LitVmModel.unreachable(owner), airGapped = false)
+        assertEquals(LitVmModel.CHAIN_FAILED, view.status)
+        assertEquals(LitVmModel.UNREACHABLE, view.statusDetail)
+        assertFalse(view.empty)
+        assertTrue(view.tiles.isEmpty())
+        assertTrue(view.canRefresh)
+    }
+
+    @Test
     fun theChainIsCheckedFirstThenTheBalanceThenTheCollection(): Unit = runBlocking {
         val chain = FakeChain()
         chain.badges[badge] = FakeBadge(held = setOf(1, 2))

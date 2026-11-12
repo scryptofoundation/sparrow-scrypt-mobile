@@ -136,6 +136,9 @@ internal sealed interface Screen {
     data class ExportToDesktop(val home: Home) : Screen
     data class Collectibles(val home: Home) : Screen
     data class Inscription(val home: Home, val tile: CollectibleTile) : Screen
+    /** The wallet's read-only LitVM account; [LitVmNft] is one of its NFTs, by tile key (the read stays in the visit). */
+    data class LitVm(val home: Home) : Screen
+    data class LitVmNft(val home: Home, val tileKey: String) : Screen
 }
 
 /** A wallet's pending PSBT is kept under its public side's name: a peg-in starts from the private side. */
@@ -183,6 +186,8 @@ internal fun backTarget(screen: Screen): Screen? = when(screen) {
     is Screen.ExportToDesktop -> screen.home
     is Screen.Collectibles -> screen.home
     is Screen.Inscription -> Screen.Collectibles(screen.home)
+    is Screen.LitVm -> screen.home
+    is Screen.LitVmNft -> Screen.LitVm(screen.home)
     is Screen.Create, is Screen.Restore, is Screen.RestoreFromApp, is Screen.ImportSparrow, is Screen.LinkReceive,
     is Screen.LinkSend, is Screen.Unlock -> Screen.WalletList
 }
@@ -197,12 +202,21 @@ internal fun collectiblesVisit(screen: Screen): String? = when(screen) {
     else -> null
 }
 
+/** The wallet whose LitVM visit [screen] belongs to: the account screen and its NFT details share one (the read, the grid's place). */
+internal fun litVmVisit(screen: Screen): String? = when(screen) {
+    is Screen.LitVm -> screen.home.name
+    is Screen.LitVmNft -> screen.home.name
+    else -> null
+}
+
 @Composable
 private fun App(repo: WalletRepository) {
     var screen by remember { mutableStateOf<Screen>(Screen.WalletList) }
     // held above the grid and the detail screen, so going back to the grid keeps its place and its failed previews
     val visitWallet = collectiblesVisit(screen)
     val visit = remember(visitWallet) { visitWallet?.let { CollectiblesVisit() } }
+    val litVmWallet = litVmVisit(screen)
+    val litVm = remember(litVmWallet) { litVmWallet?.let { LitVmVisit() } }
     var airGapped by remember { mutableStateOf(NetworkPolicy.blocked) }
     // work that outlives the screen that started it (a new Taproot wallet's first sync)
     val appScope = rememberCoroutineScope()
@@ -358,6 +372,7 @@ private fun App(repo: WalletRepository) {
                     onSignPsbt = { screen = Screen.SignPsbt(s) },
                     onExport = { screen = Screen.ExportToDesktop(s) },
                     onCollectibles = { screen = Screen.Collectibles(s) },
+                    onLitVm = { screen = Screen.LitVm(s) },
                     onResumePsbt = repo.pendingPsbts[pendingPsbtKey(s)]?.let { unsigned -> { screen = Screen.PsbtSign(s, unsigned) } }
                 )
             }
@@ -387,6 +402,11 @@ private fun App(repo: WalletRepository) {
                 })
             is Screen.Inscription -> InscriptionScreen(repo, s.home, s.tile, visit ?: remember { CollectiblesVisit() },
                 onBack = { screen = Screen.Collectibles(s.home) })
+            is Screen.LitVm -> LitVmScreen(repo, s.home, litVm ?: remember { LitVmVisit() },
+                onTile = { key -> screen = Screen.LitVmNft(s.home, key) },
+                onBack = { screen = s.home })
+            is Screen.LitVmNft -> LitVmNftScreen(s.tileKey, litVm ?: remember { LitVmVisit() },
+                onBack = { screen = Screen.LitVm(s.home) })
             is Screen.Server -> ServerScreen(repo, s.home.data, onBack = { screen = s.home })
             is Screen.Details -> DetailsScreen(repo, s.home.name, s.home.data,
                 onExport = { screen = Screen.ExportToDesktop(s.home) },
@@ -1227,6 +1247,7 @@ private fun HomeScreen(
     onSignPsbt: (() -> Unit)? = null,
     onExport: () -> Unit = {},
     onCollectibles: () -> Unit = {},
+    onLitVm: () -> Unit = {},
     onResumePsbt: (() -> Unit)? = null
 ) {
     val scope = rememberCoroutineScope()
@@ -1430,8 +1451,25 @@ private fun HomeScreen(
             }
         }
         // under the Activity card: the wallet's inscriptions and runes, from the stored checks
-        if(remember(data) { CollectiblesModel.available(repo.coin(data), data.scriptType) }) {
-            OutlinedButton(onClick = onCollectibles, modifier = Modifier.fillMaxWidth()) { Text("Collectibles") }
+        // beside it, LitVM on a Litecoin testnet wallet's Public layer: judged from the wallet list, read off the main thread
+        val litVmOffered by androidx.compose.runtime.produceState(false, name, data, layer) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val wallets = repo.listWallets()
+                    LitVmModel.available(wallets.firstOrNull { it.name == walletFileName(name) }, data.mnemonic.isNotBlank(), wallets, layer)
+                }.getOrDefault(false)
+            }
+        }
+        val collectiblesOffered = remember(data) { CollectiblesModel.available(repo.coin(data), data.scriptType) }
+        if(collectiblesOffered || litVmOffered) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if(collectiblesOffered) {
+                    OutlinedButton(onClick = onCollectibles, modifier = Modifier.weight(1f)) { Text("Collectibles") }
+                }
+                if(litVmOffered) {
+                    OutlinedButton(onClick = onLitVm, modifier = Modifier.weight(1f)) { Text(LitVmModel.BUTTON) }
+                }
+            }
         }
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

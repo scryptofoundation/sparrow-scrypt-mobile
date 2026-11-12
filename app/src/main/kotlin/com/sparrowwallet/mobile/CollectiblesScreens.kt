@@ -76,7 +76,7 @@ internal class CollectiblesVisit {
 }
 
 /** Preview decodes, one at a time across the app (see [OneAtATime]). */
-private val previewDecodes = OneAtATime()
+internal val previewDecodes = OneAtATime()
 
 /**
  * The Collectibles of [home]'s shown wallet and, from the Public layer, its Taproot wallet too
@@ -299,7 +299,7 @@ private fun PreviewBox(shown: InscriptionPreview.Shown, description: String, tar
  * BitmapFactory gives the first frame of an animated image only. Null on any refusal or failure, out of memory included.
  * Not a suspend function: call it off the main thread.
  */
-private fun decodeStill(image: InscriptionPreview.Shown.Image, target: Int): Bitmap? {
+internal fun decodeStill(image: InscriptionPreview.Shown.Image, target: Int): Bitmap? {
     val body = image.body
     return try {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }

@@ -37,6 +37,27 @@ class NavigationTest {
     }
 
     @Test
+    fun backFromAnNftReturnsToLitVmAndFromLitVmToHome() {
+        assertEquals(home, backTarget(Screen.LitVm(home)))
+        assertEquals(Screen.LitVm(home), backTarget(Screen.LitVmNft(home, "0x3eEd9a4c9AD8a1Ac42BDb9eEE6079c75C8fd51B3/1")))
+        val public = Screen.Home(companionHome.family, Layer.PUBLIC)
+        val back = backTarget(Screen.LitVm(public))
+        assertEquals(public, back)
+        assertEquals(Layer.PUBLIC, (back as Screen.Home).layer)
+    }
+
+    /** The LitVM visit (the read, the grid position) lasts across an NFT's detail, and ends anywhere else. */
+    @Test
+    fun theLitVmVisitLastsAcrossTheDetailOnly() {
+        assertEquals("w", litVmVisit(Screen.LitVm(home)))
+        assertEquals("w", litVmVisit(Screen.LitVmNft(home, "k")))
+        assertNull(litVmVisit(home))
+        assertNull(litVmVisit(Screen.Collectibles(home)))
+        assertNull(litVmVisit(Screen.WalletList))
+        assertNull(collectiblesVisit(Screen.LitVm(home)))
+    }
+
+    @Test
     fun backFromHomeAndSetupScreensReturnsToTheList() {
         assertEquals(Screen.WalletList, backTarget(home))
         assertEquals(Screen.WalletList, backTarget(Screen.Unlock("w")))

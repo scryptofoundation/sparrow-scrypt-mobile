@@ -238,6 +238,10 @@ object LitVmModel {
     /** A host shortened from the front when long, so its domain stays readable. */
     fun hostText(host: String): String = if(host.length <= MAX_HOST_CHARS) host else "..." + host.takeLast(MAX_HOST_CHARS - 3)
 
+    /** A read that could not start (anything thrown around the reader): the server could not be reached, nothing listed. */
+    fun unreachable(address: EvmAddress): LitVmRead =
+        LitVmRead(address, null, LitVmRead.Problem.CHAIN, UNREACHABLE, emptyList(), false, emptyMap())
+
     /** The name each collection gave in this read, to name it later when it cannot be read. */
     fun names(read: LitVmRead): Map<EvmAddress, String> =
         read.collections.mapNotNull { c -> c.collection?.let { c.contract to collectionLabel(it) } }.toMap()
