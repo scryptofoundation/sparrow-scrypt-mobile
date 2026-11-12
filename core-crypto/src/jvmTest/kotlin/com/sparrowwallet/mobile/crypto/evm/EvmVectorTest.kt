@@ -302,7 +302,7 @@ class EvmVectorTest {
         for(file in files) {
             val text = file.readText()
             for(banned in listOf("java.", "javax.", "android.", "Charsets", "codePointAt", "Character.", "String.format", ".lowercase(", ".uppercase(",
-                    ".trim(", "isWhitespace", "isLetter", "isDigit", "Socket", "URL", "URI(", "File(", "—")) {
+                    ".trim(", "isWhitespace", "isLetter", "isDigit", "Socket", "URL", "URI(", "File(", "\u2014")) {
                 assertTrue(banned !in text, "${file.name} uses $banned")
             }
             //Nothing from outside this module: no network, file or platform code
