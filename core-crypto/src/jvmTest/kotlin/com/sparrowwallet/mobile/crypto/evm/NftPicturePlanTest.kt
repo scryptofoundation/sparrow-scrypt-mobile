@@ -152,7 +152,7 @@ class NftPicturePlanTest {
             //The limit vectors sit at the model's edges, where the renderer may refuse; every other one is drawn
             val extreme = file.name.startsWith("limit-") || file.name.startsWith("transform-")
             for(size in doubleArrayOf(NftPicturePlan.TILE_SIZE, NftPicturePlan.DETAIL_SIZE, NftPicturePlan.MAX_PIXELS)) {
-                val plan = NftPicturePlan.prepare(drawing, size)
+                val plan = NftPicturePlan.prepareOrNull(drawing, size, NftPicturePlan.MAX_COMMANDS)
                 assertTrue(extreme || plan != null, file.name)
                 plan?.let { assertFinite(it) }
             }
@@ -310,8 +310,45 @@ class NftPicturePlanTest {
     }
 
     @Test
+    fun thePlanCannotBeChanged() {
+        val svg = "$svgHead<rect width=\"8\" height=\"8\" stroke=\"red\"/><polyline points=\"0,0 10,0 10,10\" stroke=\"blue\"/><text>A</text></svg>"
+        val plan = prepare(svg, 64.0)
+        @Suppress("UNCHECKED_CAST")
+        fun refusesChange(list: List<*>?) = assertTrue(runCatching { (list as MutableList<Any?>).clear() }.isFailure && list!!.isNotEmpty())
+        refusesChange(plan.items)
+        for(item in plan.items.filterIsInstance<NftPicturePlan.PathItem>()) {
+            refusesChange(item.fillPath)
+            refusesChange(item.strokePath)
+        }
+        //Filled and stroked along the same commands: still one list
+        val rect = plan.items[0] as NftPicturePlan.PathItem
+        assertTrue(rect.fillPath === rect.strokePath)
+        assertEquals(3, plan.items.size)
+    }
+
+    @Test
+    fun aTextStrokeIsInPixelsAndClampedAsAPathsIs() {
+        //At 128 pixels the fit doubles a 64-unit drawing
+        val texts = prepare("$svgHead<text stroke=\"red\" stroke-width=\"2\">A</text><text stroke=\"red\" stroke-width=\"1000000\">B</text>" +
+            "<text>C</text></svg>", 128.0).items.map { it as NftPicturePlan.TextItem }
+        assertEquals(4.0, texts[0].strokePixels, 1e-9)
+        assertEquals(128 * sqrt(2.0), texts[1].strokePixels, 1e-6)
+        assertEquals(128 * sqrt(2.0), texts[1].strokeWidth * 2, 1e-6)
+        assertNull(texts[2].stroke)
+        assertEquals(0.0, texts[2].strokePixels)
+    }
+
+    @Test
+    fun theCommandCapIsNotPublic() {
+        //prepare(drawing, size) is the public form; the cap and the non-catching form are internal (mangled on the JVM)
+        val public = NftPicturePlan::class.java.methods.filter { it.name == "prepare" || it.name == "prepareOrNull" }
+        assertEquals(listOf(2), public.map { it.parameterCount }, public.toString())
+    }
+
+    @Test
     fun nothingThrows() {
-        //Every accept vector, and seeded random edits of them, at several sizes: a plan or null, never an exception
+        //Every accept vector, and seeded random edits of them, at several sizes: a plan or null, never an exception (the
+        //form that does not catch is fuzzed, so a throw fails the test)
         val started = System.nanoTime()
         val dir = File("../vectors/evm/svg/accept")
         val vectors = dir.listFiles()!!.sortedBy { it.name }.map { String(it.readBytes(), Charsets.UTF_8) }
@@ -328,14 +365,14 @@ class NftPicturePlanTest {
                 }
                 val drawing = SvgSubset.parse(edited.toString()) ?: return@repeat
                 for(size in doubleArrayOf(16.0, NftPicturePlan.TILE_SIZE, NftPicturePlan.MAX_PIXELS)) {
-                    NftPicturePlan.prepare(drawing, size)?.let { assertFinite(it); prepared++ }
+                    NftPicturePlan.prepareOrNull(drawing, size, NftPicturePlan.MAX_COMMANDS)?.let { assertFinite(it); prepared++ }
                 }
             }
         }
         //Odd sizes
         val badge = drawing(vectors.last { it.contains("WORLD 1") })
         for(size in doubleArrayOf(0.0, -1.0, Double.NaN, Double.POSITIVE_INFINITY, 1e300, Double.MIN_VALUE)) {
-            NftPicturePlan.prepare(badge, size)?.let { assertFinite(it) }
+            NftPicturePlan.prepareOrNull(badge, size, NftPicturePlan.MAX_COMMANDS)?.let { assertFinite(it) }
         }
         assertTrue(prepared > 1_000, "$prepared")
         val seconds = (System.nanoTime() - started) / 1e9

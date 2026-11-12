@@ -8,17 +8,24 @@ package com.sparrowwallet.mobile.crypto.evm
  * diagonal), and refuses the whole picture (null, the caller shows "No picture") when a value is not finite, a font
  * would be over 4,096 pixels, or the picture needs more than [MAX_COMMANDS] commands. Pure: no drawing library.
  *
- * How to draw a [Plan] on a square canvas of [Plan.size] pixels, as the desktop does: clip to [Plan.clip] (pixels);
- * then for each item in order, set the item's [Item.affine] as the canvas matrix (it maps the shape's own coordinates to
- * pixels) and its [Item.opacity] as the global alpha, and
- *   - a [PathItem]: trace [PathItem.fillPath] and fill it with [PathItem.fill] (non-zero rule), then trace
- *     [PathItem.strokePath] and stroke it with [PathItem.stroke] at [PathItem.strokeWidth] (in the shape's units, under
- *     the affine, as SVG strokes are; butt caps, miter joins, miter limit 4); a null path is not drawn;
- *   - a [TextItem]: draw [TextItem.content] at ([TextItem.x], [TextItem.y]) as the baseline start, aligned by its anchor,
- *     at [TextItem.size] in the shape's units, monospace or sans-serif, bold as given; fill, then stroke when set.
- * Paint is 0xAARRGGBB. The pixel figures ([PathItem.strokePixels], [TextItem.pixelX], [TextItem.pixelY],
- * [TextItem.fontPixels]) are the same values placed, for a renderer that wants them; a non-uniform or skewed affine
- * cannot be expressed by them alone, so drawing under the affine is the faithful way.
+ * The drawing contract for the Android layer (the desktop's canvas replay, in Android terms):
+ *   - Create a transparent ARGB bitmap of [Plan.size] x [Plan.size] pixels, off the main thread. Any exception while
+ *     drawing means "No picture", never a partial bitmap.
+ *   - clipRect([Plan.clip]) under the identity matrix (the clip is in pixels).
+ *   - For each of [Plan.items] in order: save; set the canvas matrix from the item's [Item.affine] (a, b, c, d, e, f) as
+ *     the 3x3 [a c e; b d f; 0 0 1], skipping the item if the determinant a d - b c is 0 or not finite. Paint
+ *     anti-aliased, colour = the item's 0xAARRGGBB paint with alpha = round(A x [Item.opacity]); never an offscreen layer.
+ *   - A [PathItem]: MOVE = moveTo, LINE = lineTo, CUBIC = cubicTo, CLOSE = close, non-zero winding. Fill
+ *     [PathItem.fillPath] with [PathItem.fill] if it has a fill; stroke [PathItem.strokePath] with [PathItem.stroke] if it
+ *     has a stroke, width = [PathItem.strokeWidth] in shape units (the matrix scales it, as SVG strokes are), butt caps,
+ *     miter joins, miter limit 4, and no stroke at all when that width as a float is 0.
+ *   - A [TextItem]: monospace or sans-serif typeface ([TextItem.monospace]), bold as given ([TextItem.bold]), alignment
+ *     from [TextItem.anchor] (start left, middle centre, end right); translate to ([TextItem.x], [TextItem.y]), scale by
+ *     [TextItem.size] / [TextItem.fontPixels], text size = [TextItem.fontPixels], draw [TextItem.content] at (0, 0), which
+ *     is the baseline; fill first with [TextItem.fill], then stroke with [TextItem.stroke] at [TextItem.strokeWidth] if set.
+ *   - Restore.
+ * The pixel figures ([PathItem.strokePixels], [TextItem.strokePixels], [TextItem.pixelX], [TextItem.pixelY]) are the
+ * same values placed, for a renderer that wants to skip or clamp by them; drawing under the affine is the faithful way.
  */
 object NftPicturePlan {
     const val TILE_SIZE = 120.0
@@ -68,9 +75,15 @@ object NftPicturePlan {
         val opacity: Double
     }
 
-    /** A filled and/or stroked path; a null path or paint is not drawn. When filled and stroked along the same commands, the two lists are one. */
-    class PathItem internal constructor(override val affine: SvgSubset.Matrix, override val opacity: Double, val fill: Int?, val fillPath: List<Cmd>?,
-                                        val stroke: Int?, val strokeWidth: Double, val strokePath: List<Cmd>?) : Item {
+    /**
+     * A filled and/or stroked path; a null path or paint is not drawn. The lists are read-only; when filled and stroked
+     * along the same commands, the two lists are one.
+     */
+    class PathItem internal constructor(override val affine: SvgSubset.Matrix, override val opacity: Double, val fill: Int?, fillPath: List<Cmd>?,
+                                        val stroke: Int?, val strokeWidth: Double, strokePath: List<Cmd>?) : Item {
+        val fillPath: List<Cmd>? = fillPath?.let { SvgSubset.ReadOnlyList(it) }
+        val strokePath: List<Cmd>? = if(strokePath != null && strokePath === fillPath) this.fillPath else strokePath?.let { SvgSubset.ReadOnlyList(it) }
+
         /** The stroke's width in pixels along the affine's longer axis, at most the canvas's diagonal; 0 when not stroked. */
         val strokePixels: Double = if(strokePath == null) 0.0 else strokeWidth * stretch(affine)
     }
@@ -78,14 +91,17 @@ object NftPicturePlan {
     class TextItem internal constructor(override val affine: SvgSubset.Matrix, override val opacity: Double, val fill: Int?, val stroke: Int?,
                                         val strokeWidth: Double, val x: Double, val y: Double, val size: Double, val anchor: SvgSubset.Anchor,
                                         val bold: Boolean, val monospace: Boolean, val content: String, val pixelX: Double, val pixelY: Double,
-                                        val fontPixels: Double) : Item
+                                        val fontPixels: Double) : Item {
+        /** The stroke's width in pixels along the affine's longer axis, clamped as a path's is; 0 when not stroked. */
+        val strokePixels: Double = if(stroke == null) 0.0 else strokeWidth * stretch(affine)
+    }
 
     /** A rectangle in canvas pixels: the drawing's box after the fit. */
     data class Clip(val x: Double, val y: Double, val width: Double, val height: Double)
 
     /** A canvas of size x size pixels, the clip rectangle in pixels, and what to draw in order. */
     class Plan internal constructor(val size: Double, val clip: Clip, items: List<Item>) {
-        val items: List<Item> = items.toList()
+        val items: List<Item> = SvgSubset.ReadOnlyList(items)
 
         /** The path commands traced to draw it (a path filled and stroked is traced twice), a text counting one; at least 1. */
         val cost: Int = run {
@@ -115,7 +131,10 @@ object NftPicturePlan {
      * become straight lines; text anchored beyond it is left out; a stroke wider than the canvas's diagonal is drawn at
      * that width. Never throws.
      */
-    fun prepare(drawing: SvgSubset.Drawing, size: Double, maxCommands: Int = MAX_COMMANDS): Plan? = try {
+    fun prepare(drawing: SvgSubset.Drawing, size: Double): Plan? = prepare(drawing, size, MAX_COMMANDS)
+
+    /** As [prepare] with another command cap, for tests. Never throws. */
+    internal fun prepare(drawing: SvgSubset.Drawing, size: Double, maxCommands: Int): Plan? = try {
         prepareOrNull(drawing, size, maxCommands)
     } catch(e: Exception) {
         null
@@ -123,7 +142,8 @@ object NftPicturePlan {
 
     private class Budget(var left: Int)
 
-    private fun prepareOrNull(drawing: SvgSubset.Drawing, size: Double, maxCommands: Int): Plan? {
+    /** The work of [prepare] without its catch, so a fuzz test fails on any exception. */
+    internal fun prepareOrNull(drawing: SvgSubset.Drawing, size: Double, maxCommands: Int): Plan? {
         val fit = fit(drawing.width, drawing.height, size)
         if(!finite(fit)) {
             return null

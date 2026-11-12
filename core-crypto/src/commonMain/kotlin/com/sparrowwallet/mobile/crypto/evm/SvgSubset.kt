@@ -172,8 +172,8 @@ object SvgSubset {
 
     data object Close : Segment
 
-    /** A list no caller can change (not a MutableList, so a cast cannot reach the storage). */
-    private class ReadOnlyList<T>(items: List<T>) : AbstractList<T>() {
+    /** A list no caller can change (not a MutableList, so a cast cannot reach the storage). Also used by NftPicturePlan. */
+    internal class ReadOnlyList<T>(items: List<T>) : AbstractList<T>() {
         private val items: Array<Any?> = items.toTypedArray<Any?>()
 
         override val size: Int get() = items.size
@@ -910,7 +910,7 @@ object SvgSubset {
                 return doubleArrayOf(a[0], 0.0, 0.0, if(count == 2) a[1] else a[0], 0.0, 0.0)
             }
             "rotate" -> if(count == 1 || count == 3) {
-                //IEEE remainder of the division, as the desktop's double %
+                //The truncated remainder (the sign of the dividend), the same as the desktop's double %
                 var turn = a[0] % 360
                 if(turn < 0) {
                     turn += 360

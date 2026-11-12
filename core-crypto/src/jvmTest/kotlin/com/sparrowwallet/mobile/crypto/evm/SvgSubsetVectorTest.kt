@@ -221,7 +221,7 @@ class SvgSubsetVectorTest {
 
         //Random edits of every vector, with characters that matter to the reader; what is accepted must be sane
         val random = Random(20261111)
-        val alphabet = "<>/=\"'&#;!?-[]:x0123456789.eE+-, \t\nMmLlZzAaHhVvCcSsQqTt()\u0000" + lone + loneLow + "‮"
+        val alphabet = "<>/=\"'&#;!?-[]:x0123456789.eE+-, \t\nMmLlZzAaHhVvCcSsQqTt()\u0000" + lone + loneLow + "\u202E"
         for(vector in vectors) {
             if(vector.isEmpty()) {
                 continue
@@ -229,7 +229,9 @@ class SvgSubsetVectorTest {
             val rounds = if(vector.length <= 5_000) 300 else 10
             repeat(rounds) {
                 val edited = StringBuilder(vector)
-                for(edit in 0 until 1 + random.nextInt(3)) {
+                //The bound is drawn again before every edit, as in the desktop's for loop
+                var edit = 0
+                while(edit < 1 + random.nextInt(3)) {
                     val at = random.nextInt(edited.length + 1)
                     val c = alphabet[random.nextInt(alphabet.length)]
                     when(random.nextInt(3)) {
@@ -237,6 +239,7 @@ class SvgSubsetVectorTest {
                         1 -> if(at < edited.length) edited.deleteCharAt(at)
                         else -> if(at < edited.length) edited.setCharAt(at, c)
                     }
+                    edit++
                 }
                 check(edited.toString())
             }
@@ -427,7 +430,7 @@ class SvgSubsetVectorTest {
         assertEquals("number", refusal("$open<rect y=\"-1000001\" width=\"1\" height=\"1\"/>$close"))
 
         //Text length in code points, after sanitising: an emoji is one character, a stripped zero-width space none
-        assertNull(refusal(open + "<text>" + emoji.repeat(200) + "​</text>" + close))
+        assertNull(refusal(open + "<text>" + emoji.repeat(200) + "\u200B</text>" + close))
         assertEquals("text", refusal(open + "<text>" + emoji.repeat(201) + "</text>" + close))
         val lines = described(open + "<text>" + "x".repeat(199) + emoji + "</text>" + close)
         assertTrue(lines[1].endsWith("content=" + "x".repeat(199) + emoji), lines[1])
@@ -528,30 +531,49 @@ class SvgSubsetVectorTest {
         }
     }
 
-    /** Not a parity check (the desktop's StrictMath and kotlin.math may differ in the last bit): how often they do here. */
+    /**
+     * The rotate the parser does with kotlin.math stays within one ulp of the desktop's StrictMath, after the parser's
+     * own conversion (turn / 180.0 * PI): every multiple of 15 degrees and 1,000 seeded angles.
+     */
     @Test
-    fun platformTrigAgainstStrictMath() {
+    fun platformTrigIsWithinOneUlpOfStrictMath() {
         val random = Random(360)
-        var cosDiffers = 0
-        var sinDiffers = 0
-        val samples = 1_000_000
-        repeat(samples) {
-            val radians = random.nextDouble() * 360 / 180.0 * Math.PI
-            if(kotlin.math.cos(radians) != StrictMath.cos(radians)) cosDiffers++
-            if(kotlin.math.sin(radians) != StrictMath.sin(radians)) sinDiffers++
+        val turns = (0 until 360 step 15).map { it.toDouble() } + List(1_000) { random.nextDouble() * 360 }
+        for(turn in turns) {
+            val radians = turn / 180.0 * Math.PI
+            assertTrue(kotlin.math.abs(kotlin.math.cos(radians) - StrictMath.cos(radians)) <= Math.ulp(StrictMath.cos(radians)), "cos of $turn")
+            assertTrue(kotlin.math.abs(kotlin.math.sin(radians) - StrictMath.sin(radians)) <= Math.ulp(StrictMath.sin(radians)), "sin of $turn")
         }
-        println("kotlin.math against StrictMath over $samples angles: cos differs $cosDiffers, sin differs $sinDiffers")
+    }
+
+    /** The quarter turns are exact because the parser snaps them (cos and sin of PI / 2 are not): checked on its rotate matrix. */
+    @Test
+    fun quarterTurnsAreExact() {
+        fun rotated(transform: String): DoubleArray =
+            drawing("<svg $ns viewBox=\"0 0 10 10\"><rect transform=\"$transform\"/></svg>").shapes[0].composedMatrix.toArray()
+        val cases = listOf(
+            "rotate(0)" to doubleArrayOf(1.0, 0.0, 0.0, 1.0, 0.0, 0.0), "rotate(360)" to doubleArrayOf(1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
+            "rotate(90)" to doubleArrayOf(0.0, 1.0, -1.0, 0.0, 0.0, 0.0), "rotate(450)" to doubleArrayOf(0.0, 1.0, -1.0, 0.0, 0.0, 0.0),
+            "rotate(-270)" to doubleArrayOf(0.0, 1.0, -1.0, 0.0, 0.0, 0.0), "rotate(180)" to doubleArrayOf(-1.0, 0.0, 0.0, -1.0, 0.0, 0.0),
+            "rotate(-180)" to doubleArrayOf(-1.0, 0.0, 0.0, -1.0, 0.0, 0.0), "rotate(270)" to doubleArrayOf(0.0, -1.0, 1.0, 0.0, 0.0, 0.0),
+            "rotate(-90)" to doubleArrayOf(0.0, -1.0, 1.0, 0.0, 0.0, 0.0), "rotate(90 3 4)" to doubleArrayOf(0.0, 1.0, -1.0, 0.0, 7.0, 1.0),
+            "rotate(270 3 4)" to doubleArrayOf(0.0, -1.0, 1.0, 0.0, -1.0, 7.0))
+        for((transform, expected) in cases) {
+            val actual = rotated(transform)
+            //Compared as numbers, so -0 equals 0
+            assertTrue((0 until 6).all { actual[it] == expected[it] }, "$transform: ${actual.toList()}")
+        }
     }
 
     @Test
     fun textIsSanitised() {
         val open = "<svg $ns viewBox=\"0 0 10 10\"><text>"
         val close = "</text></svg>"
-        val hostile = "‮ A​⁦B C\u0085\u009BD\r\n\tE&#x202D;&#10;F &#160; "
+        val hostile = "\u202E A\u200B\u2066B\u2028C\u0085\u009BD\r\n\tE&#x202D;&#10;F &#160; "
         val lines = described(open + hostile + close)
-        assertTrue(lines[1].endsWith("content=ABCD E F  "), lines[1])
+        assertTrue(lines[1].endsWith("content=ABCD E F \u00A0"), lines[1])
         val content = (assertNotNull(SvgSubset.parse(open + hostile + close)).shapes[0] as SvgSubset.Text).content
-        assertEquals("ABCD E F  ", content)
+        assertEquals("ABCD E F \u00A0", content)
     }
 
     /** The clean vectors' svg fields (left by the metadata task): SvgSubset's own text rule. */
