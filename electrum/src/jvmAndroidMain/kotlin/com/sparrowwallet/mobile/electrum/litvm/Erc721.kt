@@ -82,10 +82,18 @@ object Erc721 {
     suspend fun balanceOf(calls: LitVmCalls, contract: EvmAddress, owner: EvmAddress): UInt256 =
         uint(calls, contract, Abi.call("balanceOf(address)", owner), "balanceOf")
 
-    /** The token's owner, or null when the contract reverts (no such token), answers nonsense or names the zero address. */
+    /**
+     * The token's owner, or null when the contract reverts (no such token) or names the zero address: the contract's
+     * answers. An answer over the cap ([ResultTooLarge]), malformed or empty throws, so a token is never dropped as "not
+     * held" on an answer that could not be read.
+     */
     suspend fun ownerOf(calls: LitVmCalls, contract: EvmAddress, tokenId: UInt256): EvmAddress? {
-        val result = call(calls, contract, Abi.call("ownerOf(uint256)", tokenId), MAX_RESULT_BYTES) ?: return null
-        val owner = Abi.address(result) ?: return null
+        val result = try {
+            calls.call(contract, Abi.call("ownerOf(uint256)", tokenId), MAX_RESULT_BYTES)
+        } catch(e: CallReverted) {
+            return null
+        }
+        val owner = Abi.address(result) ?: throw LitVmException("Invalid ownerOf result from $contract")
         return if(owner.bytes.all { it.toInt() == 0 }) null else owner
     }
 

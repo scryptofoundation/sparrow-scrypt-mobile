@@ -308,17 +308,98 @@ class NftListerTest {
         assertEquals(1, listed.failed)
     }
 
-    @Test fun anOwnerOfAnswerOverItsCapDropsTheTokenAndATokenUriOverItsCapIsNoUri(): Unit = runBlocking {
-        //Under the response cap but over the call's own: ownerOf (8,192) loses the token, tokenURI (100,000) keeps it without metadata
-        val collection = enumerable(ids(1, 2, 3))
+    @Test fun anUnreadableOwnerOfIsAFailureAndATokenUriOverItsCapIsNoUri(): Unit = runBlocking {
+        //Ruling M3: an ownerOf answer over its cap (8,192), malformed or empty counts as failed; only a revert or a
+        //well-formed answer naming another owner (the zero address included) drops a token silently
+        val collection = enumerable(ids(1, 2, 3, 4, 5, 6, 7))
         collection.overrides["6352211e" + word(2)] = Reply.result("ab".repeat(8_193))
+        collection.overrides["6352211e" + word(4)] = Reply.result("01" + "00".repeat(11) + hex(HOLDER))
+        collection.overrides["6352211e" + word(5)] = Reply.result("")
+        collection.overrides["6352211e" + word(6)] = Reply.result(word(0))
+        collection.owners[UInt256.of(7)] = OTHER
+        //tokenURI over its cap (100,000) is the contract's answer: listed without metadata, not a failure
         collection.uris[UInt256.of(3)] = Reply.result(string("a".repeat(99_937)))
         node.contract(COLLECTION, collection::answer)
         val listed = listed(COLLECTION)
         assertEquals(ids(1, 3), listed.tokens.map { it.tokenId })
         assertNull(listed.tokens[1].metadata)
-        //ownerOf over its cap is no answer (dropped, as the desktop does); tokenURI over its cap is the contract's answer
-        assertEquals(0, listed.failed)
+        assertEquals(3, listed.failed)
+        assertEquals(0, listed.more)
+        assertFalse(listed.rateLimited)
+    }
+
+    @Test fun theListIsReadOnly(): Unit = runBlocking {
+        node.contract(COLLECTION, enumerable(ids(1, 2))::answer)
+        val listed = listed(COLLECTION)
+        @Suppress("UNCHECKED_CAST")
+        assertFailsWith<UnsupportedOperationException> { (listed.tokens as MutableList<Nft>).clear() }
+        assertEquals(2, listed.tokens.size)
+    }
+
+    @Test fun aRateLimitOnTheFirstOwnerOfStopsTheListing(): Unit = runBlocking {
+        val badge = vaultBadge(64)
+        badge.owners[world(HOLDER, 1)] = HOLDER
+        badge.owners[world(HOLDER, 3)] = HOLDER
+        badge.rateLimit = { it.startsWith("6352211e") }
+        node.contract(BADGE, badge::answer)
+        val listed = listed(BADGE)
+        //The collection (7), worlds(), the one ownerOf answered 429: nothing after it
+        assertEquals(7 + 1 + 1, node.calls("eth_call").size)
+        assertEquals(NftLister.Listed(listOf(), 0, 64, rateLimited = true), listed)
+    }
+
+    @Test fun aRateLimitOnEveryRequestAfterWorldsStopsTheListing(): Unit = runBlocking {
+        val badge = vaultBadge(4)
+        badge.owners[world(HOLDER, 2)] = HOLDER
+        node.contract(BADGE, badge::answer)
+        val collection = assertNotNull(Erc721.read(node, BADGE))
+        badge.rateLimit = { !it.startsWith("23c4f6e3") }
+        val before = node.calls("eth_call").size
+        val listed = assertIs<NftLister.Listed>(NftLister.list(node, collection, HOLDER))
+        assertEquals(2, node.calls("eth_call").size - before, "worlds() and the first ownerOf only")
+        assertEquals(4, listed.failed)
+        assertTrue(listed.rateLimited)
+        //A rate limit on worlds() itself is a collection-level failure, thrown
+        badge.rateLimit = { it.startsWith("23c4f6e3") }
+        assertFailsWith<com.sparrowwallet.mobile.electrum.RateLimitedException> { NftLister.list(node, collection, HOLDER) }
+    }
+
+    @Test fun aRateLimitOnATokenUriKeepsThatTokenAndStops(): Unit = runBlocking {
+        val badge = vaultBadge(64)
+        badge.owners[world(HOLDER, 1)] = HOLDER
+        badge.owners[world(HOLDER, 2)] = HOLDER
+        badge.rateLimit = { it.startsWith("c87b56dd") }
+        node.contract(BADGE, badge::answer)
+        val listed = listed(BADGE)
+        //The collection (7), worlds(), ownerOf and the tokenURI that answered 429
+        assertEquals(7 + 1 + 2, node.calls("eth_call").size)
+        assertEquals(listOf(world(HOLDER, 1)), listed.tokens.map { it.tokenId })
+        assertNull(listed.tokens[0].metadata)
+        //That token's URI and the 63 worlds not reached
+        assertEquals(64, listed.failed)
+        assertEquals(0, listed.more)
+        assertTrue(listed.rateLimited)
+    }
+
+    @Test fun aRateLimitInTokenOfOwnerByIndexStopsTheListing(): Unit = runBlocking {
+        val collection = enumerable(ids(1, 2, 3, 4, 5))
+        collection.rateLimit = { it == "2f745c59" + "000000000000000000000000" + hex(HOLDER) + word(2) }
+        node.contract(COLLECTION, collection::answer)
+        val listed = listed(COLLECTION)
+        //The collection (7), balanceOf, index, owner and URI of two tokens, then the index that answered 429
+        assertEquals(7 + 1 + 3 * 2 + 1, node.calls("eth_call").size)
+        assertEquals(ids(1, 2), listed.tokens.map { it.tokenId })
+        assertEquals(3, listed.failed)
+        assertEquals(0, listed.more)
+        assertTrue(listed.rateLimited)
+        //The same on an owner check of the enumerable path
+        val owners = enumerable(ids(1, 2, 3))
+        owners.rateLimit = { it == "6352211e" + word(2) }
+        node.contract(COLLECTION, owners::answer)
+        val stopped = listed(COLLECTION)
+        assertEquals(ids(1), stopped.tokens.map { it.tokenId })
+        assertEquals(2, stopped.failed)
+        assertTrue(stopped.rateLimited)
     }
 
     @Test fun theListingStopsAtTheDeadline(): Unit = runBlocking {
@@ -392,8 +473,11 @@ class NftListerTest {
         val owners = HashMap<UInt256, EvmAddress>()
         val uris = HashMap<UInt256, Reply>()
         val overrides = HashMap<String, Reply>()
+        /** Calldata the server answers with HTTP 429. */
+        var rateLimit: (String) -> Boolean = { false }
 
         fun answer(data: String): Reply {
+            if(rateLimit(data)) return Reply.http(429)
             overrides[data]?.let { return it }
             return when(data.substring(0, 8)) {
                 "01ffc9a7" -> Reply.result(word(when(data.substring(8, 16)) {

@@ -11,6 +11,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -62,6 +64,21 @@ class NftMetadataVectorTest {
         assertEquals("-32000", ((rpc["error"] as JsonValue.Obj)["code"] as JsonValue.Num).text)
         assertEquals(JsonValue.Null, rpc["result"])
         assertEquals(null, rpc["missing"])
+    }
+
+    @Test
+    fun thePublicJsonValuesAreReadOnlyAndBounded() {
+        val value = assertNotNull(EvmJson.parse("{\"a\":[1,2],\"b\":{}}", 100)) as JsonValue.Obj
+        assertFalse(value.fields is MutableMap<*, *>)
+        assertFailsWith<ClassCastException> { @Suppress("UNCHECKED_CAST") (value.fields as MutableMap<String, JsonValue>).clear() }
+        val items = (value["a"] as JsonValue.Arr).items
+        assertFalse(items is MutableList<*>)
+        assertFailsWith<ClassCastException> { @Suppress("UNCHECKED_CAST") (items as MutableList<JsonValue>).clear() }
+        assertEquals(2, items.size)
+        //A ceiling of its own, whatever the caller allows
+        assertEquals(4_000_000, EvmJson.MAX_CHARS)
+        assertNotNull(EvmJson.parse("\"" + "a".repeat(3_999_998) + "\"", Int.MAX_VALUE))
+        assertEquals(null, EvmJson.parse("\"" + "a".repeat(3_999_999) + "\"", Int.MAX_VALUE))
     }
 
     @Test

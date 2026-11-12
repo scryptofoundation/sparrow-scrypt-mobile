@@ -77,15 +77,17 @@ class LitVmRpc private constructor(private val shared: Shared, private val deadl
 
     private suspend fun request(method: String, params: String): JsonValue {
         if(shared.closed) throw LitVmException(CLOSED)
-        val limit = deadline()?.let { at ->
-            val left = at - shared.clock()
-            if(left <= 0) throw TimedOut()
-            left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        }
+        //Absolute: the endpoint measures the time left again after its lock and before a retry
+        val limit = deadline()?.let { HttpEndpoint.Deadline(it, shared.clock) }
+        if(limit != null && limit.left() <= 0) throw TimedOut()
         val id = shared.ids.incrementAndGet()
         val body = "{\"jsonrpc\":\"2.0\",\"id\":$id,\"method\":\"$method\",\"params\":$params}"
-        val response = shared.http.post("/", body, JSON, JSON, timeoutMs = limit)
-        return LitVmReplies.result(response.status, response.body, id)
+        val response = try {
+            shared.http.post("/", body, JSON, JSON, deadline = limit)
+        } catch(e: HttpEndpoint.DeadlinePassed) {
+            throw TimedOut()
+        }
+        return LitVmReplies.result(response.status, response.body, id, call = method == "eth_call")
     }
 
     internal companion object {

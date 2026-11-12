@@ -6,11 +6,17 @@ package com.sparrowwallet.mobile.crypto.evm
  */
 sealed interface JsonValue {
     /** An object; a repeated key kept its last value, in the place of its first. */
-    class Obj internal constructor(val fields: Map<String, JsonValue>) : JsonValue {
+    class Obj internal constructor(fields: Map<String, JsonValue>) : JsonValue {
+        /** Read only: not a mutable map underneath that a cast could reach. */
+        val fields: Map<String, JsonValue> = ReadOnlyMap(fields)
+
         operator fun get(name: String): JsonValue? = fields[name]
     }
 
-    class Arr internal constructor(val items: List<JsonValue>) : JsonValue
+    class Arr internal constructor(items: List<JsonValue>) : JsonValue {
+        /** Read only: not a mutable list underneath that a cast could reach. */
+        val items: List<JsonValue> = ReadOnlyList(items)
+    }
 
     class Str internal constructor(val value: String) : JsonValue
 
@@ -25,8 +31,11 @@ sealed interface JsonValue {
 /** The strict JSON reader's public entry: the same reader NFT metadata goes through. */
 object EvmJson {
     /** The value of this text, or null when it is longer than maxChars or not strict JSON within the reader's bounds. */
+    /** The most this reads, whatever a caller asks for. */
+    const val MAX_CHARS = 4_000_000
+
     fun parse(text: String, maxChars: Int): JsonValue? {
-        if(text.length > maxChars) {
+        if(text.length > maxChars || text.length > MAX_CHARS) {
             return null
         }
         val parsed = MiniJson.parse(text) ?: return null
@@ -43,4 +52,17 @@ object EvmJson {
         is List<*> -> JsonValue.Arr(value.map { convert(it) })
         else -> throw IllegalStateException("Not a JSON value")
     }
+}
+
+//Views that are only Map and List, so no cast reaches a mutable collection; equality is the contents'
+private class ReadOnlyMap<K, V>(private val inner: Map<K, V>) : Map<K, V> by inner {
+    override fun equals(other: Any?): Boolean = inner == other
+    override fun hashCode(): Int = inner.hashCode()
+    override fun toString(): String = inner.toString()
+}
+
+private class ReadOnlyList<T>(private val inner: List<T>) : List<T> by inner {
+    override fun equals(other: Any?): Boolean = inner == other
+    override fun hashCode(): Int = inner.hashCode()
+    override fun toString(): String = inner.toString()
 }

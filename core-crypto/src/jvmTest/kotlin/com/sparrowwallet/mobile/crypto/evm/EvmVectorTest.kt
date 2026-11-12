@@ -339,8 +339,12 @@ class EvmVectorTest {
                 if(line.startsWith("import ") && !line.startsWith("import com.sparrowwallet.mobile.crypto.")) hits += "$at $line"
             }
         }
-        val unexpected = hits.filterNot { hit -> KNOWN_HITS.any { (file, token) -> hit.startsWith("$file:") && hit.endsWith(" $token") } }
-        assertEquals(emptyList(), unexpected)
+        val known = hits.filter { hit -> KNOWN_HITS.keys.any { (file, token) -> hit.startsWith("$file:") && hit.endsWith(" $token") } }
+        assertEquals(emptyList(), hits - known.toSet())
+        //Each known hit is pinned by its count, so a new one of the same kind fails too
+        for((key, count) in KNOWN_HITS) {
+            assertEquals(count, known.count { it.startsWith("${key.first}:") && it.endsWith(" ${key.second}") }, key.toString())
+        }
     }
 
     private fun results(name: String, count: Int) = EvmVectors.obj("abi")[name]!!.jsonArray.map { it.jsonObject }.also { cases ->
@@ -368,6 +372,6 @@ class EvmVectorTest {
          * feed and carriage return; and one number token converted with toDouble() after it was checked to be ASCII
          * digits, sign, point and exponent only. Both read and judged safe.
          */
-        val KNOWN_HITS = listOf("SvgSubset.kt" to "trim(", "SvgSubset.kt" to SUBSTRING_TO_NUMBER)
+        val KNOWN_HITS = mapOf(("SvgSubset.kt" to "trim(") to 7, ("SvgSubset.kt" to SUBSTRING_TO_NUMBER) to 1)
     }
 }

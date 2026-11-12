@@ -56,7 +56,7 @@ class FakeNode(override val network: LitVmNetwork = LitVmNetwork.LITEFORGE_TESTN
         methods += method
         val id = ++ids
         val r = override ?: reply()
-        return LitVmReplies.result(r.status, r.body.replace(Reply.ID, id.toString()), id)
+        return LitVmReplies.result(r.status, r.body.replace(Reply.ID, id.toString()), id, call = method == "eth_call")
     }
 
     override suspend fun call(to: EvmAddress, data: ByteArray, maxResultBytes: Int): ByteArray {

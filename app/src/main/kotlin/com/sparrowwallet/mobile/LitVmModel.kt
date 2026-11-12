@@ -366,20 +366,22 @@ object LitVmDrawing {
 /**
  * Reads a LitVM account for the screen: the chain check first, then the balance, then each built-in collection with its
  * own minute inside one three-minute deadline for the whole refresh, then the pictures of the tiles shown. A rate limit
- * stops every request after it. Failures are kept and said, never turned into "empty". Cancellation is rethrown.
+ * stops every request after it: the lister stops itself and says so ([NftLister.Listed.rateLimited]); one anywhere else
+ * is thrown, and either way no later collection is asked. Failures are kept and said, never turned into "empty".
+ * Cancellation is rethrown.
  */
 object LitVmReader {
     suspend fun read(calls: LitVmCalls, verifyChain: suspend (LitVmCalls) -> Unit, owner: EvmAddress, tilePixels: Double, detailPixels: Double,
                      collections: List<EvmAddress> = KnownCollections.on(calls.network)): LitVmRead {
         val start = calls.clock()
-        val guarded = RateLimitStop(calls.until(start + LitVmModel.REFRESH_MS), RateLimitStop.State())
+        val refresh = calls.until(start + LitVmModel.REFRESH_MS)
         try {
-            guarded.verify(verifyChain)
+            verifyChain(refresh)
         } catch(e: Exception) {
             return LitVmRead(owner, null, problem(e, LitVmRead.Problem.CHAIN), detail(e), emptyList(), false, emptyMap())
         }
         val balance = try {
-            guarded.balance(owner)
+            refresh.balance(owner)
         } catch(e: Exception) {
             return LitVmRead(owner, null, problem(e, LitVmRead.Problem.BALANCE), detail(e), emptyList(), false, emptyMap())
         }
@@ -396,7 +398,7 @@ object LitVmReader {
                 results.add(LitVmCollection(contract, null, LitVmCollection.Status.NOT_REACHED, emptyList(), 0, 0))
                 continue
             }
-            val bounded = guarded.until(now + LitVmModel.COLLECTION_MS)
+            val bounded = refresh.until(now + LitVmModel.COLLECTION_MS)
             var collection: Erc721Collection? = null
             results.add(try {
                 collection = Erc721.read(bounded, contract)
@@ -405,17 +407,17 @@ object LitVmReader {
                 if(read == null) {
                     LitVmCollection(contract, null, LitVmCollection.Status.FAILED, emptyList(), 0, 0)
                 } else when(val listed = NftLister.list(bounded, read, owner)) {
-                    is NftLister.Listed -> LitVmCollection(contract, read, LitVmCollection.Status.LISTED, listed.tokens.toList(), listed.more, listed.failed)
+                    is NftLister.Listed -> {
+                        if(listed.rateLimited) problem = LitVmRead.Problem.RATE_LIMITED
+                        LitVmCollection(contract, read, LitVmCollection.Status.LISTED, listed.tokens.toList(), listed.more, listed.failed)
+                    }
                     else -> LitVmCollection(contract, read, LitVmCollection.Status.FAILED, emptyList(), 0, 0)
                 }
             } catch(e: Exception) {
                 val p = problem(e, null)
-                if(p == LitVmRead.Problem.AIR_GAPPED) problem = p
+                if(p == LitVmRead.Problem.AIR_GAPPED || p == LitVmRead.Problem.RATE_LIMITED) problem = p
                 LitVmCollection(contract, collection, LitVmCollection.Status.FAILED, emptyList(), 0, 0)
             })
-            if(guarded.state.rateLimited) {
-                problem = LitVmRead.Problem.RATE_LIMITED
-            }
         }
         //Stopped: a collection was not reached, or the refresh's time ran out with a collection not read in full
         val stopped = problem == null && (results.any { it.status == LitVmCollection.Status.NOT_REACHED } ||
@@ -441,42 +443,6 @@ object LitVmReader {
         is RateLimitedException, is AirGappedException -> null
         is LitVmException -> TextRules.singleLine(e.message.orEmpty(), LitVmModel.MAX_MESSAGE).ifBlank { LitVmModel.UNREACHABLE }
         else -> LitVmModel.UNREACHABLE
-    }
-}
-
-/**
- * These calls, stopped for good by the first rate limit: once any request answers HTTP 429, every later call through
- * this view or any view of it throws [RateLimitedException] without sending anything. The lister counts such a failure
- * per token and goes on; with this it goes on without asking the server again.
- */
-internal class RateLimitStop(private val inner: LitVmCalls, val state: State) : LitVmCalls {
-    class State {
-        @Volatile var rateLimited = false
-    }
-
-    override val network: LitVmNetwork get() = inner.network
-    override val clock: () -> Long get() = inner.clock
-
-    suspend fun verify(verifyChain: suspend (LitVmCalls) -> Unit) = guard { verifyChain(inner) }
-
-    override suspend fun call(to: EvmAddress, data: ByteArray, maxResultBytes: Int): ByteArray = guard { inner.call(to, data, maxResultBytes) }
-
-    override suspend fun balance(address: EvmAddress): UInt256 = guard { inner.balance(address) }
-
-    override suspend fun hasCode(address: EvmAddress): Boolean = guard { inner.hasCode(address) }
-
-    override fun until(deadline: Long): LitVmCalls = RateLimitStop(inner.until(deadline), state)
-
-    private suspend fun <T> guard(block: suspend () -> T): T {
-        if(state.rateLimited) {
-            throw RateLimitedException("Stopped after the LitVM server rate limited a request")
-        }
-        try {
-            return block()
-        } catch(e: RateLimitedException) {
-            state.rateLimited = true
-            throw e
-        }
     }
 }
 

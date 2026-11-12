@@ -7,6 +7,8 @@ import com.sparrowwallet.mobile.crypto.evm.UInt256
 import com.sparrowwallet.mobile.electrum.HttpEndpoint
 import com.sparrowwallet.mobile.electrum.RateLimitedException
 import com.sparrowwallet.mobile.electrum.SocksProxy
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import java.io.BufferedInputStream
 import java.io.DataInputStream
@@ -22,6 +24,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -34,9 +37,14 @@ class LitVmRpcTest {
         val id: Long = Regex(""""id":([0-9]+)""").find(body)?.groupValues?.get(1)?.toLong() ?: -1
     }
 
-    private class Answer(val status: Int, val body: String, val delayMs: Long = 0, val close: Boolean = false)
+    /** [drop]: close the connection without answering. */
+    private class Answer(val status: Int, val body: String, val delayMs: Long = 0, val close: Boolean = false, val drop: Boolean = false)
 
     private val accepts = AtomicInteger()
+    /** Connections that ended (the client closed them, or the stub did). */
+    private val ended = AtomicInteger()
+    /** Answers eth_chainId instead of [chainId] when set. */
+    @Volatile private var chainAnswer: ((Request) -> Answer)? = null
     private val requests = CopyOnWriteArrayList<Request>()
     @Volatile private var closeEach = false
     /** Answers a request (its method, id and body); eth_chainId gives LiteForge unless a test says otherwise. */
@@ -54,7 +62,9 @@ class LitVmRpcTest {
         }
     }
 
-    private fun serve(s: Socket) = s.use {
+    private fun serve(s: Socket) = try { serveOn(s) } finally { ended.incrementAndGet() }
+
+    private fun serveOn(s: Socket) = s.use {
         val input = BufferedInputStream(s.getInputStream())
         val out = s.getOutputStream()
         while(true) {
@@ -63,8 +73,9 @@ class LitVmRpcTest {
             val body = ByteArray(length).also { DataInputStream(input).readFully(it) }.decodeToString()
             val request = Request(head.first(), head.drop(1), body)
             requests += request
-            val reply = if(request.method == "eth_chainId") ok(request, chainId) else answer(request)
+            val reply = if(request.method == "eth_chainId") chainAnswer?.invoke(request) ?: ok(request, chainId) else answer(request)
             if(reply.delayMs > 0) Thread.sleep(reply.delayMs)
+            if(reply.drop) return
             val bytes = reply.body.encodeToByteArray()
             out.write("HTTP/1.1 ${reply.status} X\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\n\r\n".encodeToByteArray())
             out.write(bytes)
@@ -94,7 +105,7 @@ class LitVmRpcTest {
         Answer(200, """{"jsonrpc":"2.0","id":${r.id},"error":{"code":$code,"message":"$message"${if(data != null) ",\"data\":\"$data\"" else ""}}}""")
 
     private val url get() = "http://127.0.0.1:${server.localPort}/"
-    private var now = 0L
+    @Volatile private var now = 0L
 
     private fun rpc(deadline: () -> Long? = { null }, clock: () -> Long = { now }, at: String = url, proxy: SocksProxy? = null) =
         LitVmRpc.forTest(LitVmNetwork.LITEFORGE_TESTNET, proxy, deadline, clock, at)
@@ -390,12 +401,112 @@ class LitVmRpcTest {
         assertEquals(1, calls("eth_call"))
     }
 
-    private fun serveSocks5(client: Socket, asked: MutableList<String>, targetPort: Int) {
+    @Test fun onlyACallCanRevert(): Unit = runBlocking {
+        //An error answering eth_getCode, eth_getBalance or eth_chainId is a failure, whatever its code or words
+        answer = { r -> error(r, 3, "execution reverted") }
+        assertFalse(assertFailsWith<LitVmException> { rpc().hasCode(BADGE) } is CallReverted)
+        assertFalse(assertFailsWith<LitVmException> { rpc().balance(HOLDER) } is CallReverted)
+        chainAnswer = { r -> error(r, 3, "execution reverted") }
+        val chain = assertFailsWith<LitVmException> { rpc().verifyChain() }
+        assertFalse(chain is CallReverted)
+        chainAnswer = { r -> error(r, -32000, "header not found") }
+        assertEquals("header not found", assertFailsWith<LitVmException> { rpc().verifyChain() }.message)
+        assertEquals(0, calls("eth_call"))
+    }
+
+    @Test fun aHugeChainIdIsAnotherChainAndAnOverlongOneIsAFailure(): Unit = runBlocking {
+        chainId = "\"0x" + "f".repeat(64) + "\""
+        assertEquals("This server is for another chain.", assertFailsWith<LitVmException> { rpc().verifyChain() }.message)
+        chainId = "\"0x" + "1".repeat(65) + "\""
+        val e = assertFailsWith<LitVmException> { rpc().verifyChain() }
+        assertTrue(e.message != "This server is for another chain.", e.message)
+    }
+
+    @Test fun anErrorBesideAResultIsTheError(): Unit = runBlocking {
+        answer = { r -> Answer(200, """{"jsonrpc":"2.0","id":${r.id},"result":"0x00","error":{"code":-32005,"message":"request limit exceeded"}}""") }
+        val e = assertFailsWith<LitVmException> { rpc().call(BADGE, NAME) }
+        assertEquals("request limit exceeded", e.message)
+        answer = { r -> Answer(200, """{"jsonrpc":"2.0","id":${r.id},"error":{"code":3,"message":"execution reverted"},"result":"0x00"}""") }
+        assertFailsWith<CallReverted> { rpc().call(BADGE, NAME) }
+    }
+
+    @Test fun airGappedModeDropsTheKeptConnection(): Unit = runBlocking {
+        val rpc = rpc()
+        rpc.verifyChain()
+        assertEquals(1, accepts.get())
+        NetworkPolicy.blocked = true
+        assertFailsWith<AirGappedException> { rpc.call(BADGE, NAME) }
+        assertEquals(1, requests.size)
+        //The kept socket was cut when the switch turned on: the stub sees its connection end
+        val until = System.nanoTime() + 2_000_000_000L
+        while(ended.get() < 1 && System.nanoTime() < until) Thread.sleep(20)
+        assertEquals(1, ended.get())
+        assertEquals(1, accepts.get())
+    }
+
+    @Test fun aRequestThatWaitedForTheConnectionPastTheDeadlineIsNotSent(): Unit = runBlocking {
+        //The first call holds the endpoint while the stub takes its time; the clock passes the second call's deadline
+        //while it waits for the endpoint, so it is measured again after the wait and not sent
+        val rpc = rpc(deadline = { 5_000 })
+        rpc.verifyChain()
+        answer = { r -> Answer(200, """{"jsonrpc":"2.0","id":${r.id},"result":"0x01"}""", delayMs = 800) }
+        val first = async(Dispatchers.IO) { rpc.call(BADGE, NAME) }
+        val until = System.nanoTime() + 2_000_000_000L
+        while(calls("eth_call") < 1 && System.nanoTime() < until) Thread.sleep(10)
+        val second = async(Dispatchers.IO) { runCatching { rpc.call(BADGE, NAME) } }
+        Thread.sleep(200)
+        now = 10_000
+        assertContentEquals(byteArrayOf(1), first.await())
+        assertIs<TimedOut>(second.await().exceptionOrNull())
+        assertEquals(1, calls("eth_call"))
+    }
+
+    @Test fun aRetryOnANewConnectionIsMeasuredAgainstTheDeadline(): Unit = runBlocking {
+        //The kept connection dies without an answer after the deadline has passed: the read-only retry is not sent
+        val rpc = rpc(deadline = { 5_000 })
+        rpc.verifyChain()
+        answer = { _ -> now = 10_000; Answer(200, "", drop = true) }
+        assertFailsWith<TimedOut> { rpc.call(BADGE, NAME) }
+        assertEquals(1, calls("eth_call"))
+        assertEquals(1, accepts.get())
+    }
+
+    @Test fun closingWhileConnectingSendsNothing(): Unit = runBlocking {
+        val asked = CopyOnWriteArrayList<String>()
+        ServerSocket(0).use { socks ->
+            thread(isDaemon = true) {
+                while(!socks.isClosed) {
+                    val c = runCatching { socks.accept() }.getOrNull() ?: break
+                    thread(isDaemon = true) { runCatching { serveSocks5(c, asked, server.localPort, delayMs = 600) } }
+                }
+            }
+            val rpc = rpc(at = "http://litvm-rpc.invalid:8545/", proxy = SocksProxy("127.0.0.1", socks.localPort))
+            val call = async(Dispatchers.IO) { runCatching { rpc.call(BADGE, NAME) } }
+            Thread.sleep(200)
+            rpc.close()
+            assertIs<IOException>(call.await().exceptionOrNull())
+            Thread.sleep(300)
+        }
+        assertTrue(requests.isEmpty(), "nothing sent after close: ${requests.map { it.method }}")
+    }
+
+    @Test fun noDeadlineOverflows(): Unit = runBlocking {
+        //The furthest deadline from the earliest clock reading, and the earliest deadline from any reading
+        assertContentEquals(byteArrayOf(1), rpc(deadline = { Long.MAX_VALUE }, clock = { Long.MIN_VALUE + 1 }).call(BADGE, NAME))
+        assertFailsWith<TimedOut> { rpc(deadline = { Long.MIN_VALUE }, clock = { 0L }).call(BADGE, NAME) }
+        assertEquals(Long.MAX_VALUE, HttpEndpoint.Deadline(Long.MAX_VALUE) { -5L }.left())
+        assertEquals(0L, HttpEndpoint.Deadline(Long.MIN_VALUE) { Long.MAX_VALUE }.left())
+        assertEquals(5L, HttpEndpoint.Deadline(10L) { 5L }.left())
+    }
+
+    private fun serveSocks5(client: Socket, asked: MutableList<String>, targetPort: Int, delayMs: Long = 0) {
         client.use { c ->
             val input = DataInputStream(c.getInputStream())
             val out = c.getOutputStream()
             input.readByte()
             repeat(input.readUnsignedByte()) { input.readByte() }
+            //A slow proxy keeps the client's connect waiting
+            if(delayMs > 0) Thread.sleep(delayMs)
             out.write(byteArrayOf(5, 0))
             input.readByte(); input.readByte(); input.readByte()
             require(input.readUnsignedByte() == 3) { "proxy was given an IP, not a hostname" }

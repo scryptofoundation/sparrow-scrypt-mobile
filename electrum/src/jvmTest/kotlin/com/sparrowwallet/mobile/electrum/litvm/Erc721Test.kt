@@ -139,8 +139,14 @@ class Erc721Test {
         //The zero address owns nothing, and a word with bits above the address is not an address
         node.contract(BADGE, withAnswer(vaultBadge(), OWNER_OF_WORLD_1, Reply.result(word(0))))
         assertNull(Erc721.ownerOf(node, BADGE, WORLD_1))
+        //Ruling M3 (phone): an answer that cannot be read is a failure, not "nobody": a word with bits above the address, an
+        //empty answer and one over the cap throw
         node.contract(BADGE, withAnswer(vaultBadge(), OWNER_OF_WORLD_1, Reply.result("01" + "00".repeat(11) + hex(HOLDER))))
-        assertNull(Erc721.ownerOf(node, BADGE, WORLD_1))
+        assertThrowsIo { Erc721.ownerOf(node, BADGE, WORLD_1) }
+        node.contract(BADGE, withAnswer(vaultBadge(), OWNER_OF_WORLD_1, Reply.result("")))
+        assertThrowsIo { Erc721.ownerOf(node, BADGE, WORLD_1) }
+        node.contract(BADGE, withAnswer(vaultBadge(), OWNER_OF_WORLD_1, Reply.result("ab".repeat(8_193))))
+        assertThrowsIo { Erc721.ownerOf(node, BADGE, WORLD_1) }
     }
 
     @Test fun namesAreSanitised(): Unit = runBlocking {

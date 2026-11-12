@@ -74,8 +74,29 @@ class HttpEndpoint(
     suspend fun get(path: String, accept: String = "*/*"): Response = request("GET", path, null, accept)
 
     /** [contentType] is sent as the body's Content-Type (ord's /outputs reads a JSON array only as application/json). */
-    suspend fun post(path: String, body: String, contentType: String = "text/plain", accept: String = "*/*", timeoutMs: Int? = null): Response =
-        request("POST", path, body, accept, contentType, timeoutMs)
+    suspend fun post(path: String, body: String, contentType: String = "text/plain", accept: String = "*/*", deadline: Deadline? = null): Response =
+        request("POST", path, body, accept, contentType, deadline)
+
+    /**
+     * An absolute deadline on [clock] for one request. The time left is measured after the endpoint's lock is taken and
+     * again before a retry, and cuts the connect timeout, the read timeout and the whole-request limit (never above the
+     * endpoint's own); with none left the request is not sent ([DeadlinePassed]).
+     */
+    class Deadline(val at: Long, val clock: () -> Long) {
+        /** Milliseconds left, 0 when passed; no overflow for any [at] or clock reading. */
+        fun left(): Long {
+            val now = clock()
+            if(at <= now) return 0
+            return try {
+                Math.subtractExact(at, now)
+            } catch(e: ArithmeticException) {
+                Long.MAX_VALUE
+            }
+        }
+    }
+
+    /** Not sent: the request's [Deadline] had passed. */
+    class DeadlinePassed : IOException("Timed out")
 
     private class Conn(val raw: Socket, val socket: Socket, val input: InputStream, val release: () -> Unit) {
         fun close() {
@@ -105,25 +126,29 @@ class HttpEndpoint(
         if(conn === c) conn = null
     }
 
-    /**
-     * [limitMs], when given, cuts this request's connect timeout, read timeout and whole-request deadline to that many
-     * milliseconds (never above the endpoint's own); a caller with a deadline passes the time it has left.
-     */
     private suspend fun request(method: String, path: String, body: String?, accept: String = "*/*", contentType: String = "text/plain",
-                                limitMs: Int? = null): Response = lock.withLock {
+                                deadline: Deadline? = null): Response = lock.withLock {
         withContext(Dispatchers.IO) {
             NetworkPolicy.check(label)
             refuseUnusable()
             //a broadcast goes on a fresh connection: a kept one may have died while idle, and a POST is never retried
             if(method != "GET" && !reusePosts) close()
             try {
-                exchange(method, path, body, accept, contentType, limitMs)
+                exchange(method, path, body, accept, contentType, limit(deadline))
             } catch(e: StaleConnection) {
                 NetworkPolicy.check(label)
                 refuseUnusable()
-                exchange(method, path, body, accept, contentType, limitMs)
+                //measured again: the first try may have used most of it
+                exchange(method, path, body, accept, contentType, limit(deadline))
             }
         }
+    }
+
+    //The time left in milliseconds, measured now; null without a deadline
+    private fun limit(deadline: Deadline?): Int? {
+        val left = deadline?.left() ?: return null
+        if(left <= 0) throw DeadlinePassed()
+        return left.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
     /**
@@ -169,7 +194,13 @@ class HttpEndpoint(
         var answered = false
         var status = -1
         try {
-            if(c == null) c = open(raw, readTimeoutMs).also { conn = it }
+            if(c == null) {
+                val made = open(raw, readTimeoutMs)
+                c = made
+                conn = made
+                //Closed while connecting: the new connection is dropped, never used or kept
+                if(!usable()) throw IOException("$url is closed")
+            }
             //A kept connection may carry an earlier request's timeout
             c.socket.soTimeout = readTimeoutMs
             opened = System.nanoTime()

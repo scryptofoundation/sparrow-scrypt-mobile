@@ -68,8 +68,11 @@ internal object LitVmReplies {
     //A 256-bit quantity is at most 64 hex digits
     private const val MAX_QUANTITY_DIGITS = 64
 
-    /** The result of the reply to request [id]. */
-    fun result(status: Int, body: String, id: Long): JsonValue {
+    /**
+     * The result of the reply to request [id]. Only an eth_call ([call] true) can be a revert; an error answering any
+     * other method is a failure. An error beside a result is the error.
+     */
+    fun result(status: Int, body: String, id: Long, call: Boolean): JsonValue {
         if(status == 429) throw RateLimitedException("The LitVM server answered HTTP 429 (rate limited)")
         if(status / 100 != 2) throw LitVmException("The LitVM server answered HTTP $status")
         if(body.length > MAX_RESPONSE_CHARS) throw LitVmException("The LitVM server's answer is too large")
@@ -83,7 +86,7 @@ internal object LitVmReplies {
             val shown = TextRules.singleLine(message, MAX_MESSAGE)
             //geth and Nitro report a revert with data as code 3, one without data as -32000 "execution reverted". Kept
             //narrow: any other error (a rate limit, a node fault) must not read as the contract's answer
-            if(isThree(error["code"]) || message.startsWith("execution reverted")) throw CallReverted(shown.ifEmpty { "execution reverted" })
+            if(call && (isThree(error["code"]) || message.startsWith("execution reverted"))) throw CallReverted(shown.ifEmpty { "execution reverted" })
             throw LitVmException(shown.ifEmpty { "The LitVM server answered with an error" })
         }
         return reply["result"] ?: throw LitVmException(NOT_JSON_RPC)
