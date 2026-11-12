@@ -302,8 +302,12 @@ class EvmVectorTest {
         for(file in files) {
             val text = file.readText()
             for(banned in listOf("java.", "javax.", "android.", "Charsets", "codePointAt", "Character.", "String.format", ".lowercase(", ".uppercase(",
-                    ".trim(", "isWhitespace", "isLetter", "isDigit", "—")) {
+                    ".trim(", "isWhitespace", "isLetter", "isDigit", "Socket", "URL", "URI(", "File(", "—")) {
                 assertTrue(banned !in text, "${file.name} uses $banned")
+            }
+            //Nothing from outside this module: no network, file or platform code
+            for(line in text.lines().filter { it.startsWith("import ") }) {
+                assertTrue(line.startsWith("import com.sparrowwallet.mobile.crypto."), "${file.name}: $line")
             }
         }
     }

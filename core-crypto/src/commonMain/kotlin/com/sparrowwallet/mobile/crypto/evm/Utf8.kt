@@ -91,6 +91,76 @@ internal object Utf8 {
         return out.toString()
     }
 
+    /**
+     * Strict decoding, as the desktop's CharsetDecoder set to REPORT: well-formed UTF-8 only (no overlong forms, no
+     * surrogates, nothing above U+10FFFF, nothing truncated), otherwise null.
+     */
+    fun decodeStrict(src: ByteArray): String? {
+        val out = StringBuilder(src.size)
+        var i = 0
+        while(i < src.size) {
+            val b1 = src[i].toInt() and 0xFF
+            when {
+                b1 < 0x80 -> {
+                    out.append(b1.toChar())
+                    i++
+                }
+                b1 in 0xC2..0xDF -> {
+                    if(i + 1 >= src.size || notContinuation(src[i + 1].toInt())) return null
+                    out.append((((b1 and 0x1F) shl 6) or (src[i + 1].toInt() and 0x3F)).toChar())
+                    i += 2
+                }
+                b1 in 0xE0..0xEF -> {
+                    if(i + 2 >= src.size) return null
+                    val b2 = src[i + 1].toInt() and 0xFF
+                    val b3 = src[i + 2].toInt()
+                    val low = if(b1 == 0xE0) 0xA0 else 0x80
+                    val high = if(b1 == 0xED) 0x9F else 0xBF
+                    if(b2 < low || b2 > high || notContinuation(b3)) return null
+                    out.append((((b1 and 0x0F) shl 12) or ((b2 and 0x3F) shl 6) or (b3 and 0x3F)).toChar())
+                    i += 3
+                }
+                b1 in 0xF0..0xF4 -> {
+                    if(i + 3 >= src.size) return null
+                    val b2 = src[i + 1].toInt() and 0xFF
+                    val b3 = src[i + 2].toInt()
+                    val b4 = src[i + 3].toInt()
+                    val low = if(b1 == 0xF0) 0x90 else 0x80
+                    val high = if(b1 == 0xF4) 0x8F else 0xBF
+                    if(b2 < low || b2 > high || notContinuation(b3) || notContinuation(b4)) return null
+                    val uc = ((b1 and 0x07) shl 18) or ((b2 and 0x3F) shl 12) or ((b3 and 0x3F) shl 6) or (b4 and 0x3F)
+                    out.append((0xD800 + ((uc - 0x10000) ushr 10)).toChar())
+                    out.append((0xDC00 + ((uc - 0x10000) and 0x3FF)).toChar())
+                    i += 4
+                }
+                else -> return null
+            }
+        }
+        return out.toString()
+    }
+
+    /** UTF-8 of one code point that is not a surrogate. */
+    fun encodeCodePoint(c: Int, out: ByteSink) {
+        when {
+            c < 0x80 -> out.write(c)
+            c < 0x800 -> {
+                out.write(0xC0 or (c shr 6))
+                out.write(0x80 or (c and 0x3F))
+            }
+            c < 0x10000 -> {
+                out.write(0xE0 or (c shr 12))
+                out.write(0x80 or ((c shr 6) and 0x3F))
+                out.write(0x80 or (c and 0x3F))
+            }
+            else -> {
+                out.write(0xF0 or (c shr 18))
+                out.write(0x80 or ((c shr 12) and 0x3F))
+                out.write(0x80 or ((c shr 6) and 0x3F))
+                out.write(0x80 or (c and 0x3F))
+            }
+        }
+    }
+
     private fun notContinuation(b: Int): Boolean = (b and 0xC0) != 0x80
 
     private fun malformed3(b1: Int, b2: Int, b3: Int): Boolean =
@@ -119,4 +189,21 @@ internal object Utf8 {
     }
 
     private const val E0 = -32 //0xE0 as a signed byte
+}
+
+/** A growing byte buffer (common code has no ByteArrayOutputStream). */
+internal class ByteSink(capacity: Int = 64) {
+    private var bytes = ByteArray(maxOf(capacity, 16))
+
+    var size = 0
+        private set
+
+    fun write(b: Int) {
+        if(size == bytes.size) {
+            bytes = bytes.copyOf(bytes.size * 2)
+        }
+        bytes[size++] = b.toByte()
+    }
+
+    fun toByteArray(): ByteArray = bytes.copyOf(size)
 }
