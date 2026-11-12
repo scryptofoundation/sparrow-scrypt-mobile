@@ -658,22 +658,10 @@ class WalletRepository(context: Context) {
         val proxy = indexerProxy(serverSettings(coin(data), network(data)))
         return litVmReads.run(address.toString()) {
             withContext(Dispatchers.IO) {
-                val rpc = com.sparrowwallet.mobile.electrum.litvm.LitVmRpc(com.sparrowwallet.mobile.electrum.litvm.LitVmNetwork.LITEFORGE_TESTNET, proxy)
-                kotlinx.coroutines.coroutineScope {
-                    //A socket read does not see cancellation: closing the client ends it
-                    val closer = async {
-                        try {
-                            kotlinx.coroutines.awaitCancellation()
-                        } finally {
-                            rpc.close()
-                        }
-                    }
-                    try {
-                        LitVmReader.read(rpc, { (it as com.sparrowwallet.mobile.electrum.litvm.LitVmRpc).verifyChain() }, address, tilePixels, detailPixels)
-                    } finally {
-                        closer.cancel()
-                        rpc.close()
-                    }
+                LitVmClients.use(NetworkPolicy.blocked,
+                    open = { com.sparrowwallet.mobile.electrum.litvm.LitVmRpc(com.sparrowwallet.mobile.electrum.litvm.LitVmNetwork.LITEFORGE_TESTNET, proxy) },
+                    close = { it.close() }) { rpc ->
+                    LitVmReader.read(rpc, { (it as com.sparrowwallet.mobile.electrum.litvm.LitVmRpc).verifyChain() }, address, tilePixels, detailPixels)
                 }
             }
         }

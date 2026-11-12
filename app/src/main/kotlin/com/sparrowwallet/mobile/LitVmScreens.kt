@@ -62,7 +62,11 @@ import com.sparrowwallet.mobile.crypto.evm.NftPicturePlan
 import com.sparrowwallet.mobile.crypto.evm.SvgSubset
 import com.sparrowwallet.mobile.electrum.litvm.LitVmNetwork
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /*
@@ -72,10 +76,12 @@ import kotlinx.coroutines.withContext
 
 /**
  * One visit of a wallet's LitVM screen and its NFT details: the address (only the 20 bytes), the last read, the grid's
- * place, and the reads asked for ([requested]: the open and each Refresh) and finished ([done]), so coming back from a
- * detail does not read again.
+ * place, and the reads asked for ([requested]: the open and each Refresh) and finished ([done]). The read belongs to the
+ * visit, not to a screen: opening a detail does not stop it, coming back does not start one, and [close] (leaving the
+ * visit) cancels it, which closes its client.
  */
 internal class LitVmVisit {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val grid = LazyGridState()
     var address by mutableStateOf<EvmAddress?>(null)
     var addressFailed by mutableStateOf(false)
@@ -84,14 +90,28 @@ internal class LitVmVisit {
     var requested by mutableIntStateOf(1)
     var done by mutableIntStateOf(0)
     var names by mutableStateOf<Map<EvmAddress, String>>(emptyMap())
+
+    /** Starts [work] as this visit's read; [reading] until it ends. */
+    fun start(work: suspend () -> Unit) {
+        reading = true
+        scope.launch {
+            try {
+                work()
+            } finally {
+                reading = false
+            }
+        }
+    }
+
+    fun close() = scope.cancel()
 }
 
-/** Drawn pictures, by chain, contract, token id and size: at most a screenful of tiles and 8 MiB. */
+/** Drawn pictures, by chain, contract, token id, source and size: at most a screenful of tiles and 8 MiB. */
 private val litVmBitmaps = SizedLru<Bitmap>(LitVmModel.MAX_TILES, 8L * 1024 * 1024) { it.allocationByteCount.toLong() }
 
 /**
  * The wallet's LitVM account on LiteForge: its address, its zkLTC balance and the NFTs it holds in the built-in
- * collections. Reads only while open: when it opens and on Refresh; leaving it cancels the read.
+ * collections. Reads only during its visit: when it first opens and on Refresh; leaving the visit cancels the read.
  */
 @Composable
 internal fun LitVmScreen(repo: WalletRepository, home: Screen.Home, visit: LitVmVisit, onTile: (String) -> Unit, onBack: () -> Unit) {
@@ -110,13 +130,13 @@ internal fun LitVmScreen(repo: WalletRepository, home: Screen.Home, visit: LitVm
         if(derived == null) visit.addressFailed = true else visit.address = derived
     }
     val address = visit.address
-    // the read: on open and on Refresh, never air-gapped; leaving the screen cancels it (and its client is closed)
+    // the read: on the first open and on Refresh, never air-gapped, never while one runs; it runs in the visit, so a
+    // detail opened meanwhile does not stop it, and leaving the visit cancels it (and its client is closed)
     LaunchedEffect(address, visit.requested) {
         val from = address ?: return@LaunchedEffect
         val ticket = visit.requested
-        if(!LitVmModel.shouldRead(gapped, ticket, visit.done)) return@LaunchedEffect
-        visit.reading = true
-        try {
+        if(!LitVmModel.shouldRead(gapped, ticket, visit.done, visit.reading)) return@LaunchedEffect
+        visit.start {
             val read = try {
                 repo.readLitVm(data, from, tilePixels, detailPixels)
             } catch(e: CancellationException) {
@@ -129,12 +149,10 @@ internal fun LitVmScreen(repo: WalletRepository, home: Screen.Home, visit: LitVm
                 visit.names = visit.names + LitVmModel.names(read)
             }
             visit.done = ticket
-        } finally {
-            visit.reading = false
         }
     }
-    val view = remember(address, visit.read, visit.reading, gapped, visit.names) {
-        LitVmModel.build(address, visit.read, gapped, visit.reading, visit.names)
+    val view = remember(address, visit.read, visit.reading, gapped, visit.names, visit.addressFailed) {
+        LitVmModel.build(address, visit.read, gapped, visit.reading, visit.names, visit.addressFailed)
     }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
 
@@ -161,7 +179,7 @@ internal fun LitVmScreen(repo: WalletRepository, home: Screen.Home, visit: LitVm
                                 copied = true
                             }) { Text(if(copied) "Copied" else LitVmModel.COPY_ADDRESS) }
                         }
-                        visit.addressFailed -> Text("The address could not be worked out.", style = MaterialTheme.typography.bodySmall)
+                        visit.addressFailed -> {}
                         else -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                     }
                     view.balance?.let {
@@ -247,10 +265,19 @@ private fun LoadedPicture(tile: LitVmTile, detail: Boolean) {
             is LitVmPicture.Drawn -> if(detail) picture.detail.size else picture.tile.size
             else -> if(detail) InscriptionPreview.DETAIL_TARGET.toDouble() else InscriptionPreview.THUMB_TARGET.toDouble()
         }
-        val key = LitVmModel.pictureKey(LitVmNetwork.LITEFORGE_TESTNET, tile.contract, tile.tokenId, pixels)
+        val source = when(picture) {
+            is LitVmPicture.Drawn -> picture.source
+            is LitVmPicture.Raster -> picture.source
+            else -> 0L
+        }
+        val key = LitVmModel.pictureKey(LitVmNetwork.LITEFORGE_TESTNET, tile.contract, tile.tokenId, source, pixels)
         var failed by remember(key) { mutableStateOf(false) }
-        val bitmap by produceState(litVmBitmaps.get(key), key) {
-            if(value != null) return@produceState
+        // a new key starts empty: never the last key's bitmap
+        val bitmap by produceState<Bitmap?>(null, key) {
+            litVmBitmaps.get(key)?.let {
+                value = it
+                return@produceState
+            }
             val made = previewDecodes.run {
                 when(picture) {
                     is LitVmPicture.Drawn -> drawPlan(if(detail) picture.detail else picture.tile)
@@ -267,7 +294,7 @@ private fun LoadedPicture(tile: LitVmTile, detail: Boolean) {
         }
         val shown = bitmap
         when {
-            shown != null -> Image(shown.asImageBitmap(), contentDescription = "Picture", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+            shown != null -> Image(shown.asImageBitmap(), contentDescription = tile.label, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
             failed -> Placeholder(LitVmPlaceholder(LitVmModel.NO_PICTURE, null))
             else -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         }
@@ -279,7 +306,8 @@ private fun Placeholder(placeholder: LitVmPlaceholder) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(6.dp)) {
         Text(placeholder.text, style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        placeholder.host?.let { PlainText(it, 1, MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        // already cut from the front to fit two lines, so the end of the name stays in view
+        placeholder.host?.let { PlainText(it, 2, MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 

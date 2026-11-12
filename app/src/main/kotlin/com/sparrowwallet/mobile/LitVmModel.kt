@@ -8,7 +8,6 @@ import com.sparrowwallet.mobile.crypto.evm.EvmAddress
 import com.sparrowwallet.mobile.crypto.evm.NftMetadata
 import com.sparrowwallet.mobile.crypto.evm.NftPicturePlan
 import com.sparrowwallet.mobile.crypto.evm.SvgSubset
-import com.sparrowwallet.mobile.crypto.evm.TextRules
 import com.sparrowwallet.mobile.crypto.evm.UInt256
 import com.sparrowwallet.mobile.electrum.RateLimitedException
 import com.sparrowwallet.mobile.electrum.litvm.Erc721
@@ -19,19 +18,26 @@ import com.sparrowwallet.mobile.electrum.litvm.LitVmException
 import com.sparrowwallet.mobile.electrum.litvm.LitVmNetwork
 import com.sparrowwallet.mobile.electrum.litvm.Nft
 import com.sparrowwallet.mobile.electrum.litvm.NftLister
+import com.sparrowwallet.mobile.electrum.litvm.TimedOut
 import com.sparrowwallet.mobile.storage.VaultData
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 
 /**
  * The LitVM account of a wallet: the address of m/44'/60'/0'/0/0 under the wallet's master key, which is the depth-0 key
- * of the wallet's own seed (a BIP39 seed with its passphrase, or an Electrum seed's own seed bytes), as the desktop's
+ * of the wallet's own seed, which must not be blank (a BIP39 seed with its passphrase, or an Electrum seed's own seed bytes), as the desktop's
  * same-seed LitVM link derives it. Only the 20-byte address comes out: the master key's private key and chain code are
  * zeroed before this returns, and nothing here keeps, logs or throws with key material.
  */
 internal fun litVmAddressOf(data: VaultData): EvmAddress {
+    //An empty mnemonic would stretch to the well-known empty-seed account: refused, never shown as the wallet's
+    require(data.mnemonic.isNotBlank()) { "The wallet has no seed on this phone" }
     val master = walletMasterKey(data)
     try {
         return EvmAccount.address(master)
@@ -57,13 +63,16 @@ class LitVmCollection(val contract: EvmAddress, val collection: Erc721Collection
 
 /**
  * What one LitVM read gave for [address]: the [balance] in wei (null when not read), a [problem] that ended it early
- * (with [detail], app words or cleaned server words), the built-in [collections] (empty when the chain check or the
- * balance failed), whether the three minutes ran out ([stopped]), and the pictures prepared for the shown tiles, by tile
- * key. Never holds a key: only the address.
+ * (with the [reason], which the screen says only in the app's own fixed words), the built-in [collections] (empty when
+ * the chain check or the balance failed), whether the refresh's three minutes cut it short ([stopped]), and the pictures
+ * prepared for the shown tiles, by tile key. Never holds a key, nor any text from the server: only the address.
  */
-class LitVmRead(val address: EvmAddress, val balance: UInt256?, val problem: Problem?, val detail: String?, collections: List<LitVmCollection>,
+class LitVmRead(val address: EvmAddress, val balance: UInt256?, val problem: Problem?, val reason: Reason?, collections: List<LitVmCollection>,
                 val stopped: Boolean, pictures: Map<String, LitVmPicture>) {
     enum class Problem { CHAIN, BALANCE, RATE_LIMITED, AIR_GAPPED }
+
+    /** Why the chain check or the balance failed, as the app says it (see [LitVmModel.reasonText]). */
+    enum class Reason { WRONG_CHAIN, TIMED_OUT, RATE_LIMITED, UNREACHABLE }
 
     val collections: List<LitVmCollection> = collections.toList()
     val pictures: Map<String, LitVmPicture> = HashMap(pictures)
@@ -71,11 +80,11 @@ class LitVmRead(val address: EvmAddress, val balance: UInt256?, val problem: Pro
 
 /** A token's picture as the screen may show it, decided off the main thread in the read. */
 sealed interface LitVmPicture {
-    /** An SVG in the subset, laid out for the tile and for the detail. */
-    class Drawn(val tile: NftPicturePlan.Plan, val detail: NftPicturePlan.Plan) : LitVmPicture
+    /** An SVG in the subset, laid out for the tile and for the detail; [source] is a hash of its text, for the cache key. */
+    class Drawn(val tile: NftPicturePlan.Plan, val detail: NftPicturePlan.Plan, val source: Long) : LitVmPicture
 
-    /** PNG, JPEG, GIF or WebP bytes [PreviewRules] cleared, with the size their header declares. */
-    class Raster(bytes: ByteArray, val width: Int, val height: Int) : LitVmPicture {
+    /** PNG, JPEG, GIF or WebP bytes [PreviewRules] cleared, with the size their header declares; [source] hashes the bytes. */
+    class Raster(bytes: ByteArray, val width: Int, val height: Int, val source: Long) : LitVmPicture {
         private val raw = bytes.copyOf()
         val bytes: ByteArray get() = raw.copyOf()
     }
@@ -109,8 +118,8 @@ class LitVmTile(val key: String, val label: String, val collection: String, val 
 data class LitVmNote(val name: String?, val text: String)
 
 /**
- * What the LitVM screen shows. [status] is the app's words; [statusDetail] cleaned words about a failure, shown on their
- * own. [empty] only when every built-in collection was read in full and holds nothing.
+ * What the LitVM screen shows. [status] and [statusDetail] are only ever the app's own fixed sentences, never text from
+ * the server or a contract. [empty] only when every built-in collection was read in full and holds nothing.
  */
 class LitVmView(val address: String?, val balance: String?, val status: String?, val statusDetail: String?, val tiles: List<LitVmTile>,
                 val notes: List<LitVmNote>, val empty: Boolean, val canRefresh: Boolean)
@@ -142,12 +151,19 @@ object LitVmModel {
     const val BALANCE_FAILED = "Could not read the zkLTC balance."
     const val RATE_LIMITED = "The LitVM server is limiting requests. Refresh later."
     const val UNREACHABLE = "The LitVM server could not be reached."
+    const val WRONG_CHAIN = "This server is for another chain."
+    const val TIMED_OUT = "The LitVM server took too long."
+    const val ADDRESS_FAILED = "The address could not be worked out."
     const val UNIT = "zkLTC"
+
+    /** Every sentence the status area can show (the status line, then its second line). */
+    val STATUS_SENTENCES = listOf(READING, AIR_GAPPED, ADDRESS_FAILED, CHAIN_FAILED, BALANCE_FAILED, RATE_LIMITED, STOPPED, WRONG_CHAIN,
+        TIMED_OUT, UNREACHABLE)
 
     /** The most tiles shown, across every collection, in display order. */
     const val MAX_TILES = 96
-    const val MAX_MESSAGE = 120
-    const val MAX_HOST_CHARS = 40
+    /** A hosted picture's host is cut from the front to this many characters: two lines of the narrowest tile. */
+    const val MAX_HOST_CHARS = 24
     /** One refresh's time, and each collection's within it. */
     const val REFRESH_MS = 180_000L
     const val COLLECTION_MS = NftLister.DEADLINE_MS
@@ -161,14 +177,27 @@ object LitVmModel {
      * another wallet ([companionOf]) and shown on the Public layer. [info] is null when the wallet is not listed.
      */
     fun available(info: WalletRepository.WalletInfo?, hasSeed: Boolean, wallets: List<WalletRepository.WalletInfo>, layer: Layer): Boolean =
-        info != null && hasSeed && layer == Layer.PUBLIC && info.coin == Coin.LITECOIN && info.network == Network.TESTNET &&
-            info.scriptType != "MWEB" && info.links.parent == null && wallets.none { companionOf(it, info, wallets) }
+        info != null && mayOffer(info.coin, info.network, info.scriptType, hasSeed, layer) && info.links.parent == null &&
+            wallets.none { companionOf(it, info, wallets) }
+
+    /** What [available] decides without the wallet list: Home looks at the list only when this holds. */
+    fun mayOffer(coin: Coin, network: Network, scriptType: String, hasSeed: Boolean, layer: Layer): Boolean =
+        hasSeed && layer == Layer.PUBLIC && coin == Coin.LITECOIN && network == Network.TESTNET && scriptType != "MWEB"
 
     /**
-     * Whether the screen starts a read: never while air-gapped; otherwise when one was asked for ([requested], counting
-     * the open and each Refresh) and not yet finished ([done]), so coming back from a detail reads nothing.
+     * Whether a read starts: never while air-gapped or while one runs (the read belongs to the visit, so opening a
+     * detail does not stop it); otherwise when one was asked for ([requested], counting the open and each Refresh) and
+     * not yet finished ([done]). Coming back from a detail asks for nothing, so it never starts one by itself.
      */
-    fun shouldRead(airGapped: Boolean, requested: Int, done: Int): Boolean = !airGapped && requested != done
+    fun shouldRead(airGapped: Boolean, requested: Int, done: Int, running: Boolean): Boolean = !airGapped && !running && requested != done
+
+    /** The app's sentence for why the chain check or the balance failed. */
+    fun reasonText(reason: LitVmRead.Reason): String = when(reason) {
+        LitVmRead.Reason.WRONG_CHAIN -> WRONG_CHAIN
+        LitVmRead.Reason.TIMED_OUT -> TIMED_OUT
+        LitVmRead.Reason.RATE_LIMITED -> RATE_LIMITED
+        LitVmRead.Reason.UNREACHABLE -> UNREACHABLE
+    }
 
     /** Wei as zkLTC with up to six decimals, cut (never rounded up) and trimmed; exact integer arithmetic. */
     fun balanceText(wei: UInt256): String {
@@ -211,9 +240,18 @@ object LitVmModel {
     /** A tile's key in the visit: its contract and token id, never anything from its metadata. */
     fun tileKey(nft: Nft): String = "${nft.collection.contract}/${nft.tokenId}"
 
-    /** A drawn picture's cache key: per chain, contract, token id and pixel size. */
-    fun pictureKey(network: LitVmNetwork, contract: EvmAddress, tokenId: UInt256, pixels: Double): String =
-        "${network.chainId}:$contract:$tokenId:${pixels.toInt()}"
+    /** A drawn picture's cache key: per chain, contract, token id, the picture's source (its hash) and pixel size. */
+    fun pictureKey(network: LitVmNetwork, contract: EvmAddress, tokenId: UInt256, source: Long, pixels: Double): String =
+        "${network.chainId}:$contract:$tokenId:${java.lang.Long.toHexString(source)}:${pixels.toInt()}"
+
+    /** 64-bit FNV-1a of the bytes: tells one picture source from another for the cache, not a security hash. */
+    fun sourceHash(bytes: ByteArray): Long {
+        var hash = -0x340d631b7bdddcdbL
+        for(b in bytes) {
+            hash = (hash xor (b.toLong() and 0xFF)) * 0x100000001b3L
+        }
+        return hash
+    }
 
     /**
      * The tokens shown, in the desktop's order (built-in collections first, then by collection name ignoring case, then
@@ -235,12 +273,15 @@ object LitVmModel {
         LitVmPicture.None -> LitVmPlaceholder(NO_PICTURE, null)
     }
 
-    /** A host shortened from the front when long, so its domain stays readable. */
+    /**
+     * A host cut from the front when long, so the registrable end of the name stays: at most [MAX_HOST_CHARS], which the
+     * tile shows on two lines.
+     */
     fun hostText(host: String): String = if(host.length <= MAX_HOST_CHARS) host else "..." + host.takeLast(MAX_HOST_CHARS - 3)
 
     /** A read that could not start (anything thrown around the reader): the server could not be reached, nothing listed. */
     fun unreachable(address: EvmAddress): LitVmRead =
-        LitVmRead(address, null, LitVmRead.Problem.CHAIN, UNREACHABLE, emptyList(), false, emptyMap())
+        LitVmRead(address, null, LitVmRead.Problem.CHAIN, LitVmRead.Reason.UNREACHABLE, emptyList(), false, emptyMap())
 
     /** The name each collection gave in this read, to name it later when it cannot be read. */
     fun names(read: LitVmRead): Map<EvmAddress, String> =
@@ -262,11 +303,15 @@ object LitVmModel {
     /**
      * The screen for [address] (null until derived) and [read] (null before the first): while [airGapped] the address
      * and "Off in air-gapped mode" only; [reading] keeps the last read shown under "Reading...". [names] are names seen
-     * in earlier reads, for a collection that could not be read this time.
+     * in earlier reads, for a collection that could not be read this time. [addressFailed]: the address could not be
+     * worked out, so only that is said and nothing is read.
      */
     fun build(address: EvmAddress?, read: LitVmRead?, airGapped: Boolean, reading: Boolean = false,
-              names: Map<EvmAddress, String> = emptyMap()): LitVmView {
+              names: Map<EvmAddress, String> = emptyMap(), addressFailed: Boolean = false): LitVmView {
         val shownAddress = address?.toString()
+        if(address == null && addressFailed) {
+            return LitVmView(null, null, ADDRESS_FAILED, null, emptyList(), emptyList(), empty = false, canRefresh = false)
+        }
         if(airGapped) {
             return LitVmView(shownAddress, null, AIR_GAPPED, null, emptyList(), emptyList(), empty = false, canRefresh = false)
         }
@@ -301,7 +346,9 @@ object LitVmModel {
             read.stopped -> STOPPED
             else -> null
         }
-        val detail = if(!reading && (read.problem == LitVmRead.Problem.CHAIN || read.problem == LitVmRead.Problem.BALANCE)) read.detail else null
+        val detail = if(!reading && (read.problem == LitVmRead.Problem.CHAIN || read.problem == LitVmRead.Problem.BALANCE)) {
+            read.reason?.let { reasonText(it) }
+        } else null
         val empty = read.problem == null && !read.stopped && read.collections.isNotEmpty() && read.collections.all {
             it.status == LitVmCollection.Status.LISTED && it.tokens.isEmpty() && it.more == 0 && it.failed == 0
         }
@@ -318,12 +365,13 @@ object LitVmPictures {
             val drawing = SvgSubset.parse(image.source)
             val tile = drawing?.let { NftPicturePlan.prepare(it, tilePixels) }
             val detail = drawing?.let { NftPicturePlan.prepare(it, detailPixels) }
-            if(tile == null || detail == null) LitVmPicture.None else LitVmPicture.Drawn(tile, detail)
+            if(tile == null || detail == null) LitVmPicture.None
+            else LitVmPicture.Drawn(tile, detail, LitVmModel.sourceHash(image.source.encodeToByteArray()))
         }
         is NftMetadata.Image.Raster -> {
             val bytes = image.bytes
             val size = if(PreviewRules.kind(null, null, bytes) == PreviewRules.Kind.IMAGE) PreviewRules.dimensions(bytes) else null
-            if(size == null) LitVmPicture.None else LitVmPicture.Raster(bytes, size.first, size.second)
+            if(size == null) LitVmPicture.None else LitVmPicture.Raster(bytes, size.first, size.second, LitVmModel.sourceHash(bytes))
         }
     }
 }
@@ -378,14 +426,16 @@ object LitVmReader {
         try {
             verifyChain(refresh)
         } catch(e: Exception) {
-            return LitVmRead(owner, null, problem(e, LitVmRead.Problem.CHAIN), detail(e), emptyList(), false, emptyMap())
+            return failed(owner, e, LitVmRead.Problem.CHAIN)
         }
         val balance = try {
             refresh.balance(owner)
         } catch(e: Exception) {
-            return LitVmRead(owner, null, problem(e, LitVmRead.Problem.BALANCE), detail(e), emptyList(), false, emptyMap())
+            return failed(owner, e, LitVmRead.Problem.BALANCE)
         }
         var problem: LitVmRead.Problem? = null
+        //Set only when the refresh's own deadline (not a collection's minute) ended a collection's read
+        var cut = false
         val results = ArrayList<LitVmCollection>()
         for(contract in collections) {
             currentCoroutineContext().ensureActive()
@@ -398,9 +448,11 @@ object LitVmReader {
                 results.add(LitVmCollection(contract, null, LitVmCollection.Status.NOT_REACHED, emptyList(), 0, 0))
                 continue
             }
+            //The collection's minute, or less when the refresh ends first: then the refresh's deadline is the one that binds
+            val boundByRefresh = start + LitVmModel.REFRESH_MS - now <= LitVmModel.COLLECTION_MS
             val bounded = refresh.until(now + LitVmModel.COLLECTION_MS)
             var collection: Erc721Collection? = null
-            results.add(try {
+            val result = try {
                 collection = Erc721.read(bounded, contract)
                 //A built-in contract that does not answer as a collection is unread, never an empty one
                 val read = collection
@@ -417,11 +469,15 @@ object LitVmReader {
                 val p = problem(e, null)
                 if(p == LitVmRead.Problem.AIR_GAPPED || p == LitVmRead.Problem.RATE_LIMITED) problem = p
                 LitVmCollection(contract, collection, LitVmCollection.Status.FAILED, emptyList(), 0, 0)
-            })
+            }
+            results.add(result)
+            if(boundByRefresh && calls.clock() - start >= LitVmModel.REFRESH_MS &&
+                (result.status == LitVmCollection.Status.FAILED || result.failed > 0)) {
+                cut = true
+            }
         }
-        //Stopped: a collection was not reached, or the refresh's time ran out with a collection not read in full
-        val stopped = problem == null && (results.any { it.status == LitVmCollection.Status.NOT_REACHED } ||
-            (calls.clock() - start >= LitVmModel.REFRESH_MS && results.any { it.status == LitVmCollection.Status.FAILED || it.failed > 0 }))
+        //Stopped: the refresh's three minutes left a collection unreached, or ended the one being read
+        val stopped = problem == null && (cut || results.any { it.status == LitVmCollection.Status.NOT_REACHED })
         val pictures = HashMap<String, LitVmPicture>()
         for(nft in LitVmModel.shownTokens(results).first) {
             currentCoroutineContext().ensureActive()
@@ -438,11 +494,51 @@ object LitVmReader {
         else -> otherwise
     }
 
-    /** Words about a failure: the client's own (already cleaned, cleaned again and capped), never the HTTP layer's. */
-    private fun detail(e: Exception): String? = when(e) {
-        is RateLimitedException, is AirGappedException -> null
-        is LitVmException -> TextRules.singleLine(e.message.orEmpty(), LitVmModel.MAX_MESSAGE).ifBlank { LitVmModel.UNREACHABLE }
-        else -> LitVmModel.UNREACHABLE
+    /** The chain check or the balance failed: air-gapped mode as such, anything else as [problem] with its reason. */
+    private fun failed(owner: EvmAddress, e: Exception, stage: LitVmRead.Problem): LitVmRead {
+        if(problem(e, stage) == LitVmRead.Problem.AIR_GAPPED) {
+            return LitVmRead(owner, null, LitVmRead.Problem.AIR_GAPPED, null, emptyList(), false, emptyMap())
+        }
+        return LitVmRead(owner, null, stage, reason(e), emptyList(), false, emptyMap())
+    }
+
+    /**
+     * Why it failed, as one of the app's reasons. The exception's message is never shown: the server writes most of it.
+     * Only the client's own wrong-chain refusal, recognised by its exact words, is told apart; a server repeating those
+     * words gets the same fixed sentence.
+     */
+    internal fun reason(e: Exception): LitVmRead.Reason = when(e) {
+        is RateLimitedException -> LitVmRead.Reason.RATE_LIMITED
+        is TimedOut -> LitVmRead.Reason.TIMED_OUT
+        is LitVmException -> if(e.message == LitVmModel.WRONG_CHAIN) LitVmRead.Reason.WRONG_CHAIN else LitVmRead.Reason.UNREACHABLE
+        else -> LitVmRead.Reason.UNREACHABLE
+    }
+}
+
+/**
+ * One LitVM client for one read: none at all while air-gapped (null, nothing opened); otherwise [open]ed, used by
+ * [block], and [close]d however the read ends. A socket read does not see cancellation, so a cancel closes the client at
+ * once (from a closer started undispatched, so its finally always runs), which ends that read too.
+ */
+object LitVmClients {
+    suspend fun <C, T> use(airGapped: Boolean, open: () -> C, close: (C) -> Unit, block: suspend (C) -> T): T? {
+        if(airGapped) return null
+        val client = open()
+        return coroutineScope {
+            val closer = launch(start = CoroutineStart.UNDISPATCHED) {
+                try {
+                    awaitCancellation()
+                } finally {
+                    close(client)
+                }
+            }
+            try {
+                block(client)
+            } finally {
+                closer.cancel()
+                close(client)
+            }
+        }
     }
 }
 

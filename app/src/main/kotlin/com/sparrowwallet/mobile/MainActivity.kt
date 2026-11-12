@@ -217,6 +217,8 @@ private fun App(repo: WalletRepository) {
     val visit = remember(visitWallet) { visitWallet?.let { CollectiblesVisit() } }
     val litVmWallet = litVmVisit(screen)
     val litVm = remember(litVmWallet) { litVmWallet?.let { LitVmVisit() } }
+    // leaving the LitVM visit (or the app) cancels its read and closes its client
+    androidx.compose.runtime.DisposableEffect(litVm) { onDispose { litVm?.close() } }
     var airGapped by remember { mutableStateOf(NetworkPolicy.blocked) }
     // work that outlives the screen that started it (a new Taproot wallet's first sync)
     val appScope = rememberCoroutineScope()
@@ -1453,6 +1455,8 @@ private fun HomeScreen(
         // under the Activity card: the wallet's inscriptions and runes, from the stored checks
         // beside it, LitVM on a Litecoin testnet wallet's Public layer: judged from the wallet list, read off the main thread
         val litVmOffered by androidx.compose.runtime.produceState(false, name, data, layer) {
+            // the wallet list is read only for a Litecoin testnet wallet's Public layer
+            if(!LitVmModel.mayOffer(repo.coin(data), repo.network(data), data.scriptType, data.mnemonic.isNotBlank(), layer)) return@produceState
             value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 runCatching {
                     val wallets = repo.listWallets()
