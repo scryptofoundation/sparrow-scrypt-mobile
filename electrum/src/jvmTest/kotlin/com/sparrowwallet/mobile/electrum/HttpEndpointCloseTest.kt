@@ -54,6 +54,19 @@ class HttpEndpointCloseTest {
         assertTrue((System.nanoTime() - started) / 1_000_000 < 5_000, "the handshake ran on after close")
     }
 
+    /**
+     * A close landing after the request's own check but before the connect is marked cuts nothing, so the endpoint asks
+     * again once it is marked: here the owner is closed in that window, and no connection is ever made.
+     */
+    @Test
+    fun aCloseJustBeforeTheConnectStopsIt(): Unit = runBlocking {
+        var asked = 0
+        val endpoint = HttpEndpoint("http://127.0.0.1:${server.localPort}", timeoutMs = 5_000, label = "Test", usable = { ++asked <= 1 })
+        val error = runCatching { endpoint.get("/") }.exceptionOrNull()
+        assertIs<IOException>(error)
+        assertTrue(!accepted.await(500, TimeUnit.MILLISECONDS), "a connection was made after the close")
+    }
+
     /** A request whose whole deadline runs out mid-answer fails with its own type, so a caller can say it took too long. */
     @Test
     fun aRequestThatRunsOutOfTimeSaysSoByType(): Unit = runBlocking {

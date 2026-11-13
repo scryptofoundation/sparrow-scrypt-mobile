@@ -71,7 +71,7 @@ class LitVmCollection(val contract: EvmAddress, val collection: Erc721Collection
  */
 class LitVmRead(val address: EvmAddress, val balance: UInt256?, val problem: Problem?, val reason: Reason?, collections: List<LitVmCollection>,
                 val stopped: Boolean, pictures: Map<String, LitVmPicture>) {
-    enum class Problem { CHAIN, BALANCE, RATE_LIMITED, AIR_GAPPED }
+    enum class Problem { CHAIN, BALANCE, RATE_LIMITED, AIR_GAPPED, WALLET }
 
     /** Why the chain check or the balance failed, as the app says it (see [LitVmModel.reasonText]). */
     enum class Reason { WRONG_CHAIN, TIMED_OUT, RATE_LIMITED, UNREACHABLE }
@@ -157,13 +157,15 @@ object LitVmModel {
     const val BALANCE_FAILED = "Could not read the zkLTC balance."
     const val RATE_LIMITED = "The LitVM server is limiting requests. Refresh later."
     const val UNREACHABLE = "The LitVM server could not be reached."
+    /** A failure on the phone's side (out of memory, an error in the app), never blamed on the server. */
+    const val WALLET_FAILED = "Something went wrong in the wallet. Refresh to try again."
     const val WRONG_CHAIN = "This server is for another chain."
     const val TIMED_OUT = "The LitVM server took too long."
     const val ADDRESS_FAILED = "The address could not be worked out."
     const val UNIT = "zkLTC"
 
     /** Every sentence the status area can show (the status line, then its second line). */
-    val STATUS_SENTENCES = listOf(READING, AIR_GAPPED, ADDRESS_FAILED, CHAIN_FAILED, BALANCE_FAILED, RATE_LIMITED, STOPPED, WRONG_CHAIN,
+    val STATUS_SENTENCES = listOf(READING, AIR_GAPPED, ADDRESS_FAILED, WALLET_FAILED, CHAIN_FAILED, BALANCE_FAILED, RATE_LIMITED, STOPPED, WRONG_CHAIN,
         TIMED_OUT, UNREACHABLE)
 
     /** The most tiles shown, across every collection, in display order. */
@@ -286,6 +288,9 @@ object LitVmModel {
     fun hostText(host: String): String = if(host.length <= MAX_HOST_CHARS) host else "..." + host.takeLast(MAX_HOST_CHARS - 3)
 
     /** A read that could not start (anything thrown around the reader): the server could not be reached, nothing listed. */
+    fun walletFailed(address: EvmAddress): LitVmRead =
+        LitVmRead(address, null, LitVmRead.Problem.WALLET, null, emptyList(), false, emptyMap())
+
     fun unreachable(address: EvmAddress): LitVmRead =
         LitVmRead(address, null, LitVmRead.Problem.CHAIN, LitVmRead.Reason.UNREACHABLE, emptyList(), false, emptyMap())
 
@@ -300,7 +305,8 @@ object LitVmModel {
     fun keptFacts(kept: Map<EvmAddress, Erc721Collection>, read: LitVmRead?): Map<EvmAddress, Erc721Collection> = when {
         read == null -> kept
         read.problem == LitVmRead.Problem.CHAIN -> emptyMap()
-        else -> kept + read.collections.mapNotNull { c -> c.collection?.let { c.contract to it } }
+        //Only a collection whose every fact was answered: one the contract reverted on, or answered badly, is read again
+        else -> kept + read.collections.mapNotNull { c -> c.collection?.takeIf { it.complete }?.let { c.contract to it } }
     }
 
     /** The name each collection gave in this read, to name it later when it cannot be read. */
@@ -363,6 +369,7 @@ object LitVmModel {
             read.problem == LitVmRead.Problem.BALANCE -> BALANCE_FAILED
             read.problem == LitVmRead.Problem.RATE_LIMITED -> RATE_LIMITED
             read.problem == LitVmRead.Problem.AIR_GAPPED -> AIR_GAPPED
+            read.problem == LitVmRead.Problem.WALLET -> WALLET_FAILED
             read.stopped -> STOPPED
             else -> null
         }
@@ -379,20 +386,22 @@ object LitVmModel {
 /** Pictures as the read prepares them, off the main thread: the media type label is ignored, the bytes decide. */
 object LitVmPictures {
     /**
-     * The path commands one read's picture plans may hold in all. A plan costs about 60 bytes a command on the JVM, so
-     * with one more picture over it (at most 50,000) a read holds about 15 MB of plans at worst.
+     * The path commands one read's picture plans may hold in all. A plan costs about 60 bytes a command on the JVM: with
+     * one more picture over it (at most 50,000) and the open detail's plan (at most 50,000) that is about 300,000
+     * commands, about 18 MB, at worst.
      */
     const val READ_BUDGET = 200_000L
 
     /**
      * The pictures of [tokens], in order, each planned at [tilePixels] until the plans kept pass [READ_BUDGET] commands;
-     * every token after that has no picture (it is still listed). Off the main thread.
+     * every SVG after that has no picture (it is still listed); a hosted or raster picture costs no plan and is kept.
+     * Off the main thread; cancellation is checked before each picture.
      */
     suspend fun prepareAll(tokens: List<Nft>, tilePixels: Double): Map<String, LitVmPicture> {
+        val prepared = budgeted(tokens, READ_BUDGET, prepare = { prepare(it.metadata, tilePixels) }, cost = { cost(it) },
+            none = { if(it.metadata?.image is NftMetadata.Image.Svg) LitVmPicture.None else prepare(it.metadata, tilePixels) })
         val pictures = LinkedHashMap<String, LitVmPicture>()
-        val prepared = budgeted(tokens, READ_BUDGET, prepare = { prepare(it.metadata, tilePixels) }, cost = { cost(it) }, none = { LitVmPicture.None })
         for((i, nft) in tokens.withIndex()) {
-            currentCoroutineContext().ensureActive()
             pictures[LitVmModel.tileKey(nft)] = prepared[i]
         }
         return pictures
@@ -400,11 +409,13 @@ object LitVmPictures {
 
     /**
      * [items] prepared in order while the cost kept is under [budget]; once it is reached, the rest are [none] and are
-     * not prepared at all. The total kept is at most the budget plus one item's cost.
+     * not prepared at all. The total kept is at most the budget plus one item's cost. Cancellation is checked before
+     * each item, so a cancelled read stops between pictures.
      */
-    fun <T, P> budgeted(items: List<T>, budget: Long, prepare: (T) -> P, cost: (P) -> Int, none: (T) -> P): List<P> {
+    suspend fun <T, P> budgeted(items: List<T>, budget: Long, prepare: (T) -> P, cost: (P) -> Int, none: (T) -> P): List<P> {
         var spent = 0L
         return items.map { item ->
+            currentCoroutineContext().ensureActive()
             if(spent >= budget) {
                 none(item)
             } else {

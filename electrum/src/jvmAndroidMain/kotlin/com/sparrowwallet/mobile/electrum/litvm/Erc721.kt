@@ -12,7 +12,9 @@ import com.sparrowwallet.mobile.crypto.evm.UInt256
  * collection's identity. [enumerable]: it claims ERC-721 Enumerable; [soulbound]: it claims EIP-5192 (its tokens cannot
  * be transferred).
  */
-class Erc721Collection(val contract: EvmAddress, name: String, symbol: String, val enumerable: Boolean, val soulbound: Boolean) {
+class Erc721Collection(val contract: EvmAddress, name: String, symbol: String, val enumerable: Boolean, val soulbound: Boolean,
+                        /** Every optional fact (enumerable, soulbound, name, symbol) was answered, none reverted or unreadable. */
+                        val complete: Boolean = true) {
     val name: String = TextRules.singleLine(name, MAX_NAME_LENGTH)
     val symbol: String = TextRules.singleLine(symbol, MAX_SYMBOL_LENGTH)
 
@@ -70,12 +72,13 @@ object Erc721 {
             supports(calls, contract, ERC721) != Answer.YES) {
             return null
         }
-        val enumerable = supports(calls, contract, ERC721_ENUMERABLE) == Answer.YES
-        val soulbound = supports(calls, contract, EIP5192_SOULBOUND) == Answer.YES
+        val enumerable = supports(calls, contract, ERC721_ENUMERABLE)
+        val soulbound = supports(calls, contract, EIP5192_SOULBOUND)
         //Name and symbol belong to the optional metadata extension: absent or nonsense leaves them blank
         val name = optionalString(calls, contract, "name()")
         val symbol = optionalString(calls, contract, "symbol()")
-        return Erc721Collection(contract, name, symbol, enumerable, soulbound)
+        val complete = enumerable != Answer.FAILED && soulbound != Answer.FAILED && name != null && symbol != null
+        return Erc721Collection(contract, name ?: "", symbol ?: "", enumerable == Answer.YES, soulbound == Answer.YES, complete)
     }
 
     /** How many tokens the owner holds. A revert ([CallReverted]) or a malformed answer throws: a collection must answer this. */
@@ -117,9 +120,10 @@ object Erc721 {
         }
     }
 
-    private suspend fun optionalString(calls: LitVmCalls, contract: EvmAddress, signature: String): String {
-        val result = call(calls, contract, Abi.selector(signature), MAX_RESULT_BYTES) ?: return ""
-        return Abi.string(result) ?: ""
+    //The string, or null when the contract reverted or answered something that is not one
+    private suspend fun optionalString(calls: LitVmCalls, contract: EvmAddress, signature: String): String? {
+        val result = call(calls, contract, Abi.selector(signature), MAX_RESULT_BYTES) ?: return null
+        return Abi.string(result)
     }
 
     private suspend fun uint(calls: LitVmCalls, contract: EvmAddress, data: ByteArray, function: String): UInt256 {

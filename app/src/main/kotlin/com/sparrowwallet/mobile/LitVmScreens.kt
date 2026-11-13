@@ -62,6 +62,8 @@ import com.sparrowwallet.mobile.crypto.evm.NftPicturePlan
 import com.sparrowwallet.mobile.crypto.evm.SvgSubset
 import com.sparrowwallet.mobile.electrum.litvm.Erc721Collection
 import com.sparrowwallet.mobile.electrum.litvm.LitVmNetwork
+import androidx.compose.runtime.rememberUpdatedState
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -82,12 +84,16 @@ import kotlinx.coroutines.withContext
  * visit, not to a screen: opening a detail does not stop it, coming back does not start one, and [close] (leaving the
  * visit) cancels it, which closes its client.
  */
-internal class LitVmVisit {
-    //An unexpected failure of a read (out of memory included) is said as the server not reached, never a crash
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate + CoroutineExceptionHandler { _, _ ->
-        address?.let { read = LitVmModel.unreachable(it) }
+internal class LitVmVisit(context: CoroutineContext = Dispatchers.Main.immediate) {
+    //An unexpected failure of a read (out of memory included) finishes it and is said as the wallet's failure: never a
+    //crash, never blamed on the server, and never read again by itself when a detail is opened and closed
+    private val scope = CoroutineScope(SupervisorJob() + context + CoroutineExceptionHandler { _, _ ->
+        address?.let { read = LitVmModel.walletFailed(it) }
+        done = running
         reading = false
     })
+    //The read in progress, by the [requested] count it answers
+    private var running = 0
     val grid = LazyGridState()
     var address by mutableStateOf<EvmAddress?>(null)
     var addressFailed by mutableStateOf(false)
@@ -99,8 +105,9 @@ internal class LitVmVisit {
     /** The collections' facts kept for the visit, so a Refresh does not ask the contract again (see [LitVmModel.keptFacts]). */
     var facts by mutableStateOf<Map<EvmAddress, Erc721Collection>>(emptyMap())
 
-    /** Starts [work] as this visit's read; [reading] until it ends. */
-    fun start(work: suspend () -> Unit) {
+    /** Starts [work] as this visit's read for request [ticket]; [reading] until it ends. */
+    fun start(ticket: Int, work: suspend () -> Unit) {
+        running = ticket
         reading = true
         scope.launch {
             try {
@@ -145,13 +152,14 @@ internal fun LitVmScreen(repo: WalletRepository, home: Screen.Home, visit: LitVm
         if(!LitVmModel.shouldRead(gapped, ticket, visit.done, visit.reading)) return@LaunchedEffect
         // the last read's plans are let go before this one's work: two reads' plans are never held together
         visit.read?.let { visit.read = LitVmModel.released(it) }
-        visit.start {
+        visit.start(ticket) {
             val read = try {
                 repo.readLitVm(data, from, tilePixels, visit.facts)
             } catch(e: CancellationException) {
                 throw e
             } catch(e: Exception) {
-                LitVmModel.unreachable(from)
+                //The reader says every server failure itself: anything thrown past it is the wallet's own
+                LitVmModel.walletFailed(from)
             }
             if(read != null) {
                 visit.read = read
@@ -284,6 +292,9 @@ private fun LoadedPicture(tile: LitVmTile, detail: Boolean, drawnPixels: Double)
         }
         val key = LitVmModel.pictureKey(LitVmNetwork.LITEFORGE_TESTNET, tile.contract, tile.tokenId, source, pixels)
         var failed by remember(key) { mutableStateOf(false) }
+        // the producer reads the picture through this state, never holds it: when a Refresh releases the read, this tile
+        // recomposes with the released picture and the old plan goes (the drawn bitmap stays, from the cache)
+        val current = rememberUpdatedState(picture)
         // a new key starts empty: never the last key's bitmap
         val bitmap by produceState<Bitmap?>(null, key) {
             litVmBitmaps.get(key)?.let {
@@ -291,7 +302,7 @@ private fun LoadedPicture(tile: LitVmTile, detail: Boolean, drawnPixels: Double)
                 return@produceState
             }
             val made = previewDecodes.run {
-                when(picture) {
+                when(val picture = current.value) {
                     // the kept tile plan, or one planned now from the picture's text (the detail's, or after a release)
                     is LitVmPicture.Drawn -> LitVmPictures.plan(picture, pixels)?.let { drawPlan(it) }
                     is LitVmPicture.Raster -> decodeStill(InscriptionPreview.Shown.Image(picture.bytes, picture.width, picture.height), pixels.toInt())

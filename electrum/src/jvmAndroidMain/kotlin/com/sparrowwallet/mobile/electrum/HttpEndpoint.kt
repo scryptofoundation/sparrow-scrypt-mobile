@@ -202,6 +202,12 @@ class HttpEndpoint(
         try {
             if(c == null) {
                 connecting = raw
+                //A close between the request's own check and the line above cut nothing: asked again now it is marked
+                if(!usable()) {
+                    connecting = null
+                    runCatching { raw.close() }
+                    throw IOException("$url is closed")
+                }
                 val made = try {
                     open(raw, readTimeoutMs)
                 } finally {

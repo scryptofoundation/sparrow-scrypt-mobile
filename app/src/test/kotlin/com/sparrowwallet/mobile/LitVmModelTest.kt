@@ -20,6 +20,7 @@ import com.sparrowwallet.mobile.electrum.litvm.TimedOut
 import com.sparrowwallet.mobile.storage.VaultData
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
@@ -455,7 +456,7 @@ class LitVmModelTest {
         " S999999 999999 1 1".repeat(950) + "\"/></svg>"
 
     @Test
-    fun theBudgetStopsPreparingOnceItIsSpent() {
+    fun theBudgetStopsPreparingOnceItIsSpent(): Unit = runBlocking {
         val costs = listOf(90, 90, 90, 90, 5, 90)
         var prepared = 0
         val kept = LitVmPictures.budgeted(costs, 200, prepare = { prepared++; it }, cost = { it }, none = { 0 })
@@ -510,6 +511,58 @@ class LitVmModelTest {
         assertEquals(LitVmRead.Reason.UNREACHABLE, LitVmReader.reason(IOException("Request took too long")))
     }
 
+    /** A fact the contract reverted on is not kept: the next read asks the contract again. */
+    @Test
+    fun aFactThatFailedIsReadAgain(): Unit = runBlocking {
+        val chain = FakeChain()
+        chain.badges[badge] = FakeBadge(held = setOf(1), nameReverts = true)
+        val first = LitVmReader.read(chain.root, chain::verify, owner, 120.0)
+        assertEquals(LitVmCollection.Status.LISTED, first.collections.single().status)
+        val facts = LitVmModel.keptFacts(emptyMap(), first)
+        assertTrue(facts.isEmpty())
+        chain.log.clear()
+        LitVmReader.read(chain.root, chain::verify, owner, 120.0, known = facts)
+        assertTrue(chain.log.any { it.startsWith("code ") } && chain.log.any { it.contains(" 06fdde03") }, "${chain.log}")
+    }
+
+    @Test
+    fun preparationStopsWhenTheReadIsCancelled(): Unit = runBlocking {
+        var prepared = 0
+        lateinit var job: kotlinx.coroutines.Job
+        job = launch {
+            LitVmPictures.budgeted(listOf(1, 2, 3, 4), 1_000, prepare = { prepared++; job.cancel(); it }, cost = { it }, none = { 0 })
+        }
+        job.join()
+        assertEquals(1, prepared, "no picture is prepared after the cancel")
+    }
+
+    @Test
+    fun overBudgetAHostedPictureKeepsItsHost(): Unit = runBlocking {
+        val heavy = (1..20).map { nft(it, NftMetadata("WORLD $it", "", emptyList(), NftMetadata.Image.Svg(heavySvg))) }
+        val hosted = nft(30, NftMetadata("Hosted", "", emptyList(), NftMetadata.Image.Hosted("example.com")))
+        val raster = nft(31, NftMetadata("Raster", "", emptyList(), NftMetadata.Image.Raster("image/png", png(8, 8))))
+        val pictures = LitVmPictures.prepareAll(heavy + hosted + raster, 120.0)
+        assertEquals(LitVmPicture.None, pictures[LitVmModel.tileKey(heavy.last())])
+        assertEquals(LitVmPicture.Hosted("example.com"), pictures[LitVmModel.tileKey(hosted)])
+        assertIs<LitVmPicture.Raster>(pictures[LitVmModel.tileKey(raster)])
+    }
+
+    /** A read that fails unexpectedly (out of memory) is finished and said as the wallet's failure, not the server's. */
+    @Test
+    fun aReadThatFailsUnexpectedlyIsFinishedAndBlamesTheWallet() {
+        val visit = LitVmVisit(kotlinx.coroutines.Dispatchers.Unconfined)
+        visit.address = owner
+        visit.start(1) { throw OutOfMemoryError("test") }
+        assertEquals(1, visit.done)
+        assertFalse(visit.reading)
+        val view = LitVmModel.build(owner, visit.read, false)
+        assertEquals(LitVmModel.WALLET_FAILED, view.status)
+        assertTrue(view.status in LitVmModel.STATUS_SENTENCES)
+        assertTrue(view.canRefresh)
+        assertFalse(LitVmModel.shouldRead(false, visit.requested, visit.done, visit.reading), "back from a detail starts nothing")
+        visit.close()
+    }
+
     // ---- the read ----
 
     /** A collection's facts are kept for the visit: a Refresh reads only the account's tokens, not the contract again. */
@@ -518,12 +571,13 @@ class LitVmModelTest {
         val chain = FakeChain()
         chain.badges[badge] = FakeBadge(held = setOf(1, 2))
         val first = LitVmReader.read(chain.root, chain::verify, owner, 120.0)
-        val firstCount = chain.log.size
+        //The test account's read: verify, balance, eight probes of the contract, worlds, four ownerOf, two tokenURI
+        assertEquals(17, chain.log.size, "${chain.log}")
         val facts = LitVmModel.keptFacts(emptyMap(), first)
         assertEquals(setOf(badge), facts.keys)
         chain.log.clear()
         val second = LitVmReader.read(chain.root, chain::verify, owner, 120.0, known = facts)
-        assertEquals(firstCount - 8, chain.log.size, "${chain.log}")
+        assertEquals(9, chain.log.size, "${chain.log}")
         assertTrue(chain.log.none { it.startsWith("code ") || it.contains(" 01ffc9a7") || it.contains(" 06fdde03") || it.contains(" 95d89b41") })
         assertEquals(listOf("verify", "balance"), chain.log.take(2))
         assertEquals(first.collections.single().tokens.map { it.tokenId }, second.collections.single().tokens.map { it.tokenId })
@@ -708,7 +762,8 @@ class LitVmModelTest {
 
     @Test
     fun theStatusAreaHasAFixedSetOfSentences() {
-        assertEquals(listOf("Reading...", "Off in air-gapped mode", "The address could not be worked out.", "Could not check the LitVM chain.",
+        assertEquals(listOf("Reading...", "Off in air-gapped mode", "The address could not be worked out.", "Something went wrong in the wallet. Refresh to try again.",
+            "Could not check the LitVM chain.",
             "Could not read the zkLTC balance.", "The LitVM server is limiting requests. Refresh later.", "Stopped after 3 minutes. Refresh to continue.",
             "This server is for another chain.", "The LitVM server took too long.", "The LitVM server could not be reached."), LitVmModel.STATUS_SENTENCES)
         for(reason in LitVmRead.Reason.entries) assertTrue(LitVmModel.reasonText(reason) in LitVmModel.STATUS_SENTENCES)
@@ -912,7 +967,7 @@ class LitVmModelTest {
     // ---- a fake chain ----
 
     private class FakeBadge(val held: Set<Int>, val code: Boolean = true, val worlds: Int = 4, val error: String? = null,
-                            val worldsAnswer: ByteArray? = null, val badOwner: Boolean = false)
+                            val worldsAnswer: ByteArray? = null, val badOwner: Boolean = false, val nameReverts: Boolean = false)
 
     private inner class FakeChain {
         var now = 0L
@@ -976,7 +1031,7 @@ class LitVmModelTest {
                         "01ffc9a7", "80ac58cd", "b45a3c0e" -> 1L
                         else -> 0L
                     }))
-                    "06fdde03" -> string("Super Litecoin Vault Badge")
+                    "06fdde03" -> if(fake.nameReverts) throw CallReverted("execution reverted") else string("Super Litecoin Vault Badge")
                     "95d89b41" -> string("SLVB")
                     "23c4f6e3" -> fake.worldsAnswer ?: word(UInt256.of(fake.worlds.toLong()))
                     "6352211e" -> {
