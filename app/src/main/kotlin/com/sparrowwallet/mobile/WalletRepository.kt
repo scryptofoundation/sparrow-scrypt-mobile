@@ -1424,7 +1424,15 @@ class WalletRepository(context: Context) {
         return MwebSendPreview(toAddress, amount, fee, pegOut, result.rawTx)
     }
 
-    suspend fun broadcastMweb(data: VaultData, rawTx: ByteArray): String = mwebd(data).broadcastRaw(rawTx)
+    /**
+     * Broadcasts a private (MWEB) send through the phone's own daemon. A failure, of starting the daemon as of the
+     * broadcast, is a [BroadcastFailedException] with one of the app's own sentences, as [broadcast]'s is.
+     */
+    suspend fun broadcastMweb(data: VaultData, rawTx: ByteArray): String = fixedBroadcastFailure { handedOver ->
+        val service = mwebd(data)
+        handedOver()
+        service.broadcastRaw(rawTx)
+    }
 
     /**
      * Peg-in: a public wallet paying an MWEB address. mwebd builds the confidential side

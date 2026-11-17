@@ -2403,7 +2403,8 @@ private fun SendScreen(
                         heldIncluded, uncheckedIncluded)
                 }
             } catch(t: Throwable) {
-                error = t.message ?: "Could not build the transaction"
+                // building reads from the server: what it throws can hold the server's text, so only its kind is shown
+                error = PreviewFailure.of(t).sentence
             } finally {
                 busy = false
             }
@@ -2692,7 +2693,7 @@ private fun SendScreen(
                                     onSignExternally(unsigned)
                                 }
                             } catch(t: Throwable) {
-                                error = t.message ?: "Could not build the PSBT"
+                                error = PreviewFailure.of(t).sentence
                             } finally {
                                 busy = false
                             }

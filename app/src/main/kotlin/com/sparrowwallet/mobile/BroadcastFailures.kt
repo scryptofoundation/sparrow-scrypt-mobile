@@ -48,6 +48,11 @@ enum class BroadcastFailure(val sentence: String) {
                 in 500..599 -> SERVER_FAILED
                 else -> NO_ANSWER
             }
+            //a private (MWEB) send goes out through the phone's own daemon: no answer in time, or an answer that refuses
+            failure is io.grpc.StatusRuntimeException -> when(failure.status.code) {
+                io.grpc.Status.Code.DEADLINE_EXCEEDED, io.grpc.Status.Code.UNAVAILABLE, io.grpc.Status.Code.CANCELLED -> NO_ANSWER
+                else -> reason(failure.status.description)
+            }
             else -> NO_ANSWER
         }
 

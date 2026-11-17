@@ -110,6 +110,27 @@ class BroadcastFailureTest {
         assertEquals(BroadcastFailure.ALREADY_KNOWN, failed { electrum("already in block chain; min relay fee not met") }.failure)
     }
 
+    /** A private (MWEB) send goes out through the phone's own daemon: its failures are chosen by status, its words never shown. */
+    @Test
+    fun theMwebDaemonsFailureIsChosenByItsStatusAndItsWordsNeverShown() {
+        fun grpc(status: io.grpc.Status, said: String = serverText) = status.withDescription(said).asRuntimeException()
+        assertEquals(BroadcastFailure.NO_ANSWER, failed { grpc(io.grpc.Status.DEADLINE_EXCEEDED) }.failure)
+        assertEquals(BroadcastFailure.NO_ANSWER, failed { grpc(io.grpc.Status.UNAVAILABLE) }.failure)
+        assertEquals(BroadcastFailure.NO_ANSWER, failed { grpc(io.grpc.Status.CANCELLED) }.failure)
+        assertEquals(BroadcastFailure.REFUSED, failed { grpc(io.grpc.Status.UNKNOWN) }.failure)
+        assertEquals(BroadcastFailure.REFUSED, failed { grpc(io.grpc.Status.INVALID_ARGUMENT) }.failure)
+        assertEquals(BroadcastFailure.FEE_TOO_LOW, failed { grpc(io.grpc.Status.UNKNOWN, "min relay fee not met, 100 < 2000") }.failure)
+        assertEquals(BroadcastFailure.COINS_SPENT, failed { grpc(io.grpc.Status.UNKNOWN, "bad-txns-inputs-missingorspent") }.failure)
+        assertEquals(BroadcastFailure.NOT_CONNECTED, failed(asked = false) { grpc(io.grpc.Status.UNAVAILABLE) }.failure,
+            "the daemon could not be started: nothing was handed to it")
+        val e = failed { grpc(io.grpc.Status.UNKNOWN) }
+        assertEquals(BroadcastFailure.REFUSED.sentence, e.message)
+        assertNull(e.cause)
+        assertFalse(e.message!!.contains("555-0100"))
+        //a status without words is a refusal like any other
+        assertEquals(BroadcastFailure.REFUSED, failed { io.grpc.Status.INTERNAL.asRuntimeException() }.failure)
+    }
+
     /** Only a failure before the transaction was handed to a server, or air-gapped mode, says that nothing was sent. */
     @Test
     fun onlyAFailureBeforeTheHandOverSaysNothingWasSent() {
