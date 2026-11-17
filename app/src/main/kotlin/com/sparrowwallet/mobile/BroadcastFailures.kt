@@ -1,6 +1,5 @@
 package com.sparrowwallet.mobile
 
-import com.sparrowwallet.mobile.crypto.AirGappedException
 import com.sparrowwallet.mobile.electrum.BroadcastRefusedException
 import com.sparrowwallet.mobile.electrum.ChainBackend
 import com.sparrowwallet.mobile.electrum.ElectrumRpcException
@@ -8,16 +7,16 @@ import com.sparrowwallet.mobile.electrum.RateLimitedException
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Why an ordinary send's broadcast failed, as the Send screen says it. Every sentence is written here. What a server
- * answered (an Esplora body, an Electrum error) only picks the sentence and is never put into one: it is text a
- * stranger's server chose, and it can hold anything.
+ * Why an ordinary send's broadcast failed, when the failure is not a refusal of the app's own ([ownSentence]), as the
+ * Send screen says it. Every sentence is written here. What a server answered (an Esplora body, an Electrum error)
+ * only picks the sentence and is never put into one: it is text a stranger's server chose, and it can hold anything.
  *
- * Only [NOT_CONNECTED] and [AIR_GAPPED] say that nothing was sent: the transaction never left the phone. Every other
- * kind is about a transaction that was handed to a server, where a refusal can also be said of one that is already out
- * (a node answers "already in block chain" as an error), so those send the user to the wallet's transactions.
+ * Only [NOT_CONNECTED] says that nothing was sent: the transaction never left the phone. Every other kind is about a
+ * transaction that was handed to a server. [REFUSED] and the kinds beside it are said only of a refusal the coin's node
+ * itself made and the server passed on; any other error ([NOT_CLEAR]) may come from a server whose node already took
+ * the transaction, so it sends the user to the wallet's transactions before sending again.
  */
 enum class BroadcastFailure(val sentence: String) {
-    AIR_GAPPED("Air-gapped mode is on. Nothing was sent."),
     NOT_CONNECTED("The server could not be reached. Nothing was sent."),
     NO_ANSWER("The server did not answer, so it is not known whether the transaction went out. Check the wallet's transactions before you send again."),
     BUSY("The server is busy. Check the wallet's transactions in a minute, then try again."),
@@ -28,7 +27,9 @@ enum class BroadcastFailure(val sentence: String) {
     COINS_SPENT("The server did not accept the transaction: a coin it spends is already spent, or the server does not know it. " +
         "Check the wallet's transactions."),
     ALREADY_KNOWN("The server says it already has this transaction. Check the wallet's transactions."),
-    REFUSED("The server did not accept the transaction.");
+    REFUSED("The server did not accept the transaction."),
+    NOT_CLEAR("The server answered with an error, and it is not clear whether it took the transaction. " +
+        "Check the wallet's transactions before you send again.");
 
     companion object {
         /**
@@ -37,14 +38,13 @@ enum class BroadcastFailure(val sentence: String) {
          * server's HTTP status, and for a refusal which of a few known reasons the node's words hold.
          */
         fun of(failure: Throwable, handedOver: Boolean): BroadcastFailure = when {
-            failure is AirGappedException -> AIR_GAPPED
             !handedOver -> NOT_CONNECTED
             failure is RateLimitedException -> BUSY
-            failure is ElectrumRpcException -> reason(failure.serverMessage)
+            failure is ElectrumRpcException -> nodeSaid(failure.serverMessage, ELECTRUM_NODE_SAID)
             failure is BroadcastRefusedException -> when(failure.status) {
                 404, 405 -> NOT_OFFERED
                 408, 429 -> BUSY
-                in 400..499 -> reason(failure.message)
+                in 400..499 -> nodeSaid(failure.message, ESPLORA_NODE_SAID)
                 in 500..599 -> SERVER_FAILED
                 else -> NO_ANSWER
             }
@@ -56,7 +56,22 @@ enum class BroadcastFailure(val sentence: String) {
             else -> NO_ANSWER
         }
 
-        /** The kind of a server's refusal, by what its node said ([said], lower-cased here and never shown). */
+        /**
+         * The kind of an error a server answered a broadcast with. Only what begins as the server passes its node's own
+         * refusal on ([front]) is a refusal, of the kind its reason names; any other error is not known to be one.
+         */
+        private fun nodeSaid(said: String?, front: String): BroadcastFailure {
+            val lower = said?.lowercase()?.trimStart() ?: return NOT_CLEAR
+            return if(lower.startsWith(front)) reason(lower.substring(front.length)) else NOT_CLEAR
+        }
+
+        /** What ElectrumX and Fulcrum put in front of every error their daemon gives to a broadcast (lower case). */
+        private const val ELECTRUM_NODE_SAID = "the transaction was rejected by network rules."
+
+        /** How an Esplora server (electrs) begins the body of a daemon error to a broadcast (lower case). */
+        private const val ESPLORA_NODE_SAID = "sendrawtransaction rpc error"
+
+        /** The kind of a node's refusal, by what it said ([said], lower-cased here and never shown). */
         private fun reason(said: String?): BroadcastFailure {
             val lower = said?.lowercase() ?: return REFUSED
             return when {
@@ -75,10 +90,11 @@ enum class BroadcastFailure(val sentence: String) {
 }
 
 /**
- * A failed broadcast of an ordinary send. Its message is the [failure]'s fixed sentence and it has no cause, so a screen
- * that shows the message shows that sentence and nothing a server wrote.
+ * A failed broadcast of an ordinary send. Its message is the [failure]'s fixed sentence, or the app's own words when
+ * the failure was a refusal of the app's own ([failure] is then null); it has no cause. So a screen that shows the
+ * message shows a sentence of the app's and nothing a server wrote.
  */
-class BroadcastFailedException(val failure: BroadcastFailure) : Exception(failure.sentence)
+class BroadcastFailedException(val failure: BroadcastFailure?, sentence: String) : Exception(sentence)
 
 /**
  * Runs a broadcast and turns whatever it throws into a [BroadcastFailedException]. [run] calls the function it is given
@@ -91,7 +107,10 @@ internal suspend fun <T> fixedBroadcastFailure(run: suspend (handedOver: () -> U
     } catch(e: CancellationException) {
         throw e
     } catch(e: Exception) {
-        throw BroadcastFailedException(BroadcastFailure.of(e, handedOver))
+        //the app's own refusal (air-gapped mode, a coin without a public server) shows as it always did
+        ownSentence(e)?.let { throw BroadcastFailedException(null, it) }
+        val failure = BroadcastFailure.of(e, handedOver)
+        throw BroadcastFailedException(failure, failure.sentence)
     }
 }
 

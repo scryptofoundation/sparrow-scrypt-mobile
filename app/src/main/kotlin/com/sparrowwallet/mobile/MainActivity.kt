@@ -2403,8 +2403,9 @@ private fun SendScreen(
                         heldIncluded, uncheckedIncluded)
                 }
             } catch(t: Throwable) {
-                // building reads from the server: what it throws can hold the server's text, so only its kind is shown
-                error = PreviewFailure.of(t).sentence
+                // building reads from the server: what it throws can hold the server's text, so only the app's own
+                // refusals show as they are, and anything else by its kind
+                error = PreviewFailure.sentence(t)
             } finally {
                 busy = false
             }
@@ -2693,7 +2694,7 @@ private fun SendScreen(
                                     onSignExternally(unsigned)
                                 }
                             } catch(t: Throwable) {
-                                error = PreviewFailure.of(t).sentence
+                                error = PreviewFailure.sentence(t)
                             } finally {
                                 busy = false
                             }

@@ -45,7 +45,7 @@ class BroadcastFailureTest {
         for(status in listOf(400, 401, 403, 404, 405, 408, 429, 500, 502, 503, 200, 302, -1)) {
             val e = failed { BroadcastRefusedException(status, serverText) }
             assertTrue(e.message in BroadcastFailure.entries.map { it.sentence }, "status $status: ${e.message}")
-            assertEquals(e.failure.sentence, e.message)
+            assertEquals(e.failure!!.sentence, e.message)
             assertNull(e.cause, "the server's exception does not ride along")
             for(part in listOf("555-0100", "evil.example", "<b>", "sendrawtransaction", "-26")) {
                 assertFalse(e.message!!.contains(part), "status $status shows $part")
@@ -59,17 +59,21 @@ class BroadcastFailureTest {
         assertEquals(BroadcastFailure.REFUSED, e.failure)
         assertEquals(BroadcastFailure.REFUSED.sentence, e.message)
         assertNull(e.cause)
+        //an error that is not the node's refusal passed on: the daemon may have taken the transaction, so it is not called refused
         val bare = failed { ElectrumRpcException("Electrum error: \"555-0100\"", null, null) }
-        assertEquals(BroadcastFailure.REFUSED.sentence, bare.message)
+        assertEquals(BroadcastFailure.NOT_CLEAR.sentence, bare.message)
+        val other = failed { electrum("server busy - request timed out $serverText") }
+        assertEquals(BroadcastFailure.NOT_CLEAR, other.failure)
+        assertTrue(BroadcastFailure.NOT_CLEAR.sentence.contains("Check the wallet's transactions before you send again"))
+        assertEquals(BroadcastFailure.NOT_CLEAR, failed { BroadcastRefusedException(400, "<html>Bad Request $serverText</html>") }.failure,
+            "an Esplora 400 that is not the node's own refusal either")
     }
 
     @Test
     fun theSentenceIsChosenByTheKindOfFailure() {
-        assertEquals(BroadcastFailure.AIR_GAPPED, failed(asked = false) { AirGappedException("Electrum") }.failure)
-        assertEquals(BroadcastFailure.AIR_GAPPED, failed { AirGappedException("Esplora") }.failure)
         assertEquals(BroadcastFailure.NOT_CONNECTED, failed(asked = false) { IOException("Not an Esplora server: https://evil.example") }.failure,
             "before the transaction was handed to a server")
-        assertEquals(BroadcastFailure.NOT_CONNECTED, failed(asked = false) { IllegalStateException("Dogecoin Mainnet needs your own server") }.failure)
+        assertEquals(BroadcastFailure.NOT_CONNECTED, failed(asked = false) { IllegalStateException("Connection closed by server") }.failure)
         assertEquals(BroadcastFailure.NO_ANSWER, failed { java.net.SocketTimeoutException("Read timed out") }.failure,
             "after it was handed over, a lost connection says nothing of where it went")
         assertEquals(BroadcastFailure.NO_ANSWER, failed { IllegalStateException("Connection closed by server") }.failure)
@@ -107,7 +111,8 @@ class BroadcastFailureTest {
                 "Esplora: $reason")
         }
         //already there overrules a second reason beside it: such a transaction may be out
-        assertEquals(BroadcastFailure.ALREADY_KNOWN, failed { electrum("already in block chain; min relay fee not met") }.failure)
+        assertEquals(BroadcastFailure.ALREADY_KNOWN,
+            failed { electrum("the transaction was rejected by network rules.\n\nalready in block chain; min relay fee not met") }.failure)
     }
 
     /** A private (MWEB) send goes out through the phone's own daemon: its failures are chosen by status, its words never shown. */
@@ -136,8 +141,22 @@ class BroadcastFailureTest {
     fun onlyAFailureBeforeTheHandOverSaysNothingWasSent() {
         for(failure in BroadcastFailure.entries) {
             val saysNothingSent = failure.sentence.contains("Nothing was sent")
-            assertEquals(failure == BroadcastFailure.NOT_CONNECTED || failure == BroadcastFailure.AIR_GAPPED, saysNothingSent, failure.name)
+            assertEquals(failure == BroadcastFailure.NOT_CONNECTED, saysNothingSent, failure.name)
         }
+    }
+
+    /** A failure whose words are the app's own fixed sentence, not a server's, shows as it always did. */
+    @Test
+    fun theAppsOwnSentencesShowAsTheyWere() {
+        val noServer = failed(asked = false) { IllegalStateException("Dogecoin Mainnet needs your own server") }
+        assertEquals("Dogecoin Mainnet needs your own server", noServer.message)
+        assertNull(noServer.failure, "no kind of a server's failure: the words are the app's")
+        assertNull(noServer.cause)
+        assertEquals("Air-gapped mode is on: Electrum is disabled", failed(asked = false) { AirGappedException("Electrum") }.message)
+        assertEquals("Air-gapped mode is on: Esplora is disabled", failed { AirGappedException("Esplora") }.message)
+        //words that only look like the app's, from anything but a plain refusal, are not shown
+        val dressed = failed(asked = false) { IOException("Dogecoin Mainnet needs your own server $serverText") }
+        assertEquals(BroadcastFailure.NOT_CONNECTED.sentence, dressed.message)
     }
 
     /** A server whose broadcast call throws [failure] (or answers [answer]); nothing else of it is asked. */
