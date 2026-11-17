@@ -28,6 +28,14 @@ import kotlinx.coroutines.delay
 import java.io.IOException
 
 /**
+ * A broadcast the Esplora server answered with anything but 200 and did not report as already known. [status] is the
+ * HTTP status: a 4xx is the server refusing the transaction or the request, a 5xx a server that could not say. The
+ * message is the server's own text (or a fixed line when it sent none) and is not for a screen that shows fixed
+ * sentences only: decide by [status].
+ */
+class BroadcastRefusedException(val status: Int, message: String) : IOException(message)
+
+/**
  * [ChainBackend] over an Esplora REST API (Pepecoin, Luckycoin, Junkcoin, Bellscoin), with the
  * routes and quirks desktop's EsploraClient handles: address routes, retried by scripthash when
  * a server refuses the address (jkc-testnet-api.s3na.xyz answers 400 for Junkcoin P2SH);
@@ -287,7 +295,7 @@ class EsploraBackend(
     override suspend fun broadcast(txHex: String): String {
         val r = withRateLimit { http.post("/tx", txHex) }
         if(r.status == 404 || r.status == 405) {
-            throw IOException("The server at ${http.url} does not accept transaction broadcasts.")
+            throw BroadcastRefusedException(r.status, "The server at ${http.url} does not accept transaction broadcasts.")
         }
         if(r.status != 200) {
             val reason = r.body.trim()
@@ -295,7 +303,7 @@ class EsploraBackend(
             if(ALREADY.any { lower.contains(it) }) {
                 return RawTx.parse(txHex.hexToBytes()).txid
             }
-            throw IOException(reason.ifEmpty { "Broadcast refused (HTTP ${r.status})" })
+            throw BroadcastRefusedException(r.status, reason.ifEmpty { "Broadcast refused (HTTP ${r.status})" })
         }
         return r.body.trim().trim('"')
     }

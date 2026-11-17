@@ -1232,9 +1232,13 @@ class WalletRepository(context: Context) {
         return broadcast(coin, network, tx.serialize().toHex())
     }
 
-    /** Broadcasts a previously prepared transaction; returns the txid the server accepted. */
+    /**
+     * Broadcasts a previously prepared transaction; returns the txid the server accepted. A failure, of the connect as
+     * of the broadcast, is a [BroadcastFailedException]: its message is one of the app's own sentences
+     * ([BroadcastFailure]), never the server's text, so the Send and PSBT screens can show it as it is.
+     */
     suspend fun broadcast(coin: Coin, network: Network, txHex: String): String =
-        withBackend(coin, network) { it.broadcast(txHex) }
+        broadcastWithFixedFailure({ block -> withBackend(coin, network, block) }, txHex)
 
     /** Current fee rate in the coin's sats (lits) per vbyte, for up-front estimates on the send screens. */
     suspend fun currentFeeRate(coin: Coin, network: Network): Long =

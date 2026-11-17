@@ -29,8 +29,12 @@ import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 import javax.net.ssl.X509TrustManager
 
-/** An error answer from the server; [code] is its JSON-RPC code when it gave one. */
-class ElectrumRpcException(message: String, val code: Int?) : IllegalStateException(message)
+/**
+ * An error answer from the server; [code] is its JSON-RPC code when it gave one. [serverMessage] is the error's own
+ * text as the server wrote it (its "message", or the error itself when that is bare text), unescaped; null when it
+ * gave none. It is server text: for deciding by, never for a screen that shows fixed sentences only.
+ */
+class ElectrumRpcException(message: String, val code: Int?, val serverMessage: String? = null) : IllegalStateException(message)
 
 /** A SOCKS5 proxy endpoint — with Orbot/Tor this is 127.0.0.1:9050. */
 data class SocksProxy(val host: String, val port: Int)
@@ -176,7 +180,8 @@ class ElectrumClient(
             if(response["id"]?.jsonPrimitive?.int != id) continue // skip subscription notifications
             response["error"]?.let { e ->
                 val obj = e as? JsonObject
-                throw ElectrumRpcException("Electrum error: $e", obj?.get("code")?.jsonPrimitive?.content?.toIntOrNull())
+                val said = ((if(obj != null) obj["message"] else e) as? JsonPrimitive)?.takeIf { it.isString }?.content
+                throw ElectrumRpcException("Electrum error: $e", (obj?.get("code") as? JsonPrimitive)?.content?.toIntOrNull(), said)
             }
             return@withContext response["result"] ?: error("No result in response")
         }
