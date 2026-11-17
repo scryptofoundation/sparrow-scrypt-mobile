@@ -122,18 +122,28 @@ class BroadcastFailureTest {
         assertEquals(BroadcastFailure.NO_ANSWER, failed { grpc(io.grpc.Status.DEADLINE_EXCEEDED) }.failure)
         assertEquals(BroadcastFailure.NO_ANSWER, failed { grpc(io.grpc.Status.UNAVAILABLE) }.failure)
         assertEquals(BroadcastFailure.NO_ANSWER, failed { grpc(io.grpc.Status.CANCELLED) }.failure)
-        assertEquals(BroadcastFailure.REFUSED, failed { grpc(io.grpc.Status.UNKNOWN) }.failure)
-        assertEquals(BroadcastFailure.REFUSED, failed { grpc(io.grpc.Status.INVALID_ARGUMENT) }.failure)
+        //the daemon reports its own failures as plain errors too (no peers, a transaction it could not decode, a summary
+        //of what its peers said, some of which may have taken the transaction): none of these is the network's refusal
+        assertEquals(BroadcastFailure.NOT_CLEAR, failed { grpc(io.grpc.Status.UNKNOWN) }.failure)
+        assertEquals(BroadcastFailure.NOT_CLEAR, failed { grpc(io.grpc.Status.INVALID_ARGUMENT) }.failure)
+        assertEquals(BroadcastFailure.NOT_CLEAR, failed { grpc(io.grpc.Status.UNKNOWN, "no peers connected") }.failure)
+        assertEquals(BroadcastFailure.NOT_CLEAR, failed { grpc(io.grpc.Status.UNKNOWN, "failed to decode transaction") }.failure)
+        assertEquals(BroadcastFailure.NOT_CLEAR, failed { grpc(io.grpc.Status.UNKNOWN, "rejected by 2 of 5 peers") }.failure)
+        assertEquals(BroadcastFailure.NOT_CLEAR, failed { grpc(io.grpc.Status.INTERNAL, "bad-txns-vin-empty") }.failure,
+            "a reason the app has no sentence for is not said to be a refusal either")
+        assertTrue(BroadcastFailure.NOT_CLEAR.sentence.contains("not clear") && BroadcastFailure.NOT_CLEAR.sentence.contains("Check the wallet's transactions"))
+        assertEquals(BroadcastFailure.ALREADY_KNOWN, failed { grpc(io.grpc.Status.UNKNOWN, "txn-already-in-mempool") }.failure)
+        assertEquals(BroadcastFailure.TOO_SMALL, failed { grpc(io.grpc.Status.UNKNOWN, "dust") }.failure)
         assertEquals(BroadcastFailure.FEE_TOO_LOW, failed { grpc(io.grpc.Status.UNKNOWN, "min relay fee not met, 100 < 2000") }.failure)
         assertEquals(BroadcastFailure.COINS_SPENT, failed { grpc(io.grpc.Status.UNKNOWN, "bad-txns-inputs-missingorspent") }.failure)
         assertEquals(BroadcastFailure.NOT_CONNECTED, failed(asked = false) { grpc(io.grpc.Status.UNAVAILABLE) }.failure,
             "the daemon could not be started: nothing was handed to it")
         val e = failed { grpc(io.grpc.Status.UNKNOWN) }
-        assertEquals(BroadcastFailure.REFUSED.sentence, e.message)
+        assertEquals(BroadcastFailure.NOT_CLEAR.sentence, e.message)
         assertNull(e.cause)
         assertFalse(e.message!!.contains("555-0100"))
-        //a status without words is a refusal like any other
-        assertEquals(BroadcastFailure.REFUSED, failed { io.grpc.Status.INTERNAL.asRuntimeException() }.failure)
+        //a status without words is no refusal either
+        assertEquals(BroadcastFailure.NOT_CLEAR, failed { io.grpc.Status.INTERNAL.asRuntimeException() }.failure)
     }
 
     /** Only a failure before the transaction was handed to a server, or air-gapped mode, says that nothing was sent. */

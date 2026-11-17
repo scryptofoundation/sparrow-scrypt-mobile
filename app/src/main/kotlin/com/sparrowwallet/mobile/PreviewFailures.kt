@@ -36,11 +36,14 @@ enum class PreviewFailure(val sentence: String) {
 
 /**
  * The words of [failure] when they are the app's own fixed sentence, which the screens show as they always did; null
- * when they are not, or cannot be told to be. The app's own are: air-gapped mode's refusal; and a plain
+ * when they are not, or cannot be told to be. The app's own are: air-gapped mode's refusal; a plain
  * IllegalArgumentException or IllegalStateException (what `require` and `check` throw, never a subclass: a parser's or
  * a server reader's failure is one, or another type altogether) whose words begin as one of the refusals the wallet's
  * builders and the repository are known to make, or end as the repository's for a coin without a public server.
- * Everything after such a beginning is the builder's own arithmetic. A server can put no text of its own through here.
+ * Everything after such a beginning is the builder's own arithmetic. The address reader's refusals of an address of the
+ * wrong network, of another coin, of MWEB and of Taproot where it is not active are told by their whole form
+ * ([ADDRESS_REFUSALS]), in which only a name of one word (letters, digits) varies. A server can put no text of its own
+ * through here.
  */
 internal fun ownSentence(failure: Throwable): String? {
     if(failure is AirGappedException) {
@@ -50,8 +53,20 @@ internal fun ownSentence(failure: Throwable): String? {
         return null
     }
     val words = failure.message ?: return null
-    return words.takeIf { OWN_BEGINNINGS.any { words.startsWith(it) } || words.endsWith(NEEDS_OWN_SERVER) }
+    return words.takeIf { OWN_BEGINNINGS.any { words.startsWith(it) } || words.endsWith(NEEDS_OWN_SERVER) || ADDRESS_REFUSALS.any { it.matches(words) } }
 }
+
+/**
+ * The address reader's refusals (Addresses.toScriptPubKey), each in its whole form: an address of the coin's other
+ * network, an address of another coin, an MWEB address, a Taproot address on a chain without Taproot. What varies in
+ * them is a coin's or a network's name, one word each. PreviewFailureTest holds the real reader's to it.
+ */
+private val ADDRESS_REFUSALS = listOf(
+    Regex("That's an? [A-Za-z0-9]+ address, but this wallet is on [A-Za-z0-9]+"),
+    Regex("Not an? [A-Za-z]+ address"),
+    Regex("MWEB destinations aren't supported on mobile yet"),
+    Regex("Taproot is not active on [A-Za-z]+ [A-Za-z0-9]+")
+)
 
 /** How the refusals of TxBuilder, and of the repository for MWEB sends and peg-ins, begin. PreviewFailureTest holds the real ones to it. */
 private val OWN_BEGINNINGS = listOf(

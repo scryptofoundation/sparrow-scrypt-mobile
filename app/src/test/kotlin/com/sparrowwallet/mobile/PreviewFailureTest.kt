@@ -70,6 +70,34 @@ class PreviewFailureTest {
 
     /** Only a plain refusal that begins as one of the app's own is the app's own: a subclass, or other words, is not. */
     @Test
+    fun theWalletsOwnRefusalOfAnAddressShowsAsItDid() {
+        val key = HDKey.fromSeed(Bip39.seed("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ""))
+            .derivePath("m/84'/2'/0'/0/0").pubKey
+        val ltc = ChainParams.of(Coin.LITECOIN, Network.MAINNET)
+        val testnet = ChainParams.of(Coin.LITECOIN, Network.TESTNET)
+        val doge = ChainParams.of(Coin.DOGECOIN, Network.MAINNET)
+        fun refused(address: String, on: ChainParams): IllegalArgumentException =
+            assertFailsWith<IllegalArgumentException> { com.sparrowwallet.mobile.crypto.Addresses.toScriptPubKey(address, on) }
+        fun address(type: ScriptType, of: ChainParams): String = com.sparrowwallet.mobile.crypto.Addresses.forKey(key, type, of)
+        //an address of the coin's other network, in each of its forms, and an address of another coin: the address
+        //library's own words, thrown as it throws them
+        val refusals = listOf(refused(address(ScriptType.P2WPKH, testnet), ltc), refused(address(ScriptType.P2PKH, testnet), ltc),
+            refused(address(ScriptType.P2WPKH, ltc), testnet), refused(address(ScriptType.P2PKH, doge), ltc))
+        for(e in refusals) {
+            assertEquals(e.message, PreviewFailure.sentence(e), e.message)
+        }
+        assertTrue(refusals[0].message!!.startsWith("That's a ") && refusals[0].message!!.contains("but this wallet is on"), refusals[0].message)
+        assertEquals("Not a Litecoin address", refusals[3].message)
+        //a coin without a public server is the app's own to say
+        assertEquals("Luckycoin Testnet needs your own server", PreviewFailure.sentence(IllegalStateException("Luckycoin Testnet needs your own server")))
+        //the same beginnings with anything a server could write in them are not the library's words
+        for(words in listOf("That's a <b>call 555-0100</b> address, but this wallet is on Mainnet", "Not a https://evil.example address",
+            "That's a Testnet address, but this wallet is on Mainnet. Call 555-0100")) {
+            assertNull(ownSentence(IllegalArgumentException(words)), words)
+        }
+    }
+
+    @Test
     fun onlyTheAppsOwnWordsAreShownAsTheyAre() {
         assertNull(ownSentence(NumberFormatException("Insufficient funds: $serverText")), "a parser's exception is not the builder's")
         assertNull(ownSentence(IllegalArgumentException(serverText)))
