@@ -96,8 +96,16 @@ class LoadResult(val file: StoredFile?, val unavailable: Boolean = false)
 /**
  * One encrypted file per wallet holding its inscription checks, by outpoint. Holds only check results: no keys, no xpub.
  * A wallet whose file cannot be read (missing, undecryptable, unparseable, unknown version) counts as never checked.
+ * [atomicMove] puts a finished temp file in place of the wallet's file in one step; only tests pass another.
  */
-class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
+class InscriptionStore(
+    private val dir: File,
+    private val cipher: StoreCipher,
+    private val atomicMove: (java.nio.file.Path, java.nio.file.Path) -> Unit = { temp, target ->
+        java.nio.file.Files.move(temp, target,
+            java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+    }
+) {
     private val json = Json { ignoreUnknownKeys = true }
 
     private fun fileFor(walletName: String) = File(dir, safeFileName(walletName) + ".bin")
@@ -227,13 +235,34 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
         try {
             temp.writeBytes(sealed)
             try {
-                java.nio.file.Files.move(temp.toPath(), target.toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+                moveWhenFree(temp.toPath(), target.toPath())
             } catch(e: java.nio.file.AtomicMoveNotSupportedException) {
                 java.nio.file.Files.move(temp.toPath(), target.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
             }
         } finally {
             temp.delete()
+        }
+    }
+
+    /**
+     * The atomic move, tried again while the target is busy. Windows, where the unit tests run, refuses to replace a file
+     * that another save is replacing just then or that a reader holds open (an AccessDeniedException); Linux, so Android,
+     * replaces it regardless. Each try is the same move of the same temp file, at most [MOVE_TRIES] of them with a pause
+     * that grows by a millisecond each time, and the last refusal is thrown. The target is never deleted first or written
+     * in place, so it holds the old content or the new at every moment. On Android this only delays the error of a
+     * directory that really cannot be written.
+     */
+    private fun moveWhenFree(temp: java.nio.file.Path, target: java.nio.file.Path) {
+        var tries = 1
+        while(true) {
+            try {
+                atomicMove(temp, target)
+                return
+            } catch(e: java.nio.file.AccessDeniedException) {
+                if(tries == MOVE_TRIES) throw e
+                Thread.sleep(tries.toLong())
+                tries++
+            }
         }
     }
 
@@ -247,6 +276,8 @@ class InscriptionStore(private val dir: File, private val cipher: StoreCipher) {
         const val KEY_ALIAS = "sparrow-inscriptions"
         /** The name ending of a results file set aside because it could not be read. */
         const val UNREADABLE_SUFFIX = ".unreadable"
+        /** How many times a save tries its atomic move while the target is busy; the waits between them add up to 190 ms. */
+        internal const val MOVE_TRIES = 20
         /** A sealed file holds at least its 12-byte IV and 16-byte tag. */
         private const val MIN_SEALED_BYTES = 28
         private const val KEY_PERMANENTLY_INVALIDATED = "android.security.keystore.KeyPermanentlyInvalidatedException"

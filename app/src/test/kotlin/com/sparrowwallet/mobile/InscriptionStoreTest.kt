@@ -12,6 +12,7 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -199,6 +200,67 @@ class InscriptionStoreTest {
     }
 
     private fun store(dir: File, cipher: StoreCipher) = InscriptionStore(dir, cipher)
+
+    private fun busy(temp: java.nio.file.Path, target: java.nio.file.Path) =
+        java.nio.file.AccessDeniedException(temp.toString(), target.toString(), null)
+
+    /**
+     * Windows refuses to replace a file that another save is replacing or a reader holds open (an AccessDeniedException;
+     * Linux, so Android, never does): the save tries the same atomic move of the same temp file again.
+     */
+    @Test
+    fun aSaveTriesItsMoveAgainWhileTheTargetIsBusy() {
+        val dir = java.nio.file.Files.createTempDirectory("insc").toFile()
+        val cipher = MemoryCipher()
+        store(dir, cipher).save("w", mapOf(check(0).outpoint to check(0)))
+        val temps = mutableListOf<java.nio.file.Path>()
+        val store = InscriptionStore(dir, cipher) { temp, target ->
+            temps.add(temp)
+            if(temps.size <= 3) throw busy(temp, target)
+            java.nio.file.Files.move(temp, target,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+        }
+        store.save("w", mapOf(check(1).outpoint to check(1)))
+        assertEquals(4, temps.size, "three refusals, then the move")
+        assertEquals(1, temps.toSet().size, "one temp file for the whole save")
+        assertEquals(mapOf(check(1).outpoint to check(1)), store.load("w"))
+        assertEquals(listOf("w.bin"), dir.list()!!.toList(), "no temp file left behind")
+    }
+
+    /** The tries are bounded. A save whose target stays busy fails, and the file it would have replaced is never touched. */
+    @Test
+    fun aSaveWhoseTargetStaysBusyFailsAndKeepsTheOldFile() {
+        val dir = java.nio.file.Files.createTempDirectory("insc").toFile()
+        val cipher = MemoryCipher()
+        val old = mapOf(check(0).outpoint to check(0))
+        store(dir, cipher).save("w", old)
+        val before = File(dir, "w.bin").readBytes()
+        var moves = 0
+        val store = InscriptionStore(dir, cipher) { temp, target ->
+            moves++
+            assertTrue(target.toFile().readBytes().contentEquals(before), "the old file is whole at try $moves")
+            throw busy(temp, target)
+        }
+        assertFailsWith<java.nio.file.AccessDeniedException> { store.save("w", mapOf(check(1).outpoint to check(1))) }
+        assertEquals(InscriptionStore.MOVE_TRIES, moves)
+        assertTrue(File(dir, "w.bin").readBytes().contentEquals(before), "the old file, byte for byte")
+        assertEquals(old, store.load("w"))
+        assertEquals(listOf("w.bin"), dir.list()!!.toList(), "no temp file left behind")
+    }
+
+    /** Only a busy target is tried again: a move that fails for any other reason fails the save at once. */
+    @Test
+    fun aMoveThatFailsForAnotherReasonIsNotTriedAgain() {
+        val dir = java.nio.file.Files.createTempDirectory("insc").toFile()
+        var moves = 0
+        val store = InscriptionStore(dir, MemoryCipher()) { _, _ ->
+            moves++
+            throw java.io.IOException("no space left")
+        }
+        assertFailsWith<java.io.IOException> { store.save("w", mapOf(check(0).outpoint to check(0))) }
+        assertEquals(1, moves)
+        assertEquals(emptyList(), dir.list()!!.toList(), "no temp file left behind")
+    }
 
     @Test
     fun fileIsNotPlaintext() {
