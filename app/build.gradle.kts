@@ -27,8 +27,8 @@ android {
         applicationId = "io.github.scryptofoundation.sparrowscrypt"
         minSdk = 26
         targetSdk = 35
-        versionCode = 48
-        versionName = "0.17.0-beta.2"
+        versionCode = 49
+        versionName = "0.17.0-beta.3"
     }
     signingConfigs {
         if(releaseSigning != null) {
