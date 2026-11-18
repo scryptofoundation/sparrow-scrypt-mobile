@@ -53,6 +53,11 @@ object TxBuilder {
     /** Litecoin's dust limit, for the call sites that predate the coin axis. */
     const val DUST_LIMIT = 546L
 
+    /**
+     * Selects, assembles and signs. [chainTip] is the tip of the chain the transaction is meant for, as the wallet's
+     * own server gave it (null: not known); with [params] it says which signature hash the chain takes
+     * ([ChainSig.of]). The caller always says it.
+     */
     fun build(
         candidates: List<SpendableInput>,
         destScript: ByteArray,
@@ -61,10 +66,11 @@ object TxBuilder {
         changeScript: ByteArray,
         sendMax: Boolean = false,
         params: ChainParams,
-        keepOrder: Boolean = false
+        keepOrder: Boolean = false,
+        chainTip: Long?
     ): BuiltTx {
         val unsigned = buildUnsigned(candidates, destScript, amount, feeRatePerVb, changeScript, sendMax, params, keepOrder)
-        return sign(unsigned)
+        return sign(unsigned, ChainSig.of(params, chainTip))
     }
 
     /**
@@ -177,9 +183,9 @@ object TxBuilder {
         else -> 5
     }
 
-    private fun sign(unsigned: UnsignedBuild): BuiltTx {
+    private fun sign(unsigned: UnsignedBuild, chainSig: ChainSig): BuiltTx {
         val inputs = unsigned.inputs
-        InputSigner.signAll(unsigned.tx, inputs.map { it.key }, inputs[0].scriptType, inputs.map { it.value })
+        InputSigner.signAll(unsigned.tx, inputs.map { it.key }, inputs[0].scriptType, inputs.map { it.value }, chainSig)
         return BuiltTx(unsigned.tx, unsigned.amount, unsigned.fee, unsigned.change)
     }
 }

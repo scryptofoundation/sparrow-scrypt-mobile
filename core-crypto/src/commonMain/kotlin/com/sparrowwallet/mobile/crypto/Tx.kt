@@ -101,18 +101,21 @@ class Tx(
 
     /**
      * Original (pre-segwit) SIGHASH_ALL digest: the transaction with every scriptSig emptied
-     * except this input's, which carries the output script being spent; no witness data.
+     * except this input's, which carries the output script being spent; no witness data. [chainSig]
+     * goes in front of it all (Luckycoin's chain id, or nothing).
      */
-    fun legacySighashAll(inputIndex: Int, prevOutputScript: ByteArray): ByteArray {
+    fun legacySighashAll(inputIndex: Int, prevOutputScript: ByteArray, chainSig: ChainSig): ByteArray {
         val stripped = inputs.mapIndexed { i, input ->
             TxInput(input.prevTxid, input.vout, input.sequence, if(i == inputIndex) prevOutputScript else ByteArray(0))
         }
-        val preimage = Tx(version, stripped, outputs, locktime).serialize(includeWitness = false) + ByteWriter().u32le(1).toByteArray()
-        return sha256d(preimage)
+        val preimage = chainSig.writeTo(ByteWriter())
+            .bytes(Tx(version, stripped, outputs, locktime).serialize(includeWitness = false))
+            .u32le(1)
+        return sha256d(preimage.toByteArray())
     }
 
-    /** BIP143 SIGHASH_ALL digest for a segwit v0 input. */
-    fun bip143SighashAll(inputIndex: Int, scriptCode: ByteArray, amount: Long): ByteArray {
+    /** BIP143 SIGHASH_ALL digest for a segwit v0 input, with [chainSig] in front of it all (Luckycoin's chain id, or nothing). */
+    fun bip143SighashAll(inputIndex: Int, scriptCode: ByteArray, amount: Long, chainSig: ChainSig): ByteArray {
         val prevouts = ByteWriter()
         val sequences = ByteWriter()
         for(input in inputs) {
@@ -124,7 +127,7 @@ class Tx(
             outs.bytes(output.serialize())
         }
         val input = inputs[inputIndex]
-        val preimage = ByteWriter()
+        val preimage = chainSig.writeTo(ByteWriter())
             .u32le(version)
             .bytes(sha256d(prevouts.toByteArray()))
             .bytes(sha256d(sequences.toByteArray()))

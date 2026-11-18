@@ -131,7 +131,7 @@ class TaprootSigningTest {
             listOf(TxInput("11".repeat(32), 0), TxInput("22".repeat(32), 1)),
             listOf(TxOutput(90_000, Scripts.p2trOutput(keys[0].pubKey)))
         )
-        InputSigner.signAll(tx, keys, ScriptType.P2TR, listOf(50_000L, 60_000L))
+        InputSigner.signAll(tx, keys, ScriptType.P2TR, listOf(50_000L, 60_000L), ChainSig.NONE)
         for((i, input) in tx.inputs.withIndex()) {
             assertEquals(1, input.witness.size)
             assertEquals(64, input.witness[0].size)

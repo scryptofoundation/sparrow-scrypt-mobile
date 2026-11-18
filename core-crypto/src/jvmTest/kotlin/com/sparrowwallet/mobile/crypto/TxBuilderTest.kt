@@ -32,7 +32,7 @@ class TxBuilderTest {
 
     @Test
     fun selectsLargestFirstAndReturnsChange() {
-        val built = TxBuilder.build(candidates, destScript, 60_000, 2, changeScript, params = Network.MAINNET.litecoin)
+        val built = TxBuilder.build(candidates, destScript, 60_000, 2, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         assertEquals(2, built.tx.inputs.size) // 50k + 30k cover it, 20k untouched
         assertEquals(2, built.tx.outputs.size)
         assertEquals(60_000L, built.tx.outputs[0].value)
@@ -45,7 +45,7 @@ class TxBuilderTest {
 
     @Test
     fun everyInputCarriesAWitness() {
-        val built = TxBuilder.build(candidates, destScript, 60_000, 2, changeScript, params = Network.MAINNET.litecoin)
+        val built = TxBuilder.build(candidates, destScript, 60_000, 2, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         for(input in built.tx.inputs) {
             assertEquals(2, input.witness.size)
             assertEquals(33, input.witness[1].size) // compressed pubkey
@@ -58,7 +58,7 @@ class TxBuilderTest {
 
     @Test
     fun sendMaxSweepsEverythingWithSingleOutput() {
-        val built = TxBuilder.build(candidates, destScript, 0, 1, changeScript, sendMax = true, params = Network.MAINNET.litecoin)
+        val built = TxBuilder.build(candidates, destScript, 0, 1, changeScript, sendMax = true, params = Network.MAINNET.litecoin, chainTip = null)
         assertEquals(3, built.tx.inputs.size)
         assertEquals(1, built.tx.outputs.size)
         assertEquals(TxBuilder.estimateVsize(3, listOf(22)), built.fee)
@@ -70,7 +70,7 @@ class TxBuilderTest {
     @Test
     fun dustChangeIsFoldedIntoFee() {
         // 50k+30k selected; change = 80_000 - 79_500 - 209 = 291 < 546 dust
-        val built = TxBuilder.build(candidates, destScript, 79_500, 1, changeScript, params = Network.MAINNET.litecoin)
+        val built = TxBuilder.build(candidates, destScript, 79_500, 1, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         assertEquals(1, built.tx.outputs.size)
         assertEquals(0L, built.change)
         assertEquals(80_000L - 79_500L, built.fee)
@@ -83,7 +83,7 @@ class TxBuilderTest {
         val preferred = candidates.reversed() // 20k, 30k, 50k
         val built = TxBuilder.buildUnsigned(preferred, destScript, 40_000, 2, changeScript, params = Network.MAINNET.litecoin, keepOrder = true)
         assertEquals(listOf(20_000L, 30_000L), built.inputs.map { it.value })
-        val signed = TxBuilder.build(preferred, destScript, 40_000, 2, changeScript, params = Network.MAINNET.litecoin, keepOrder = true)
+        val signed = TxBuilder.build(preferred, destScript, 40_000, 2, changeScript, params = Network.MAINNET.litecoin, keepOrder = true, chainTip = null)
         assertEquals(listOf(fakeTxid(3), fakeTxid(2)), signed.tx.inputs.map { it.prevTxid })
         //without it, largest first
         assertEquals(listOf(50_000L), TxBuilder.buildUnsigned(preferred, destScript, 40_000, 2, changeScript,
@@ -93,7 +93,7 @@ class TxBuilderTest {
     @Test
     fun insufficientFundsThrows() {
         val error = assertFailsWith<IllegalArgumentException> {
-            TxBuilder.build(candidates, destScript, 99_900, 2, changeScript, params = Network.MAINNET.litecoin)
+            TxBuilder.build(candidates, destScript, 99_900, 2, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         }
         assertTrue(error.message!!.contains("Insufficient"))
     }
@@ -101,14 +101,14 @@ class TxBuilderTest {
     @Test
     fun dustAmountThrows() {
         assertFailsWith<IllegalArgumentException> {
-            TxBuilder.build(candidates, destScript, 500, 1, changeScript, params = Network.MAINNET.litecoin)
+            TxBuilder.build(candidates, destScript, 500, 1, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         }
     }
 
     @Test
     fun feeRateFloorEnforced() {
         assertFailsWith<IllegalArgumentException> {
-            TxBuilder.build(candidates, destScript, 60_000, 0, changeScript, params = Network.MAINNET.litecoin)
+            TxBuilder.build(candidates, destScript, 60_000, 0, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         }
     }
 }

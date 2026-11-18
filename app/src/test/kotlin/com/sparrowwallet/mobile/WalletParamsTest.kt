@@ -86,7 +86,7 @@ class WalletParamsTest {
 
         val rate = clampFeeRate(Coin.DOGECOIN, 50_600.0)
         val dest = Scripts.outputScript(master.derivePath("m/44'/3'/1'/0/0").pubKey, ScriptType.P2PKH)
-        val built = TxBuilder.build(inputs, dest, 400_000_000, rate, change, false, doge)
+        val built = TxBuilder.build(inputs, dest, 400_000_000, rate, change, false, doge, chainTip = null)
         assertTrue(built.fee >= TxBuilder.estimateVsize(List(2) { ScriptType.P2PKH }, listOf(25, 25)) * 50_600)
         assertTrue(built.tx.outputs.any { it.script.contentEquals(change) })
         assertTrue(built.tx.serialize()[4] != 0.toByte(), "no segwit marker")

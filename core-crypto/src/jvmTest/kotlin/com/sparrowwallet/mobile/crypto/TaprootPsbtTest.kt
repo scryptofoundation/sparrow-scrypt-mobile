@@ -56,7 +56,7 @@ class TaprootPsbtTest {
     )
 
     private fun sign(psbt: ByteArray): Psbt.Parsed =
-        Psbt.parse(PsbtSigner.sign(Psbt.parse(psbt), master, mainnet, mainnetPath, ScriptType.P2TR))
+        Psbt.parse(PsbtSigner.sign(Psbt.parse(psbt), master, mainnet, mainnetPath, ScriptType.P2TR, chainTip = null))
 
     private fun review(psbt: ByteArray): PsbtReview =
         PsbtSigner.review(Psbt.parse(psbt), master, mainnet, mainnetPath, ScriptType.P2TR)
@@ -72,7 +72,7 @@ class TaprootPsbtTest {
         assertEquals(listOf(false, true), review.outputs.map { it.change })
         assertEquals(Vector.fee, review.fee)
 
-        val signed = Psbt.parse(PsbtSigner.sign(parsed, master, testnet, testnetPath, ScriptType.P2TR))
+        val signed = Psbt.parse(PsbtSigner.sign(parsed, master, testnet, testnetPath, ScriptType.P2TR, chainTip = null))
         val desktop = Psbt.parse(Vector.signed)
         for((i, input) in signed.inputs.withIndex()) {
             assertEquals(64, input.tapKeySig!!.size)
@@ -92,7 +92,7 @@ class TaprootPsbtTest {
         assertContentEquals(Taproot.xOnly(keys[0].pubKey), maps[1][2].second)
         assertEquals(listOf(false, true), review(psbt).outputs.map { it.change })
 
-        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = mainnet).tx
+        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = mainnet, chainTip = null).tx
         assertContentEquals(direct.serialize(), Psbt.finalize(sign(psbt)).serialize())
     }
 
@@ -149,7 +149,7 @@ class TaprootPsbtTest {
         val accountPath = listOf(84L + h, 2L + h, 0L + h)
         val expected = "Input 2 is missing the full previous transaction. When a PSBT has more than one input, the " +
             "phone needs each one to check the fee. On the PC, import this wallet with the Sparrow Mobile option."
-        val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(parsed, master, mainnet, accountPath, ScriptType.P2WPKH) }
+        val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(parsed, master, mainnet, accountPath, ScriptType.P2WPKH, chainTip = null) }
         assertEquals(expected, e.message)
         assertEquals(expected, PsbtSigner.review(parsed, master, mainnet, accountPath, ScriptType.P2WPKH).refusal)
     }

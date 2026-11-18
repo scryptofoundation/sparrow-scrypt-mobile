@@ -24,7 +24,7 @@ class PsbtTest {
 
     @Test
     fun psbtPathMatchesDirectSigningExactly() {
-        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
+        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         val unsigned = TxBuilder.buildUnsigned(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
         val psbt = createPsbt(unsigned)
 

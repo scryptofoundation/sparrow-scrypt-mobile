@@ -61,7 +61,7 @@ class AirgapE2eTest {
             val kept = after[m].filter { !(m in 1..2 && it.first[0].toInt() == 0x02) }
             assertEquals(before[m].map { it.first.toHex() + it.second.toHex() }, kept.map { it.first.toHex() + it.second.toHex() })
         }
-        val direct = TxBuilder.build(inputs, destScript, 1_900_000, 3, changeScript, params = Network.MAINNET.litecoin)
+        val direct = TxBuilder.build(inputs, destScript, 1_900_000, 3, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         val final = Psbt.finalize(Psbt.parse(signed))
         assertContentEquals(direct.tx.serialize(), final.serialize())
         File(dir, "verified.txt").writeText("signed by the phone, finalizes to txid ${final.txid()}\n")

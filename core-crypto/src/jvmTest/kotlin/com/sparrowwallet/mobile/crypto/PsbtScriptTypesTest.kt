@@ -91,7 +91,7 @@ class PsbtScriptTypesTest {
         for(type in ScriptType.entries) {
             val w = wallet(type)
             val ins = inputs(w)
-            val direct = TxBuilder.build(ins, dest(w), 60_000_000, 2, change(w), params = ltc).tx
+            val direct = TxBuilder.build(ins, dest(w), 60_000_000, 2, change(w), params = ltc, chainTip = null).tx
             val psbt = PsbtFixtures.edit(create(w, ins)) { maps ->
                 for(i in ins.indices) {
                     //a Taproot key-path signature (0x13) names no key; the others are partial signatures by key
@@ -138,7 +138,7 @@ class PsbtScriptTypesTest {
         for(type in ScriptType.entries) {
             val w = wallet(type)
             val ins = inputs(w)
-            val direct = TxBuilder.build(ins, dest(w), 60_000_000, 2, change(w), params = ltc).tx
+            val direct = TxBuilder.build(ins, dest(w), 60_000_000, 2, change(w), params = ltc, chainTip = null).tx
             //another signer already finalized every input: its final scriptSig and witness are used as they are
             val psbt = PsbtFixtures.edit(create(w, ins)) { maps ->
                 for(i in ins.indices) {

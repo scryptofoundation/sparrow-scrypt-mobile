@@ -57,9 +57,9 @@ object PsbtSigner {
     fun review(parsed: Psbt.Parsed, master: HDKey, network: Network, accountPath: List<Long>): PsbtReview =
         review(parsed, master, network.litecoin, accountPath, ScriptType.P2WPKH)
 
-    /** Litecoin Native Segwit, the signer's original scope. */
+    /** Litecoin Native Segwit, the signer's original scope. Litecoin has no chain id, so no tip is needed. */
     fun sign(parsed: Psbt.Parsed, master: HDKey, network: Network, accountPath: List<Long>): ByteArray =
-        sign(parsed, master, network.litecoin, accountPath, ScriptType.P2WPKH)
+        sign(parsed, master, network.litecoin, accountPath, ScriptType.P2WPKH, chainTip = null)
 
     /** Highest address index this wallet signs for or calls change; past it no wallet would scan. */
     private const val MAX_INDEX = 10_000L
@@ -134,7 +134,13 @@ object PsbtSigner {
         return PsbtReview(inputs, outputs, totalIn, totalOut, fee, rate, refusal(parsed, master, params.coin, accountPath, scriptType), warning)
     }
 
-    fun sign(parsed: Psbt.Parsed, master: HDKey, params: ChainParams, accountPath: List<Long>, scriptType: ScriptType): ByteArray {
+    /**
+     * Signs this wallet's inputs. [chainTip] is the tip of the chain the transaction is meant for as the wallet last
+     * knew it (null: not known); with [params] it says which signature hash the chain takes ([ChainSig.of]).
+     */
+    fun sign(parsed: Psbt.Parsed, master: HDKey, params: ChainParams, accountPath: List<Long>, scriptType: ScriptType,
+             chainTip: Long?): ByteArray {
+        val chainSig = ChainSig.of(params, chainTip)
         var ours = 0
         //a Taproot signature commits to every input's spent amount and script, ours or not
         val prevouts by lazy {
@@ -157,8 +163,8 @@ object PsbtSigner {
                 return@mapIndexed emptyMap()
             }
             val sighash = when(scriptType) {
-                ScriptType.P2PKH -> parsed.tx.legacySighashAll(i, spent.script)
-                else -> parsed.tx.bip143SighashAll(i, Scripts.p2pkhScriptCode(key.pubKey), spent.value)
+                ScriptType.P2PKH -> parsed.tx.legacySighashAll(i, spent.script, chainSig)
+                else -> parsed.tx.bip143SighashAll(i, Scripts.p2pkhScriptCode(key.pubKey), spent.value, chainSig)
             }
             mapOf(pubHex to Ecdsa.signForInput(sighash, key.privKey))
         }
