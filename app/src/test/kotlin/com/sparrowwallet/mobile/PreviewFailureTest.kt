@@ -61,10 +61,22 @@ class PreviewFailureTest {
         //the repository's own, by the words it throws them with
         for(words in listOf("Insufficient MWEB funds: need 5 litoshis, have 3", "No private coins with 6+ confirmations yet", "Amount too small",
             "Balance is too small to cover the peg-in fees", "Not a valid MWEB address", "Moving coins into MWEB needs a Native Segwit Litecoin wallet",
-            "Signing on another device is not available for this wallet", "Peg-in max calculation mismatch")) {
+            "Signing on another device is not available for this wallet", "Peg-in max calculation mismatch",
+            "Unexpected create response (no extension marker)", "Create response has no MWEB extension", "Peg-in template should have no inputs",
+            "Peg-in template should have exactly the peg-in output")) {
             assertEquals(words, PreviewFailure.sentence(IllegalArgumentException(words)), words)
         }
         assertEquals("Dogecoin Mainnet needs your own server", PreviewFailure.sentence(IllegalStateException("Dogecoin Mainnet needs your own server")))
+        assertEquals("Peg-in template too large", PreviewFailure.sentence(IllegalStateException("Peg-in template too large")))
+        assertEquals("Litecoin Testnet has no server", PreviewFailure.sentence(IllegalStateException("Litecoin Testnet has no server")))
+        //the builder's two refusals about script types: coins of two types, and a type the coin does not have
+        val taproot = SpendableInput("cd".repeat(32), 1, 50_000, key, ScriptType.P2TR)
+        val doge = ChainParams.of(Coin.DOGECOIN, Network.MAINNET)
+        for(refusal in listOf(builders(listOf(coin(50_000), taproot), 20_000),
+            assertFailsWith<Throwable> { TxBuilder.build(listOf(taproot), script, 20_000, 1_000, script, false, doge, chainTip = null) })) {
+            assertEquals(refusal.message, PreviewFailure.sentence(refusal), refusal.message)
+        }
+        assertNull(ownSentence(IllegalStateException("Litecoin <b>call 555-0100</b> has no server")))
         assertEquals("Air-gapped mode is on: Electrum is disabled", PreviewFailure.sentence(AirGappedException("Electrum")))
     }
 

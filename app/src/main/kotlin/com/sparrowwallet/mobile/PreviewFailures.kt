@@ -53,7 +53,10 @@ internal fun ownSentence(failure: Throwable): String? {
         return null
     }
     val words = failure.message ?: return null
-    return words.takeIf { OWN_BEGINNINGS.any { words.startsWith(it) } || words.endsWith(NEEDS_OWN_SERVER) || ADDRESS_REFUSALS.any { it.matches(words) } }
+    return words.takeIf {
+        OWN_BEGINNINGS.any { words.startsWith(it) } || words.endsWith(NEEDS_OWN_SERVER) || OWN_FORMS.any { it.matches(words) } ||
+            ADDRESS_REFUSALS.any { it.matches(words) }
+    }
 }
 
 /**
@@ -72,7 +75,14 @@ private val ADDRESS_REFUSALS = listOf(
 private val OWN_BEGINNINGS = listOf(
     "Insufficient funds", "Insufficient MWEB funds", "No spendable coins", "No private coins", "Amount is below", "Amount too small",
     "Balance is too small", "Fee rate must be at least", "Not a valid MWEB address", "Moving coins into MWEB needs",
-    "Signing on another device is not available", "Peg-in max calculation mismatch"
+    "Signing on another device is not available", "Peg-in max calculation mismatch", "All inputs must share the wallet's script type",
+    "Unexpected create response", "Create response has no MWEB extension", "Peg-in template"
+)
+
+/** Refusals of the app's own in which a name varies, each in its whole form: TxBuilder's of a script type the coin does not have, and the repository's of a Litecoin network with no server. */
+private val OWN_FORMS = listOf(
+    Regex("[A-Za-z]+ has no P2[A-Z0-9_]+ inputs"),
+    Regex("Litecoin [A-Za-z0-9]+ has no server")
 )
 
 /** How the repository's refusal of a coin without a public server ends. */
