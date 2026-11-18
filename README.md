@@ -8,7 +8,7 @@ Android only for now. There is no iPhone version yet.
 
 ## Status: beta
 
-Current version: **0.17.0 beta 2** (tag `v0.17.0-beta.2`).
+Current version: **0.18.0 beta 1** (tag `v0.18.0-beta.1`).
 
 Sparrow-Scrypt Mobile is in public testing. Expect bugs. Use testnet wallets where you can and small amounts where you can't, and never put a seed that holds real savings into a beta build.
 
@@ -27,12 +27,16 @@ Every wallet picks Mainnet or Testnet when you create it, so you can keep test w
 ## What it does
 
 - Seven Scrypt coins in one app. Each wallet belongs to one coin, and the home screen groups wallets by coin with a total for each.
-- New and restored wallets, with the script types each coin supports.
+- New and restored wallets, with the script types each coin supports, including Taproot (BIP86) wallets on Litecoin and on Bellscoin mainnet.
 - Seed imports from each coin's own wallet app (MyDoge, Peppool, Dingo, JunkieWally, luckycoinwallet, Nintondo) and from Cake Wallet.
-- Litecoin MWEB: a private balance next to the public one.
+- Litecoin MWEB: a private balance next to the public one. A coin that comes straight out of MWEB counts as clean for the inscription check.
+- Wallet families: a Litecoin or Bellscoin wallet can add a Taproot wallet from the same seed, the same one the desktop makes, where inscriptions usually live. A wallet's Private (MWEB) and Taproot wallets show as layers of one wallet screen. Deleting a wallet that has linked wallets asks which of them go.
+- An inscription check of a wallet's coins: after each sync the app traces where a coin came from on the wallet's own server (Built-in), and can also ask a public inscription indexer (Public) or one you run (Your own). It asks which you want before it contacts any indexer, and it can be set per coin.
+- A Collectibles screen with a wallet's inscriptions, with small image and text previews, rune balances on Litecoin, and the coins not checked yet, which you can check deeper.
+- Send keeps inscribed coins out of payments: it spends coins checked clean first, then coins not checked yet with a warning before you send, and holds back coins that may carry an inscription or a token unless you include them. Send max takes coins not checked yet only when you tick their own box. Moving coins into MWEB never takes held coins.
+- LitVM on Litecoin testnet wallets: the wallet's LitVM address, its zkLTC balance and its NFTs from the built-in collection, read only.
 - Pairing with Sparrow-Scrypt on the desktop by QR code (Tools > Link with Mobile): copy a wallet from the desktop, send a phone wallet to the desktop, and keep labels in step.
 - Air-gapped mode: the phone holds the keys and signs PSBTs from a desktop watch-only wallet by QR code, with sync, sending and every network feature turned off. It works for every coin and script type.
-- An inscription guard that holds back coins that may carry inscriptions or tokens, so they are not spent by accident.
 - Servers set per coin: the public servers, or your own Electrum server or Esplora API, optionally over Tor through Orbot.
 
 ## Screenshots
@@ -52,7 +56,7 @@ The APK is on the [Releases](../../releases) page, with a SHA256 checksum. Check
 
 | System | File |
 | --- | --- |
-| Android 8.0 or later | `Sparrow-Scrypt-Mobile-0.17.0-beta.2.apk` |
+| Android 8.0 or later | `Sparrow-Scrypt-Mobile-0.18.0-beta.1.apk` |
 
 The app is not in the Play Store yet. To install it, open the APK on your phone and allow your browser or file manager to install unknown apps when Android asks.
 
@@ -60,7 +64,7 @@ Every release is signed with the same key. Its SHA-256 certificate fingerprint i
 
 `5E:A1:04:86:53:A3:A4:F8:20:69:F0:C7:8A:37:14:E2:F5:C6:BC:CB:B2:D6:B0:3C:35:23:9F:CE:47:A3:11:5D`
 
-You can check it with `apksigner verify --print-certs Sparrow-Scrypt-Mobile-0.17.0-beta.2.apk`.
+You can check it with `apksigner verify --print-certs Sparrow-Scrypt-Mobile-0.18.0-beta.1.apk`.
 
 ## Building
 
