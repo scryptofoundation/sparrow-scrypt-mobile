@@ -616,7 +616,7 @@ private fun WalletListScreen(
         }
         if(interval > 0) {
             TextButton(onClick = { SyncWorker.runNow(context) }) { Text("Check now") }
-            Text("Checks use view-only keys sealed in this phone's secure keystore — they can see " +
+            Text("Checks use view-only keys sealed in this phone's secure keystore: they can see " +
                 "incoming funds but can never spend. Unlock each wallet once after enabling.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -777,7 +777,7 @@ private fun LinkSendScreen(repo: WalletRepository, pairing: SparrowLink.Pairing,
     ScreenColumn {
         Text("Send wallet to desktop", style = MaterialTheme.typography.headlineSmall)
         if(done) {
-            Text("Wallet sent ✓ — on the PC use File → Open Wallet. It opens with the same password it has on this phone.",
+            Text("Wallet sent ✓. On the PC use File → Open Wallet. It opens with the same password it has on this phone.",
                 style = MaterialTheme.typography.bodyMedium)
             Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("Done") }
             return@ScreenColumn
@@ -878,7 +878,7 @@ private fun ImportSparrowScreen(
         )
         OutlinedTextField(
             value = name, onValueChange = { name = it },
-            label = { Text("Wallet name (optional — uses the desktop name)") },
+            label = { Text("Wallet name (optional, uses the desktop name)") },
             modifier = Modifier.fillMaxWidth()
         )
         error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
@@ -1264,7 +1264,7 @@ private fun HomeScreen(
     val gapped = NetworkPolicy.blocked
     var status by remember(data) {
         mutableStateOf(
-            if(!gapped && repo.cachedSnapshot(data) != null && !repo.snapshotFresh(data)) "Last known — refreshing…" else null
+            if(!gapped && repo.cachedSnapshot(data) != null && !repo.snapshotFresh(data)) "Last known, refreshing…" else null
         )
     }
     LaunchedEffect(Unit) { if(!gapped) usdNow = PriceService.currentUsd(repo.coin(data)) }
@@ -1335,8 +1335,8 @@ private fun HomeScreen(
                 privateResult?.onSuccess { privateSnap = it }
 
                 status = pairStatus(
-                    publicResult.fold({ "" }, { "sync failed — ${it.message}" }),
-                    privateResult?.fold({ mwebStateText(it) }, { "unavailable — ${it.message}" })
+                    publicResult.fold({ "" }, { "sync failed: ${it.message}" }),
+                    privateResult?.fold({ mwebStateText(it) }, { "unavailable: ${it.message}" })
                 )
                 if(checkAfter && publicResult.isSuccess) checkInscriptions()
                 if(checkAfter) for(other in alsoSync) scope.launch {
@@ -1504,7 +1504,7 @@ private fun LabelSyncButton(onError: (String) -> Unit, onPairing: (SparrowLink.P
             try {
                 val pairing = SparrowLink.parseQr(text)
                 if(pairing.mode != "labels") {
-                    throw SparrowLink.LinkException("That QR is a wallet transfer — scan it from the Wallets screen")
+                    throw SparrowLink.LinkException("That QR is a wallet transfer. Scan it from the Wallets screen")
                 }
                 onPairing(pairing)
             } catch(e: Exception) {
@@ -1553,7 +1553,7 @@ private fun MwebHomeScreen(
     var syncing by remember { mutableStateOf(false) }
     var status by remember(data) {
         mutableStateOf(
-            if(repo.cachedMwebSnapshot(data) != null && !repo.mwebSnapshotFresh(data)) "Last known — refreshing…" else null
+            if(repo.cachedMwebSnapshot(data) != null && !repo.mwebSnapshotFresh(data)) "Last known, refreshing…" else null
         )
     }
     LaunchedEffect(Unit) { usdNow = PriceService.currentUsd(Coin.LITECOIN) }
@@ -1577,12 +1577,12 @@ private fun MwebHomeScreen(
                     snapshot = snap
                     mwebStateText(snap)
                 } catch(t: Throwable) {
-                    "scanner error — ${t.message}"
+                    "scanner error: ${t.message}"
                 }
                 val publicResult = publicJob?.await()
                 publicResult?.onSuccess { publicBalance = it.balance.confirmed to it.balance.unconfirmed }
                 status = pairStatus(
-                    publicResult?.fold({ "" }, { "sync failed — ${it.message}" }),
+                    publicResult?.fold({ "" }, { "sync failed: ${it.message}" }),
                     privateState
                 )
                 // as Home does after a public sync: the linked public wallet's inscription check, in the app's scope
@@ -1703,10 +1703,10 @@ private fun MwebHomeScreen(
                     if(snap.utxos.isEmpty()) {
                         Text(
                             if(snap.initialScanComplete)
-                                "Coin scan complete — no unspent private coins right now."
+                                "Coin scan complete: no unspent private coins right now."
                             else
                                 "No coins found yet. The scanner checks every private output on the " +
-                                "chain against your view key — coins appear here as they're found. " +
+                                "chain against your view key. Coins appear here as they're found. " +
                                 "Keep the app open.",
                             style = MaterialTheme.typography.bodySmall)
                     }
@@ -2067,7 +2067,7 @@ private fun ReceiveScreen(repo: WalletRepository, home: Screen.Home, startIndex:
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Private (MWEB) address", style = MaterialTheme.typography.titleSmall)
                     Text(address, style = MaterialTheme.typography.bodyMedium)
-                    Text("MWEB addresses are reusable without a privacy loss — payments to this address " +
+                    Text("MWEB addresses are reusable without a privacy loss: payments to this address " +
                         "aren't linkable on-chain.", style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -2508,11 +2508,11 @@ private fun SendScreen(
         if(address.isNotBlank() && addressError == null) {
             when {
                 fundingPrivate == true && isMwebDest ->
-                    "Private MWEB transfer — fully confidential."
+                    "Private MWEB transfer, fully confidential."
                 fundingPrivate == true && !isMwebDest ->
-                    "Paid from Private to a public address — pegs out of MWEB (extra confirmations to mature)."
+                    "Paid from Private to a public address: pegs out of MWEB (extra confirmations to mature)."
                 fundingPrivate == false && isMwebDest ->
-                    "Paid from Public to a private address — pegs into MWEB."
+                    "Paid from Public to a private address: pegs into MWEB."
                 else -> null
             }?.let {
                 Text(it, style = MaterialTheme.typography.bodySmall,
@@ -2913,9 +2913,9 @@ private fun DetailsScreen(repo: WalletRepository, name: String, data: VaultData,
                     Text("MWEB (private)", style = MaterialTheme.typography.titleSmall)
                     Text("First address:", style = MaterialTheme.typography.bodySmall)
                     Text(mweb.firstAddress, style = MaterialTheme.typography.bodySmall)
-                    Text("View key — scan secret:", style = MaterialTheme.typography.bodySmall)
+                    Text("View key, scan secret:", style = MaterialTheme.typography.bodySmall)
                     Text(mweb.scanSecretHex, style = MaterialTheme.typography.bodySmall)
-                    Text("View key — spend pubkey:", style = MaterialTheme.typography.bodySmall)
+                    Text("View key, spend pubkey:", style = MaterialTheme.typography.bodySmall)
                     Text(mweb.spendPubKeyHex, style = MaterialTheme.typography.bodySmall)
                     Text("Same two lines Electrum-LTC shows under Wallet → Information, and what desktop " +
                         "Sparrow-Scrypt derives, usable for MWEB watch-only tools. MWEB balance and sending " +

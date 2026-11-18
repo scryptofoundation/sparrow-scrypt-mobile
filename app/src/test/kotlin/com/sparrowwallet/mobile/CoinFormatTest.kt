@@ -44,6 +44,6 @@ class CoinFormatTest {
         assertEquals("< $0.01", formatUsd(1_000, 0.0001))
         assertEquals("$0.00", formatUsd(0, 1.0))
         assertEquals("$126.75", formatUsd(150_000_000, 84.5))
-        assertEquals("—", formatUsd(1, null))
+        assertEquals("-", formatUsd(1, null))
     }
 }

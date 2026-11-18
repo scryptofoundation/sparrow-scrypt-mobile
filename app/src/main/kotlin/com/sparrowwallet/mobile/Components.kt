@@ -43,7 +43,7 @@ import java.util.Locale
 internal fun formatUsd(litoshis: Long, price: Double?): String = price?.let {
     val usd = kotlin.math.abs(litoshis) / 1e8 * it
     if(usd > 0 && usd < 0.005) "< $0.01" else "$%,.2f".format(usd)
-} ?: "—"
+} ?: "-"
 
 internal fun formatDate(unixSeconds: Long?): String =
     unixSeconds?.let { SimpleDateFormat("MMM d, yyyy HH:mm", Locale.US).format(Date(it * 1000)) } ?: "pending"
@@ -272,7 +272,7 @@ internal fun BalanceHeader(
         Text(eyebrow.uppercase(), fontFamily = MonoFont, fontSize = 9.5.sp, letterSpacing = 1.3.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
-            total?.let { formatUnits(it) } ?: "—",
+            total?.let { formatUnits(it) } ?: "-",
             fontFamily = MonoFont, fontSize = 27.sp, fontWeight = FontWeight.Bold,
             letterSpacing = (-0.5).sp,
             modifier = Modifier.padding(top = 3.dp)

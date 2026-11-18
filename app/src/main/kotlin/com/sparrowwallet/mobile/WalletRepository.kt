@@ -609,7 +609,7 @@ class WalletRepository(context: Context) {
         val summary = if(result.matchedWallets.isEmpty()) {
             "The desktop wallet doesn't match any wallet open on this phone (different seed?)"
         } else {
-            "Synced ${result.matchedWallets.joinToString()} — $applied label(s) to phone, " +
+            "Synced ${result.matchedWallets.joinToString()}: $applied label(s) to phone, " +
             "${result.sentToDesktop} to desktop" +
             if(result.conflicts > 0) ". ${result.conflicts} differed and were left unchanged on both." else "."
         }
@@ -1172,7 +1172,7 @@ class WalletRepository(context: Context) {
                 ChainParams.of(Coin.LITECOIN, net), keepOrder = true)
             if(sendMax) {
                 require(unsigned.tx.outputs[0].value == template.peginValue) {
-                    "Peg-in max calculation mismatch — enter a specific amount instead"
+                    "Peg-in max calculation mismatch. Enter a specific amount instead"
                 }
             }
             val mwebFee = template.peginValue - amount
@@ -1380,7 +1380,7 @@ class WalletRepository(context: Context) {
             .sortedByDescending { it.value }
         val total = coins.sumOf { it.value }
         require(coins.isNotEmpty()) {
-            "No private coins with $minConfirmations+ confirmations yet — recent receives need to mature"
+            "No private coins with $minConfirmations+ confirmations yet. Recent receives need to mature"
         }
 
         val dest = MwebdService.OutSpec(amountLitoshis, destScript)
@@ -1491,7 +1491,7 @@ class WalletRepository(context: Context) {
                 effectiveRate, changeScript, sendMax, ChainParams.of(Coin.LITECOIN, net), keepOrder = true, chainTip = null)
             if(sendMax) {
                 require(built.tx.outputs[0].value == template.peginValue) {
-                    "Peg-in max calculation mismatch — enter a specific amount instead"
+                    "Peg-in max calculation mismatch. Enter a specific amount instead"
                 }
             }
             val canonicalVsize = built.vsize.toLong() // before the blob attaches
