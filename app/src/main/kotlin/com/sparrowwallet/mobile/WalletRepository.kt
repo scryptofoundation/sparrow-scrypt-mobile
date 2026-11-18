@@ -706,8 +706,9 @@ class WalletRepository(context: Context) {
         val destScript = Addresses.toScriptPubKey(toAddress, params)
         return withBackend(coin, net) { client ->
             val feeRate = clampFeeRate(coin, client.feeRate(2))
-            val (candidates, changeScript) = collectSpendables(client, data, account, scriptType(data), includeHeld)
-            val built = TxBuilder.build(candidates, destScript, amountLitoshis, feeRate, changeScript, sendMax, params)
+            val (candidates, changeScript, tip) = collectSpendables(client, data, account, scriptType(data), includeHeld)
+            //the tip the coins were listed at says which signature hash the chain takes (Luckycoin's chain id, see ChainSig)
+            val built = TxBuilder.build(candidates, destScript, amountLitoshis, feeRate, changeScript, sendMax, params, chainTip = tip)
             SendPreview(toAddress, built.amount, built.fee, feeRate, built.tx.txid(), built.hex())
         }
     }
@@ -723,13 +724,17 @@ class WalletRepository(context: Context) {
         snap.utxos.filter { !it.spent && confirmedEnough(snap.status.blockHeaderHeight.toLong(), it.height) }
             .sumOf { it.value }
 
-    /** Held coins (which may carry an inscription) only with [includeHeld]; never into MWEB, where they would be lost. */
+    /**
+     * Held coins (which may carry an inscription) only with [includeHeld]; never into MWEB, where they would be lost.
+     * Also the chain tip the coins were listed at.
+     */
     private suspend fun collectSpendables(client: ChainBackend, data: VaultData, account: HDKey, scriptType: ScriptType,
-                                          includeHeld: Boolean = false): Pair<List<SpendableInput>, ByteArray> {
+                                          includeHeld: Boolean = false): Triple<List<SpendableInput>, ByteArray, Long> {
         val (scan, tip) = scanCoins(client, data, account, scriptType)
         val coin = coin(data)
         val network = network(data)
-        return spendables(scan, tip, account, scriptType, minConfirmations, { coin.coinbaseMaturity(network, it) }, includeHeld)
+        val (candidates, change) = spendables(scan, tip, account, scriptType, minConfirmations, { coin.coinbaseMaturity(network, it) }, includeHeld)
+        return Triple(candidates, change, tip)
     }
 
     class UnsignedSendPreview(
@@ -884,9 +889,16 @@ class WalletRepository(context: Context) {
      * for a coordinator like desktop Sparrow or a watch-only wallet.
      */
     fun signPsbt(data: VaultData, psbt: ByteArray): SignedPsbt {
-        val signed = PsbtSigner.sign(Psbt.parse(psbt), masterKey(data), params(data), accountPath(data), scriptType(data))
+        //the phone may sign offline: the tip is the one its last sync saw, if any (ChainSig.of says what an unknown one means)
+        val signed = PsbtSigner.sign(Psbt.parse(psbt), masterKey(data), params(data), accountPath(data), scriptType(data),
+            chainTip = lastKnownTip(cachedSnapshot(data)))
         return SignedPsbt(signed, Psbt.toBase64(signed))
     }
+
+    /** The highest block a snapshot's history shows (a confirmed entry's height plus its confirmations, less one); null when none. */
+    private fun lastKnownTip(snapshot: WalletSnapshot?): Long? =
+        snapshot?.history?.filter { it.height > 0 && it.confirmations > 0 }
+            ?.maxOfOrNull { it.height.toLong() + it.confirmations - 1 }
 
     /** What a PSBT does, for the user to check before [signPsbt]. */
     fun reviewPsbt(data: VaultData, psbt: ByteArray): PsbtReview =
@@ -1142,8 +1154,9 @@ class WalletRepository(context: Context) {
             val template = service.createPegIn(
                 mwebScanSecret(data), mwebSpendSecret(data), program, amount, feeRate * 1000
             )
+            //a peg-in is Litecoin's, which signs with no chain id whatever its tip
             val built = TxBuilder.build(candidates, template.peginScript, template.peginValue,
-                effectiveRate, changeScript, sendMax, ChainParams.of(Coin.LITECOIN, net))
+                effectiveRate, changeScript, sendMax, ChainParams.of(Coin.LITECOIN, net), chainTip = null)
             if(sendMax) {
                 require(built.tx.outputs[0].value == template.peginValue) {
                     "Peg-in max calculation mismatch — enter a specific amount instead"

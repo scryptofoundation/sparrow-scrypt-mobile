@@ -42,7 +42,7 @@ class TxParityTest {
         assertEquals(field("scriptCode"), scriptCode.toHex(), "scriptCode")
 
         val inputValue = input["value"]!!.jsonPrimitive.content.toLong()
-        val sighash = tx.bip143SighashAll(0, scriptCode, inputValue)
+        val sighash = tx.bip143SighashAll(0, scriptCode, inputValue, ChainSig.NONE)
         assertEquals(field("sighash"), sighash.toHex(), "BIP143 sighash")
 
         val signature = Ecdsa.signForInput(sighash, key.privKey)

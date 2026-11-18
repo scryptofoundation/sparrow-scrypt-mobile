@@ -15,7 +15,9 @@ class SignedTxCoinParityTest {
                 v.inputs.map { TxInput(it.prevTxid, it.vout, it.sequence) },
                 v.outputs.map { TxOutput(it.value, it.script.hexToBytes()) }
             )
-            InputSigner.signAll(tx, v.inputs.map { master.derivePath(it.keyPath) }, ScriptType.valueOf(v.scriptType), v.inputs.map { it.value })
+            //drongo signed these with no chain id, Luckycoin's included (before the desktop knew of it): the digest
+            //machinery is what is held to drongo here, and LuckycoinChainSigTest holds Luckycoin's chain id to its chain
+            InputSigner.signAll(tx, v.inputs.map { master.derivePath(it.keyPath) }, ScriptType.valueOf(v.scriptType), v.inputs.map { it.value }, ChainSig.NONE)
             assertEquals(v.txHex, tx.serialize().toHex(), "${v.coin} ${v.network} ${v.scriptType}")
         }
         assertEquals(22, CoinVectors.file.signedTxs.size)

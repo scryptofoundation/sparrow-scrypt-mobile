@@ -48,19 +48,19 @@ class PsbtSignerScriptTypesTest {
     }
 
     private fun signedTx(w: Wallet, psbt: ByteArray): Tx =
-        Psbt.finalize(Psbt.parse(PsbtSigner.sign(Psbt.parse(psbt), master, w.params, w.accountPath, w.type)))
+        Psbt.finalize(Psbt.parse(PsbtSigner.sign(Psbt.parse(psbt), master, w.params, w.accountPath, w.type, chainTip = null)))
 
     @Test
     fun signsLegacyInputs() {
         val w = wallet(Coin.DOGECOIN, ScriptType.P2PKH)
-        val direct = TxBuilder.build(inputs(w), dest(w), 4_000_000_000, rate, change(w), params = w.params)
+        val direct = TxBuilder.build(inputs(w), dest(w), 4_000_000_000, rate, change(w), params = w.params, chainTip = null)
         assertContentEquals(direct.tx.serialize(), signedTx(w, psbt(w)).serialize())
     }
 
     @Test
     fun signsNestedInputs() {
         val w = wallet(Coin.LITECOIN, ScriptType.P2SH_P2WPKH)
-        val direct = TxBuilder.build(inputs(w), dest(w), 4_000_000_000, rate, change(w), params = w.params)
+        val direct = TxBuilder.build(inputs(w), dest(w), 4_000_000_000, rate, change(w), params = w.params, chainTip = null)
         assertContentEquals(direct.tx.serialize(), signedTx(w, psbt(w)).serialize())
     }
 
@@ -70,7 +70,7 @@ class PsbtSignerScriptTypesTest {
         val one = psbt(w, inputs(w).take(1), amount = 1_000_000_000)
         val stripped = PsbtFixtures.edit(one) { maps -> maps[1].removeAll { it.first[0].toInt() == 0x00 } }
         val parsed = Psbt.parse(stripped)
-        val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(parsed, master, w.params, w.accountPath, w.type) }
+        val e = assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(parsed, master, w.params, w.accountPath, w.type, chainTip = null) }
         assertTrue("previous transaction" in e.message!!, e.message)
         assertNotNull(PsbtSigner.review(parsed, master, w.params, w.accountPath, w.type).refusal)
     }
@@ -93,7 +93,7 @@ class PsbtSignerScriptTypesTest {
         val segwit = wallet(Coin.LITECOIN, ScriptType.P2WPKH)
         val legacy = Wallet(segwit.params, ScriptType.P2PKH, segwit.account, segwit.accountPath)
         val e = assertFailsWith<IllegalArgumentException> {
-            PsbtSigner.sign(Psbt.parse(psbt(segwit)), master, legacy.params, legacy.accountPath, legacy.type)
+            PsbtSigner.sign(Psbt.parse(psbt(segwit)), master, legacy.params, legacy.accountPath, legacy.type, chainTip = null)
         }
         assertTrue("does not match" in e.message!!, e.message)
     }
@@ -122,7 +122,7 @@ class PsbtSignerScriptTypesTest {
         val unmarked = withMark(psbt(lky), null)
         val refusal = assertNotNull(review(lky, unmarked).refusal)
         assertTrue("which coin" in refusal, refusal)
-        assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(Psbt.parse(unmarked), master, lky.params, lky.accountPath, lky.type) }
+        assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(Psbt.parse(unmarked), master, lky.params, lky.accountPath, lky.type, chainTip = null) }
     }
 
     @Test
@@ -130,7 +130,7 @@ class PsbtSignerScriptTypesTest {
         val jkc = wallet(Coin.JUNKCOIN, ScriptType.P2PKH)
         val bitcoin = withMark(psbt(jkc), "bitcoin")
         assertTrue("is for bitcoin" in assertNotNull(review(jkc, bitcoin).refusal))
-        assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(Psbt.parse(bitcoin), master, jkc.params, jkc.accountPath, jkc.type) }
+        assertFailsWith<IllegalArgumentException> { PsbtSigner.sign(Psbt.parse(bitcoin), master, jkc.params, jkc.accountPath, jkc.type, chainTip = null) }
         val doge = wallet(Coin.DOGECOIN, ScriptType.P2PKH)
         assertTrue("is for Pepecoin" in assertNotNull(review(doge, withMark(psbt(doge), "pepecoin")).refusal))
     }
@@ -141,7 +141,7 @@ class PsbtSignerScriptTypesTest {
         val r = review(lky, psbt(lky))
         assertEquals(null, r.refusal)
         assertEquals(null, r.warning)
-        val direct = TxBuilder.build(inputs(lky), dest(lky), 4_000_000_000, rate, change(lky), params = lky.params)
+        val direct = TxBuilder.build(inputs(lky), dest(lky), 4_000_000_000, rate, change(lky), params = lky.params, chainTip = null)
         assertContentEquals(direct.tx.serialize(), signedTx(lky, psbt(lky)).serialize())
     }
 
@@ -174,8 +174,8 @@ class PsbtSignerScriptTypesTest {
     @Test
     fun finalizeUsesTheSignatureOfTheKeyThatOwnsTheCoin() {
         val w = wallet(Coin.DOGECOIN, ScriptType.P2PKH)
-        val direct = TxBuilder.build(inputs(w), dest(w), 4_000_000_000, rate, change(w), params = w.params).tx.serialize()
-        val signed = PsbtSigner.sign(Psbt.parse(psbt(w)), master, w.params, w.accountPath, w.type)
+        val direct = TxBuilder.build(inputs(w), dest(w), 4_000_000_000, rate, change(w), params = w.params, chainTip = null).tx.serialize()
+        val signed = PsbtSigner.sign(Psbt.parse(psbt(w)), master, w.params, w.accountPath, w.type, chainTip = null)
         //signatures by other keys alongside ours: whatever order they come back in, ours is the one placed
         val strays = (2L..40L).map { index ->
             val stray = w.account.deriveChild(0).deriveChild(index)

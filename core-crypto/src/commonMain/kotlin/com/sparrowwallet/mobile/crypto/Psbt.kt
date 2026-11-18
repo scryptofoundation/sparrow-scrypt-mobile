@@ -278,7 +278,8 @@ object Psbt {
 
     /**
      * Test helper: signs every input this [keyFor] can serve as Native Segwit, without the
-     * ownership checks [PsbtSigner] makes. The app signs through [PsbtSigner] only.
+     * ownership checks [PsbtSigner] makes. The app signs through [PsbtSigner] only. Its tests are Litecoin's, which
+     * has no chain id.
      */
     internal fun sign(parsed: Parsed, keyFor: (String) -> HDKey?): ByteArray {
         val sigsPerInput = parsed.inputs.mapIndexed { i, input ->
@@ -288,7 +289,7 @@ object Psbt {
             val key = keyFor(pubHex) ?: return@mapIndexed emptyMap<String, ByteArray>()
             val value = input.witnessUtxoValue
                 ?: throw IllegalArgumentException("Input ${i + 1} has no witness utxo")
-            val sighash = parsed.tx.bip143SighashAll(i, Scripts.p2pkhScriptCode(key.pubKey), value)
+            val sighash = parsed.tx.bip143SighashAll(i, Scripts.p2pkhScriptCode(key.pubKey), value, ChainSig.NONE)
             mapOf(pubHex to Ecdsa.signForInput(sighash, key.privKey))
         }
         return serialize(parsed, sigsPerInput)

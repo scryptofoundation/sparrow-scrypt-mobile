@@ -30,12 +30,12 @@ class PsbtRoundTripTest {
         val change = Scripts.outputScript(changeKey.pubKey, type)
         val rate = kotlin.math.ceil(coin.recommendedFeeRate).toLong()
 
-        val direct = TxBuilder.build(inputs, dest, 60_000_000_000, rate, change, params = params)
+        val direct = TxBuilder.build(inputs, dest, 60_000_000_000, rate, change, params = params, chainTip = null)
         val unsigned = TxBuilder.buildUnsigned(inputs, dest, 60_000_000_000, rate, change, params = params)
         val psbt = Psbt.create(unsigned, master.fingerprint,
             pathFor = { input -> accountPath + listOf(0L, keys.indexOfFirst { it.pubKey.contentEquals(input.key.pubKey) }.toLong()) },
             changeIndex = 1, changePubKey = changeKey.pubKey, changePath = accountPath + listOf(1L, 0L))
-        val signed = PsbtSigner.sign(Psbt.parse(psbt), master, params, accountPath, type)
+        val signed = PsbtSigner.sign(Psbt.parse(psbt), master, params, accountPath, type, chainTip = null)
         val final = Psbt.finalize(Psbt.parse(signed))
         assertContentEquals(direct.tx.serialize(), final.serialize(), "$coin $type")
         assertEquals(direct.tx.txid(), final.txid(), "$coin $type")

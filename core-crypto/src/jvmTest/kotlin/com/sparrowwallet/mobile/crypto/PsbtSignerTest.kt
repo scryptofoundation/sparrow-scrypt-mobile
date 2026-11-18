@@ -120,7 +120,7 @@ class PsbtSignerTest {
     @Test fun staleSignatureForOurKeyIsReplaced() {
         val stale = edit(fixturePsbt()) { maps -> maps[1] += (byteArrayOf(0x02) + PsbtFixtures.key0.pubKey) to ByteArray(71) { 1 } }
         val signed = PsbtSigner.sign(Psbt.parse(stale), master, net, account)
-        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
+        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         assertEquals(1, Psbt.parse(signed).inputs[0].partialSigs.size)
         assertContentEquals(direct.tx.serialize(), Psbt.finalize(Psbt.parse(signed)).serialize())
     }
@@ -189,7 +189,7 @@ class PsbtSignerTest {
     }
 
     @Test fun signMatchesDirectSigning() {
-        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin)
+        val direct = TxBuilder.build(inputs, destScript, 60_000_000, 2, changeScript, params = Network.MAINNET.litecoin, chainTip = null)
         val signed = PsbtSigner.sign(Psbt.parse(fixturePsbt()), master, net, account)
         assertContentEquals(direct.tx.serialize(), Psbt.finalize(Psbt.parse(signed)).serialize())
     }
